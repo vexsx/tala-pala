@@ -1,5 +1,4 @@
 # Secrets & local config
-.env
 secrets/
 nginx/certs/
 

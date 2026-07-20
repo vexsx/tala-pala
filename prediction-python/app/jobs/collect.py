@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import timedelta
 from typing import Optional, Sequence
 
 from sqlalchemy import select
@@ -32,12 +33,14 @@ JOB_SYMBOLS: dict[str, set[str]] = {
     "macro": {"BRENT_OIL", "DXY", "US10Y"},
 }
 
-# provider-registry categories consulted per job (tgju's feed also carries a
-# coherent XAUUSD 'ons' quote, so iran_gold providers back up the global job)
+# provider-registry categories consulted per job.  Note: global_gold providers
+# come FIRST for the global job — TGJU's 'ons' quote is a useful backup but its
+# ticker frequently lags the live market by 30-60 minutes (verified 2026-07-20:
+# ons ts trailed geram18 ts by 40 minutes), so live sources take precedence.
 JOB_PROVIDER_CATEGORIES: dict[str, list[str]] = {
     "iran_gold": ["iran_gold"],
     "fx": ["fx", "iran_gold"],
-    "global": ["iran_gold", "global_gold"],
+    "global": ["global_gold", "iran_gold"],
     "macro": ["global_gold", "macro"],
 }
 
@@ -114,8 +117,14 @@ def run_collect(
     fetch_cache: dict[str, list[Observation]] = {}
     failed_providers: set[str] = set()
 
+    # An observation older than this still gets stored, but does NOT satisfy the
+    # symbol — fallback continues so a provider with a lagging ticker (e.g. TGJU
+    # 'ons') cannot mask a fresher source further down the priority list.
+    fresh_limit = timedelta(minutes=settings.stale_minutes)
+
     for job in requested:
         symbols_needed = set(JOB_SYMBOLS[job])
+        stale_only: set[str] = set()
         provider_rows = registry.load_provider_rows(
             engine, JOB_PROVIDER_CATEGORIES[job]
         )
@@ -183,10 +192,19 @@ def run_collect(
                     LAST_PRICE_TS.labels(symbol=obs.symbol).set(
                         obs.observed_at.timestamp()
                     )
-                symbols_needed.discard(obs.symbol)
+                if utcnow() - obs.observed_at <= fresh_limit:
+                    symbols_needed.discard(obs.symbol)
+                else:
+                    stale_only.add(obs.symbol)
 
         for symbol in sorted(symbols_needed):
-            errors.append(f"{job}: no good value collected for {symbol}")
+            if symbol in stale_only:
+                errors.append(
+                    f"{job}: only stale values available for {symbol} "
+                    "(market closed or sources lagging)"
+                )
+            else:
+                errors.append(f"{job}: no good value collected for {symbol}")
 
     JOB_LAST_SUCCESS.labels(job="collect").set(time.time())
     return {"collected": collected, "errors": errors}

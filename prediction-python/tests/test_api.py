@@ -248,3 +248,49 @@ def test_empty_body_collect_runs_all_jobs(client, engine, monkeypatch):
     resp = client.post("/internal/collect", headers=AUTH)
     assert resp.status_code == 200
     assert resp.json()["collected"].get("IR_GOLD_18K") == 1
+
+
+def test_stale_observation_does_not_block_fresher_fallback(client, engine, monkeypatch):
+    """A provider whose ticker lags (e.g. TGJU 'ons', seen 40m behind on
+    2026-07-20) is stored but must NOT satisfy the symbol: a fresher
+    lower-priority source is still consulted afterwards."""
+    from datetime import timedelta
+
+    from app.db import utcnow
+    from app.providers import registry
+
+    _seed_provider(engine, code="laggy", category="global_gold", priority=5)
+    _seed_provider(engine, code="fresh", category="global_gold", priority=20)
+
+    def xau(provider_code, value, observed_at):
+        return Observation(
+            provider_code=provider_code,
+            symbol="XAUUSD",
+            raw_value=value,
+            raw_unit="USD/ozt",
+            raw_currency="USD",
+            value=value,
+            currency="USD",
+            unit="ozt",
+            observed_at=observed_at,
+            raw_payload={},
+        )
+
+    stubs = {
+        "laggy": StubProvider([xau("laggy", 4000.0, utcnow() - timedelta(hours=2))]),
+        "fresh": StubProvider([xau("fresh", 4014.5, utcnow())]),
+    }
+    monkeypatch.setattr(
+        registry, "build_provider", lambda code, settings: stubs[code]
+    )
+
+    resp = client.post("/internal/collect", json={"jobs": ["global"]}, headers=AUTH)
+    assert resp.status_code == 200
+
+    with engine.connect() as conn:
+        sources = {
+            r._mapping["source"]
+            for r in conn.execute(select(prices).where(prices.c.symbol == "XAUUSD"))
+        }
+    # both stored; crucially the fresh fallback was consulted at all
+    assert sources == {"laggy", "fresh"}

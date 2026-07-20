@@ -131,7 +131,7 @@ export default function Overview() {
                 </div>
                 <div className="kv">
                   <span className="muted">Observed</span>
-                  <span className="mono">{formatToman(s.current_18k, unit)}</span>
+                  <span className="mono">{s.current_18k ? formatToman(s.current_18k.value, unit) : '—'}</span>
                 </div>
                 <div className="kv">
                   <span className="muted">30d avg premium</span>
