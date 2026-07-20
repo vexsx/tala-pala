@@ -1,0 +1,29 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "USD",
+          "symbol": "GC=F",
+          "exchangeName": "CMX",
+          "regularMarketPrice": 3352.4,
+          "regularMarketTime": 1784894400,
+          "chartPreviousClose": 3339.9
+        },
+        "timestamp": [1784721600, 1784808000, 1784894400],
+        "indicators": {
+          "quote": [
+            {
+              "close": [3330.1, null, 3352.4],
+              "open": [3325.0, 3331.0, 3340.2],
+              "high": [3341.9, 3352.0, 3360.8],
+              "low": [3319.5, 3328.4, 3338.0],
+              "volume": [180000, 175000, 190000]
+            }
+          ]
+        }
+      }
+    ],
+    "error": null
+  }
+}

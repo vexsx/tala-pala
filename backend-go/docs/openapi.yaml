@@ -1,0 +1,921 @@
+openapi: 3.0.3
+info:
+  title: Iran Gold Predictor API
+  description: >
+    Public Go API for the Iran gold price analysis platform. All timestamps are
+    UTC ISO-8601. Iranian monetary values are IRT (toman). Predictions are
+    uncertain estimates, not financial advice. Errors use the envelope
+    {"error":{"code","message","details"}}. Every response carries X-Request-ID.
+  version: 1.0.0
+servers:
+  - url: /
+tags:
+  - name: system
+  - name: auth
+  - name: market
+  - name: predictions
+  - name: signals
+  - name: models
+  - name: portfolio
+  - name: alerts
+  - name: admin
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [system]
+      summary: Liveness check (always 200)
+      responses:
+        "200":
+          description: Alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+  /api/v1/readiness:
+    get:
+      tags: [system]
+      summary: Readiness check (db + redis)
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ready }
+                  db: { type: boolean }
+                  redis: { type: boolean }
+        "503":
+          $ref: "#/components/responses/Error"
+  /metrics:
+    get:
+      tags: [system]
+      summary: Prometheus metrics (text format)
+      responses:
+        "200":
+          description: Metrics
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: Register a user
+      description: >
+        First registered user becomes admin. Later registrations require an
+        admin bearer token unless ALLOW_OPEN_REGISTRATION=true. Password must
+        be at least 10 characters.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, minLength: 10 }
+      responses:
+        "201":
+          description: Created (same envelope as login)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  user: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: Log in (rate limited to 10/min per IP)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: JWT issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  user: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+  /api/v1/auth/me:
+    get:
+      tags: [auth]
+      summary: Current user
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Authenticated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api/v1/prices/current:
+    get:
+      tags: [market]
+      summary: Latest price per symbol with 24h change and staleness
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current prices keyed by canonical symbol
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  as_of: { type: string, format: date-time }
+                  prices:
+                    type: object
+                    additionalProperties:
+                      $ref: "#/components/schemas/CurrentPrice"
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/prices/history:
+    get:
+      tags: [market]
+      summary: Price history with pagination and optional bucketing
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: symbol, in: query, required: true, schema: { $ref: "#/components/schemas/Symbol" } }
+        - { name: from, in: query, schema: { type: string, format: date-time } }
+        - { name: to, in: query, schema: { type: string, format: date-time } }
+        - { name: interval, in: query, schema: { type: string, enum: [raw, hourly, daily], default: raw } }
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 500 } }
+      responses:
+        "200":
+          description: Paged price items
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        observed_at: { type: string, format: date-time }
+                        value: { type: number }
+                        source: { type: string }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/market/summary:
+    get:
+      tags: [market]
+      summary: Market snapshot (18k, xau, usd_irt, premium, providers, latest signal)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  as_of: { type: string, format: date-time }
+                  current_18k: { $ref: "#/components/schemas/SummaryPrice" }
+                  xau_usd: { $ref: "#/components/schemas/SummaryPrice" }
+                  usd_irt: { $ref: "#/components/schemas/SummaryPrice" }
+                  theoretical_18k: { type: number, nullable: true }
+                  premium_pct: { type: number, nullable: true }
+                  premium_avg_30d: { type: number, nullable: true }
+                  last_update: { type: string, format: date-time, nullable: true }
+                  providers:
+                    type: array
+                    items: { $ref: "#/components/schemas/ProviderHealth" }
+                  signal:
+                    allOf: [{ $ref: "#/components/schemas/Signal" }]
+                    nullable: true
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/market/premium:
+    get:
+      tags: [market]
+      summary: Daily observed vs theoretical 18k price and premium series
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 90 } }
+      responses:
+        "200":
+          description: Premium series
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  days: { type: integer }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date: { type: string, example: "2026-07-20" }
+                        observed_18k: { type: number, nullable: true }
+                        theoretical_18k: { type: number, nullable: true }
+                        premium_pct: { type: number, nullable: true }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/market/indicators:
+    get:
+      tags: [market]
+      summary: Technical indicators computed in Go over daily IR_GOLD_18K series
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: days, in: query, schema: { type: integer, minimum: 1, maximum: 3650, default: 90 } }
+      responses:
+        "200":
+          description: Indicators (latest values + daily series)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Indicators" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api/v1/predictions:
+    get:
+      tags: [predictions]
+      summary: Latest prediction per horizon
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Latest prediction per horizon
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  as_of: { type: string, format: date-time }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Prediction" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/predictions/{horizon}:
+    get:
+      tags: [predictions]
+      summary: Prediction history for a horizon (includes actual_value)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: horizon, in: path, required: true, schema: { $ref: "#/components/schemas/Horizon" } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
+      responses:
+        "200":
+          description: Prediction history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  horizon: { $ref: "#/components/schemas/Horizon" }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Prediction" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api/v1/signals/current:
+    get:
+      tags: [signals]
+      summary: Latest trading signal
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Latest signal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Signal" }
+        "404": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/signals/history:
+    get:
+      tags: [signals]
+      summary: Signal history
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
+      responses:
+        "200":
+          description: Signal list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Signal" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api/v1/models:
+    get:
+      tags: [models]
+      summary: Model versions (active + recent)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Model versions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/ModelVersion" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/models/performance:
+    get:
+      tags: [models]
+      summary: Per-horizon active model metrics vs baseline plus live accuracy
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Performance summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  horizons:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        model: { $ref: "#/components/schemas/ModelVersion" }
+                        metrics: { type: object }
+                        baseline_metrics: { type: object }
+                        live:
+                          type: object
+                          nullable: true
+                          properties:
+                            n_matured: { type: integer }
+                            mape_pct: { type: number, nullable: true }
+                            directional_accuracy: { type: number, nullable: true }
+                            interval_coverage: { type: number, nullable: true }
+                  last_training_run:
+                    type: object
+                    nullable: true
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api/v1/portfolio:
+    get:
+      tags: [portfolio]
+      summary: Holdings and computed valuation
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Portfolio with computed summary (flat fields)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/PortfolioSummary"
+                  - type: object
+                    properties:
+                      holdings:
+                        type: array
+                        items: { $ref: "#/components/schemas/Transaction" }
+                      current_price: { type: number }
+                      price_available: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/portfolio/transactions:
+    post:
+      tags: [portfolio]
+      summary: Add a transaction
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransactionInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer, format: int64 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/portfolio/transactions/{id}:
+    put:
+      tags: [portfolio]
+      summary: Update a transaction
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransactionInput" }
+      responses:
+        "200": { description: Updated }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [portfolio]
+      summary: Delete a transaction
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: Deleted }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/portfolio/import:
+    post:
+      tags: [portfolio]
+      summary: Import transactions from CSV (multipart, max 1MB)
+      description: >
+        Required columns: tx_type,grams,karat,price_per_gram,currency,fees,tx_date,notes.
+        Rows with formula-injection cells (leading = + - @) are rejected. The
+        import is all-or-nothing.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: Imported
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imported: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "413": { $ref: "#/components/responses/Error" }
+  /api/v1/portfolio/export:
+    get:
+      tags: [portfolio]
+      summary: Export transactions as CSV (formula-injection sanitized)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /api/v1/alerts:
+    get:
+      tags: [alerts]
+      summary: List alerts
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Alert" }
+        "401": { $ref: "#/components/responses/Error" }
+    post:
+      tags: [alerts]
+      summary: Create an alert
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AlertInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer, format: int64 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/alerts/{id}:
+    put:
+      tags: [alerts]
+      summary: Update an alert
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AlertInput" }
+      responses:
+        "200": { description: Updated }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      tags: [alerts]
+      summary: Delete an alert
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: Deleted }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/alerts/events:
+    get:
+      tags: [alerts]
+      summary: List alert events
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: unacked, in: query, schema: { type: boolean, default: false } }
+      responses:
+        "200":
+          description: Events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AlertEvent" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/alerts/events/{id}/ack:
+    post:
+      tags: [alerts]
+      summary: Acknowledge an alert event
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        "200": { description: Acknowledged }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /api/v1/admin/jobs/{job}:
+    post:
+      tags: [admin]
+      summary: Trigger a background job (proxied to the prediction service)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: job
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [collect, train, predict, signals, backtest, evaluate]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              description: >
+                Optional job parameters, e.g. {"jobs":["iran_gold"]} for collect,
+                {"horizons":["1d"]} for train/predict, or backtest params.
+      responses:
+        "200":
+          description: Result proxied from the prediction service
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "502": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/audit:
+    get:
+      tags: [admin]
+      summary: Audit log (50 per page)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: page, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+      responses:
+        "200":
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AuditEntry" }
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Error:
+      description: Error envelope
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+  schemas:
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object }
+    Symbol:
+      type: string
+      enum: [IR_GOLD_18K, XAUUSD, XAGUSD, USD_IRT, IR_COIN_EMAMI, BRENT_OIL, DXY, US10Y]
+    Horizon:
+      type: string
+      enum: [1h, 4h, eod, 1d, 3d, 7d, 30d]
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { type: string, enum: [user, admin] }
+    CurrentPrice:
+      type: object
+      properties:
+        value: { type: number }
+        currency: { type: string }
+        unit: { type: string }
+        source: { type: string }
+        observed_at: { type: string, format: date-time }
+        stale: { type: boolean }
+        change_24h_pct: { type: number, nullable: true }
+    SummaryPrice:
+      type: object
+      nullable: true
+      properties:
+        value: { type: number }
+        currency: { type: string }
+        unit: { type: string }
+        observed_at: { type: string, format: date-time }
+        source: { type: string }
+        stale: { type: boolean }
+        change_24h_pct: { type: number, nullable: true }
+    ProviderHealth:
+      type: object
+      properties:
+        code: { type: string }
+        name: { type: string }
+        category: { type: string }
+        enabled: { type: boolean }
+        priority: { type: integer }
+        healthy: { type: boolean }
+        last_success_at: { type: string, format: date-time, nullable: true }
+        consecutive_failures: { type: integer }
+        last_error: { type: string }
+    Indicators:
+      type: object
+      properties:
+        symbol: { type: string }
+        as_of: { type: string, nullable: true }
+        days: { type: integer }
+        sma_20: { type: number, nullable: true }
+        sma_50: { type: number, nullable: true }
+        ema_12: { type: number, nullable: true }
+        ema_26: { type: number, nullable: true }
+        rsi_14: { type: number, nullable: true }
+        macd:
+          type: object
+          properties:
+            line: { type: number, nullable: true }
+            signal: { type: number, nullable: true }
+            hist: { type: number, nullable: true }
+        bollinger:
+          type: object
+          properties:
+            upper: { type: number, nullable: true }
+            mid: { type: number, nullable: true }
+            lower: { type: number, nullable: true }
+        atr_14: { type: number, nullable: true }
+        momentum_10: { type: number, nullable: true }
+        roc_10: { type: number, nullable: true }
+        volatility_20:
+          type: number
+          nullable: true
+          description: Annualized volatility (stdev of log returns x sqrt(365))
+        support: { type: number, nullable: true }
+        resistance: { type: number, nullable: true }
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              date: { type: string }
+              close: { type: number }
+              sma_20: { type: number, nullable: true }
+              sma_50: { type: number, nullable: true }
+              ema_12: { type: number, nullable: true }
+              ema_26: { type: number, nullable: true }
+              rsi_14: { type: number, nullable: true }
+              macd: { type: number, nullable: true }
+              macd_signal: { type: number, nullable: true }
+              macd_hist: { type: number, nullable: true }
+              bollinger_upper: { type: number, nullable: true }
+              bollinger_mid: { type: number, nullable: true }
+              bollinger_lower: { type: number, nullable: true }
+              atr_14: { type: number, nullable: true }
+    Prediction:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        symbol: { type: string }
+        horizon: { $ref: "#/components/schemas/Horizon" }
+        model_name: { type: string }
+        predicted_at: { type: string, format: date-time }
+        target_time: { type: string, format: date-time }
+        point_forecast: { type: number }
+        lower_bound: { type: number }
+        upper_bound: { type: number }
+        expected_change_pct: { type: number }
+        direction: { type: string, enum: [up, down, flat] }
+        confidence: { type: number }
+        regime: { type: string }
+        drivers: { type: array, items: { type: object } }
+        data_fresh: { type: boolean }
+        warnings: { type: array, items: {} }
+        actual_value: { type: number, nullable: true }
+        actual_recorded_at: { type: string, format: date-time, nullable: true }
+    Signal:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        generated_at: { type: string, format: date-time }
+        signal: { type: string, enum: [strong_buy, buy, hold, sell, strong_sell] }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        confidence: { type: number }
+        explanation: { type: string }
+        supporting: { type: array, items: {} }
+        conflicting: { type: array, items: {} }
+        risks: { type: array, items: {} }
+        invalidation: { type: string }
+        review_at: { type: string, format: date-time, nullable: true }
+        data_fresh: { type: boolean }
+        inputs: { type: object }
+    ModelVersion:
+      type: object
+      nullable: true
+      properties:
+        id: { type: integer }
+        horizon: { $ref: "#/components/schemas/Horizon" }
+        model_name: { type: string }
+        version: { type: string }
+        trained_at: { type: string, format: date-time }
+        training_start: { type: string, format: date-time, nullable: true }
+        training_end: { type: string, format: date-time, nullable: true }
+        n_observations: { type: integer, nullable: true }
+        metrics: { type: object }
+        baseline_metrics: { type: object }
+        params: { type: object }
+        is_active: { type: boolean }
+    Transaction:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        tx_type: { type: string, enum: [buy, sell] }
+        grams: { type: number }
+        karat: { type: integer, enum: [18, 21, 22, 24] }
+        price_per_gram: { type: number }
+        currency: { type: string, enum: [IRT, IRR] }
+        fees: { type: number }
+        tx_date: { type: string, example: "2026-07-20" }
+        notes: { type: string }
+        created_at: { type: string, format: date-time }
+    TransactionInput:
+      type: object
+      required: [tx_type, grams, price_per_gram, tx_date]
+      properties:
+        tx_type: { type: string, enum: [buy, sell] }
+        grams: { type: number, exclusiveMinimum: true, minimum: 0 }
+        karat: { type: integer, enum: [18, 21, 22, 24], default: 18 }
+        price_per_gram: { type: number, exclusiveMinimum: true, minimum: 0 }
+        currency: { type: string, enum: [IRT, IRR], default: IRT }
+        fees: { type: number, minimum: 0, default: 0 }
+        tx_date: { type: string, example: "2026-07-20" }
+        notes: { type: string, maxLength: 1000 }
+    PortfolioSummary:
+      type: object
+      description: All monetary values in IRT. Karat scaling uses k/18.
+      properties:
+        total_grams_18k_equivalent: { type: number }
+        invested: { type: number }
+        current_value: { type: number }
+        unrealized_pnl: { type: number }
+        pnl_pct: { type: number, nullable: true }
+        avg_price: { type: number, nullable: true }
+        break_even_price:
+          type: number
+          nullable: true
+          description: Includes fees (invested / grams)
+        scenarios:
+          type: array
+          items:
+            type: object
+            properties:
+              change_pct: { type: number }
+              value: { type: number }
+              pnl: { type: number }
+        target_price_for_profit_pct:
+          type: number
+          nullable: true
+          description: 18k price required for +10% profit over invested
+        target_profit_pct: { type: number, example: 10 }
+    Alert:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        alert_type: { $ref: "#/components/schemas/AlertType" }
+        condition: { type: object }
+        enabled: { type: boolean }
+        cooldown_minutes: { type: integer }
+        last_triggered_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+    AlertInput:
+      type: object
+      required: [alert_type]
+      properties:
+        alert_type: { $ref: "#/components/schemas/AlertType" }
+        condition:
+          type: object
+          description: e.g. {"threshold": 5000000}
+        enabled: { type: boolean, default: true }
+        cooldown_minutes: { type: integer, minimum: 1, maximum: 10080, default: 60 }
+    AlertType:
+      type: string
+      enum:
+        - price_above
+        - price_below
+        - signal_change
+        - confidence_above
+        - volatility_spike
+        - premium_above
+        - stale_data
+        - provider_failure
+        - model_degradation
+    AlertEvent:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        alert_id: { type: integer, format: int64 }
+        alert_type: { $ref: "#/components/schemas/AlertType" }
+        triggered_at: { type: string, format: date-time }
+        message: { type: string }
+        payload: { type: object }
+        acknowledged: { type: boolean }
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: integer, format: int64 }
+        user_id: { type: string, format: uuid, nullable: true }
+        action: { type: string }
+        entity: { type: string }
+        entity_id: { type: string }
+        details: { type: object }
+        ip: { type: string }
+        request_id: { type: string }
+        created_at: { type: string, format: date-time }

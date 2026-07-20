@@ -1,0 +1,323 @@
+"""Prediction pass: load the active model per horizon, forecast, persist.
+
+Every written prediction carries empirical interval bounds, a flat-band
+direction (±0.15%), a confidence heuristic (validation directional accuracy
+blended with interval tightness), the detected regime, drivers, and data
+freshness / warnings.  All wording is hedged — forecasts are uncertain
+estimates, never guarantees.
+
+Live calibration (jobs/evaluate.py writes ``app_settings['live_calibration']``
+from matured predictions) feeds back into every new prediction:
+
+* confidence is blended toward the live directional hit rate as evidence
+  accumulates (:func:`blended_confidence`);
+* intervals that recently under-covered are widened and flagged
+  (:func:`coverage_widening`);
+* an active ensemble is re-weighted by live per-member sMAPE once every
+  member has enough matured predictions (models/ensemble.py).
+"""
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Sequence
+
+import joblib
+import numpy as np
+from sqlalchemy import select
+from sqlalchemy.engine import Engine
+
+from ..config import Settings
+from ..core.freshness import is_fresh, staleness_minutes
+from ..db import app_settings, ensure_utc, model_versions, predictions, prices, utcnow
+from ..metrics import PREDICTION_DURATION
+from .base import ForecastModel
+from .ensemble import EnsembleModel, inverse_smape_weights, live_member_smapes
+from .intervals import empirical_interval
+from .training import HORIZON_SPECS, detect_regime, load_series
+
+log = logging.getLogger(__name__)
+
+FLAT_BAND_PCT = 0.15  # |expected change| below this => 'flat'
+
+# --- live calibration (see jobs/evaluate.py, key 'live_calibration') --------
+LIVE_CAL_KEY = "live_calibration"
+LIVE_CAL_WINDOW = 60        # denominator of the blend weight shrinkage
+MIN_COVERAGE_N = 20         # matured predictions before coverage is trusted
+COVERAGE_FLOOR = 0.75       # below this the interval is widened + flagged
+NOMINAL_COVERAGE = 0.90     # the intervals' nominal coverage (alpha=0.1)
+MAX_WIDEN_FACTOR = 1.5      # cap on the interval widening multiplier
+UNDER_COVERAGE_WARNING = (
+    "prediction intervals recently under-covered; widen expectations"
+)
+
+
+def _target_time(horizon: str, now: datetime) -> datetime:
+    if horizon == "1h":
+        return now + timedelta(hours=1)
+    if horizon == "4h":
+        return now + timedelta(hours=4)
+    if horizon == "eod":
+        end = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        return end if end > now else end + timedelta(days=1)
+    days = {"1d": 1, "3d": 3, "7d": 7, "30d": 30}[horizon]
+    return now + timedelta(days=days)
+
+
+def _direction(expected_change_pct: float) -> str:
+    if abs(expected_change_pct) <= FLAT_BAND_PCT:
+        return "flat"
+    return "up" if expected_change_pct > 0 else "down"
+
+
+def _confidence(dir_acc: float, rel_width: float) -> float:
+    """Blend validation directional accuracy with interval tightness (0..1)."""
+    tightness = 1.0 / (1.0 + 10.0 * max(rel_width, 0.0))
+    return float(np.clip(0.55 * dir_acc + 0.45 * tightness, 0.05, 0.95))
+
+
+def load_live_calibration(engine: Engine) -> dict:
+    """Read ``app_settings['live_calibration']`` (written by jobs/evaluate.py).
+
+    Returns ``{horizon: {"n", "dir_hit_rate", "coverage", "updated_at"}}``,
+    or ``{}`` when the row is missing/malformed (fail open: no live evidence
+    means validation-time behaviour).
+    """
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(app_settings.c.value).where(app_settings.c.key == LIVE_CAL_KEY)
+        ).first()
+    return dict(row[0]) if row is not None and isinstance(row[0], dict) else {}
+
+
+def blended_confidence(validation_confidence: float, live: Optional[dict]) -> float:
+    """Calibrate confidence against live outcomes.
+
+    ``final = w * validation_confidence + (1 - w) * live_dir_hit_rate`` with
+    ``w = max(0.3, 1 - n/60)`` where ``n`` is the number of matured live
+    predictions behind ``live_dir_hit_rate``.  With ``n = 0`` (or no live
+    stats) ``w = 1`` and the result equals today's validation-only
+    confidence; as evidence accumulates the weight shifts toward reality,
+    floored at ``w = 0.3`` so validation always keeps a vote.  The result is
+    clamped to ``[0.05, 0.95]`` — never claim more than 95% confidence.
+    """
+    blended = float(validation_confidence)
+    if live:
+        n = int(live.get("n") or 0)
+        hit_rate = live.get("dir_hit_rate")
+        if n > 0 and hit_rate is not None:
+            w = max(0.3, 1.0 - n / LIVE_CAL_WINDOW)
+            blended = w * blended + (1.0 - w) * float(hit_rate)
+    return float(np.clip(blended, 0.05, 0.95))
+
+
+def coverage_widening(live: Optional[dict]) -> float:
+    """Interval half-width multiplier from live coverage.
+
+    If the live coverage of the nominal 90% interval dropped below
+    ``COVERAGE_FLOOR`` (0.75) with at least ``MIN_COVERAGE_N`` (20) matured
+    predictions, the half-width is multiplied by ``0.90 / coverage``, capped
+    at ``MAX_WIDEN_FACTOR`` (1.5).  Returns 1.0 (no widening) otherwise.
+    """
+    if not live:
+        return 1.0
+    n = int(live.get("n") or 0)
+    cov = live.get("coverage")
+    if cov is None or n < MIN_COVERAGE_N:
+        return 1.0
+    cov = float(cov)
+    if cov >= COVERAGE_FLOOR:
+        return 1.0
+    if cov <= 0.0:
+        return MAX_WIDEN_FACTOR
+    return float(min(NOMINAL_COVERAGE / cov, MAX_WIDEN_FACTOR))
+
+
+def _drivers(model: ForecastModel, series, regime: str) -> list[dict]:
+    importances = model.feature_importances()
+    if importances:
+        return [
+            {"factor": name, "importance": round(weight, 4)}
+            for name, weight in importances[:5]
+        ]
+    # heuristic drivers for series models
+    values = series.astype(float)
+    drivers: list[dict] = []
+    if len(values) >= 11:
+        momentum = float(values.iloc[-1] / values.iloc[-11] - 1.0) * 100.0
+        drivers.append(
+            {"factor": "momentum_10", "note": f"{momentum:+.2f}% over 10 steps"}
+        )
+    if len(values) >= 20:
+        sma20 = float(values.iloc[-20:].mean())
+        rel = (float(values.iloc[-1]) / sma20 - 1.0) * 100.0
+        drivers.append({"factor": "price_vs_sma20", "note": f"{rel:+.2f}% vs SMA20"})
+    drivers.append({"factor": "regime", "note": regime})
+    return drivers
+
+
+def _load_active(engine: Engine, horizon: str) -> Optional[dict]:
+    stmt = (
+        select(model_versions)
+        .where(model_versions.c.horizon == horizon, model_versions.c.is_active.is_(True))
+        .order_by(model_versions.c.trained_at.desc())
+        .limit(1)
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).first()
+    return dict(row._mapping) if row else None
+
+
+def _latest_observation(engine: Engine, symbol: str) -> Optional[dict]:
+    stmt = (
+        select(prices.c.observed_at, prices.c.value)
+        .where(prices.c.symbol == symbol, prices.c.quality == "ok")
+        .order_by(prices.c.observed_at.desc())
+        .limit(1)
+    )
+    with engine.connect() as conn:
+        row = conn.execute(stmt).first()
+    if row is None:
+        return None
+    return {"observed_at": ensure_utc(row[0]), "value": float(row[1])}
+
+
+def predict_all(
+    engine: Engine, settings: Settings, horizons: Optional[Sequence[str]] = None
+) -> dict:
+    """Run predictions for the requested horizons; returns rows + errors."""
+    requested = [h for h in (horizons or list(HORIZON_SPECS)) if h in HORIZON_SPECS]
+    out: list[dict] = []
+    errors: list[str] = []
+    with PREDICTION_DURATION.time():
+        series_cache: dict = {}
+        for horizon in requested:
+            try:
+                row = _predict_one(engine, settings, horizon, series_cache)
+                if isinstance(row, dict):
+                    out.append(row)
+                else:
+                    errors.append(f"{horizon}: {row}")
+            except Exception as exc:
+                log.exception("predict %s failed", horizon)
+                errors.append(f"{horizon}: {type(exc).__name__}: {exc}")
+    return {"predictions": out, "errors": errors}
+
+
+def _predict_one(
+    engine: Engine, settings: Settings, horizon: str, series_cache: dict
+):
+    freq, steps = HORIZON_SPECS[horizon]
+    active = _load_active(engine, horizon)
+    if active is None:
+        return "no active model (run /internal/train first)"
+    artifact_path = active.get("artifact_path")
+    if not artifact_path or not os.path.exists(artifact_path):
+        return f"artifact missing at {artifact_path!r}"
+    artifact = joblib.load(artifact_path)
+    model: ForecastModel = artifact["model"]
+    residuals: list[float] = list(artifact.get("residual_pcts", []))
+
+    if freq not in series_cache:
+        series_cache[freq] = load_series(engine, "IR_GOLD_18K", freq)
+    series = series_cache[freq]
+    if series.empty:
+        return "no price series available"
+
+    warnings: list[str] = [
+        "Forecast is an uncertain estimate based on historical patterns, "
+        "not a guarantee and not financial advice."
+    ]
+    latest = _latest_observation(engine, "IR_GOLD_18K")
+    now = utcnow()
+    data_fresh = bool(
+        latest and is_fresh(latest["observed_at"], settings.stale_minutes, now)
+    )
+    if not data_fresh:
+        age = staleness_minutes(latest["observed_at"], now) if latest else None
+        warnings.append(
+            "Input data is stale"
+            + (f" (last observation {age:.0f} minutes old)" if age is not None else "")
+            + "; treat this forecast with extra caution."
+        )
+
+    # adaptive ensemble: once every member has enough matured live
+    # predictions, re-weight by inverse live sMAPE instead of validation sMAPE
+    if isinstance(model, EnsembleModel):
+        live_smapes = live_member_smapes(engine, horizon, list(model.members))
+        if live_smapes:
+            model.weights = inverse_smape_weights(live_smapes)
+            log.info("%s: ensemble re-weighted from live sMAPE %s", horizon, live_smapes)
+
+    # refit on the freshest series (cheap for all model families used here)
+    model.fit(series, steps)
+    point = float(model.predict_point())
+    last_price = float(series.iloc[-1])
+    lower, upper = empirical_interval(point, residuals)
+
+    # live calibration: widen recently under-covering intervals, then blend
+    # confidence toward the observed directional hit rate (docstrings above)
+    live_cal = load_live_calibration(engine).get(horizon)
+    widen = coverage_widening(live_cal)
+    if widen > 1.0:
+        lower = point - (point - lower) * widen
+        upper = point + (upper - point) * widen
+        warnings.append(UNDER_COVERAGE_WARNING)
+
+    expected_change_pct = (point / last_price - 1.0) * 100.0
+    direction = _direction(expected_change_pct)
+    metrics = active.get("metrics") or {}
+    dir_acc = float(metrics.get("directional_accuracy", 0.5))
+    rel_width = (upper - lower) / point if point else 1.0
+    confidence = blended_confidence(_confidence(dir_acc, rel_width), live_cal)
+    regime = detect_regime(series)
+    n_folds = int(metrics.get("n_folds", 0))
+    if n_folds and n_folds < 20:
+        warnings.append(f"Model validated on only {n_folds} walk-forward folds.")
+
+    predicted_at = now
+    target_time = _target_time(horizon, now)
+    drivers = _drivers(model, series, regime)
+
+    with engine.begin() as conn:
+        row_id = conn.execute(
+            predictions.insert().values(
+                symbol="IR_GOLD_18K",
+                horizon=horizon,
+                model_version_id=active["id"],
+                model_name=active["model_name"],
+                predicted_at=predicted_at,
+                target_time=target_time,
+                point_forecast=point,
+                lower_bound=lower,
+                upper_bound=upper,
+                expected_change_pct=expected_change_pct,
+                direction=direction,
+                confidence=confidence,
+                regime=regime,
+                drivers=drivers,
+                data_fresh=data_fresh,
+                warnings=warnings,
+                created_at=now,
+            )
+        ).inserted_primary_key[0]
+
+    return {
+        "id": int(row_id),
+        "symbol": "IR_GOLD_18K",
+        "horizon": horizon,
+        "model_name": active["model_name"],
+        "predicted_at": predicted_at.isoformat(),
+        "target_time": target_time.isoformat(),
+        "point_forecast": round(point, 2),
+        "lower_bound": round(lower, 2),
+        "upper_bound": round(upper, 2),
+        "expected_change_pct": round(expected_change_pct, 4),
+        "direction": direction,
+        "confidence": round(confidence, 3),
+        "regime": regime,
+        "drivers": drivers,
+        "data_fresh": data_fresh,
+        "warnings": warnings,
+    }

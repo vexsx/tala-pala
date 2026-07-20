@@ -1,0 +1,55 @@
+{
+  "gold": [
+    {
+      "date": "1404/02/28",
+      "time": "16:29",
+      "time_unix": 1747573140,
+      "symbol": "IR_GOLD_18K",
+      "name_en": "18K Gold",
+      "name": "طلای 18 عیار",
+      "price": 6214700,
+      "change_value": -95100,
+      "change_percent": -1.53,
+      "unit": "تومان"
+    },
+    {
+      "date": "1404/02/28",
+      "time": "16:29",
+      "time_unix": 1747573140,
+      "symbol": "IR_COIN_EMAMI",
+      "name_en": "Emami Coin",
+      "name": "سکه امامی",
+      "price": 69805000,
+      "change_value": -1780000,
+      "change_percent": -2.55,
+      "unit": "تومان"
+    },
+    {
+      "date": "1404/02/26",
+      "time": "23:59",
+      "time_unix": 1747427340,
+      "symbol": "XAUUSD",
+      "name_en": "Gold Ounce",
+      "name": "انس طلا",
+      "price": 3201,
+      "change_value": -38,
+      "change_percent": -1.17,
+      "unit": "دلار"
+    }
+  ],
+  "currency": [
+    {
+      "date": "1404/02/28",
+      "time": "16:11",
+      "time_unix": 1747572060,
+      "symbol": "USD",
+      "name_en": "US Dollar",
+      "name": "دلار",
+      "price": 81650,
+      "change_value": -750,
+      "change_percent": -0.91,
+      "unit": "تومان"
+    }
+  ],
+  "cryptocurrency": []
+}

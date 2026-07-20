@@ -1,0 +1,18 @@
+{
+  "chart": {
+    "result": [
+      {
+        "meta": {
+          "currency": "USD",
+          "symbol": "^TNX",
+          "exchangeName": "NYB",
+          "regularMarketPrice": 43.5,
+          "regularMarketTime": 1784894400
+        },
+        "timestamp": [1784894400],
+        "indicators": {"quote": [{"close": [43.5]}]}
+      }
+    ],
+    "error": null
+  }
+}

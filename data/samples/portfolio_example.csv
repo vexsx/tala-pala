@@ -1,0 +1,5 @@
+tx_type,grams,karat,price_per_gram,currency,fees,tx_date,notes
+buy,4.02,18,5150000,IRT,150000,2025-09-14,Hamrah Gold purchase
+buy,2.50,18,5980000,IRT,90000,2025-12-02,Hamrah Gold purchase
+buy,1.15,18,7420000,IRT,60000,2026-03-18,Hamrah Gold purchase
+sell,0.50,18,7900000,IRT,45000,2026-05-25,Partial profit taking

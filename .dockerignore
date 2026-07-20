@@ -1,0 +1,15 @@
+.git
+.env
+secrets/
+backups/
+nginx/certs/
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/bin
+docs/
+tests/
+*.md
+!README.md

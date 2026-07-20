@@ -1,0 +1,30 @@
+# Secrets & local config
+.env
+secrets/
+nginx/certs/
+
+# Backups & runtime data
+backups/
+*.dump
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+prediction-python/models_local/
+
+# Go
+backend-go/bin/
+*.exe
+
+# Node
+node_modules/
+frontend/dist/
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
