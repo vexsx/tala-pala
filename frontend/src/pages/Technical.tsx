@@ -33,6 +33,9 @@ interface Row {
   macdLine: number | null
   macdSignal: number | null
   macdHist: number | null
+  adx: number | null
+  stochK: number | null
+  stochD: number | null
 }
 
 function lastDefined<T>(items: IndicatorPoint[], pick: (p: IndicatorPoint) => T | null | undefined): T | null {
@@ -47,6 +50,8 @@ export default function Technical() {
   const { unit, calendar } = useSettings()
   const res = useApi<IndicatorsResponse>('/market/indicators?days=90')
   const [showBollinger, setShowBollinger] = useState(true)
+  const [showDonchian, setShowDonchian] = useState(false)
+  const [showKeltner, setShowKeltner] = useState(false)
 
   const items = useMemo(() => res.data?.items ?? [], [res.data])
 
@@ -62,7 +67,10 @@ export default function Technical() {
         rsi: p.rsi_14,
         macdLine: p.macd?.line ?? null,
         macdSignal: p.macd?.signal ?? null,
-        macdHist: p.macd?.hist ?? null
+        macdHist: p.macd?.hist ?? null,
+        adx: p.adx_14 ?? null,
+        stochK: p.stoch_k ?? null,
+        stochD: p.stoch_d ?? null
       })),
     [items, calendar]
   )
@@ -90,6 +98,17 @@ export default function Technical() {
   const momentum = lastDefined(items, (p) => p.momentum_10)
   const roc = lastDefined(items, (p) => p.roc_10)
   const vol = lastDefined(items, (p) => p.volatility_20)
+
+  // Addendum 2 scalars: prefer the response-level value, fall back to the series.
+  const adx = res.data?.adx_14 ?? lastDefined(items, (p) => p.adx_14)
+  const stochK = res.data?.stoch_k ?? lastDefined(items, (p) => p.stoch_k)
+  const stochD = res.data?.stoch_d ?? lastDefined(items, (p) => p.stoch_d)
+  const williamsR = res.data?.williams_r_14 ?? null
+  const cci = res.data?.cci_20 ?? null
+  const donchian = res.data?.donchian ?? null
+  const keltner = res.data?.keltner ?? null
+  const corrXau = res.data?.corr_xau_20 ?? null
+  const drawdown = res.data?.drawdown_pct ?? null
 
   const indicatorRows: Array<{ name: string; value: string; meaning: string }> = [
     {
@@ -174,6 +193,53 @@ export default function Technical() {
       meaning: '20-day standard deviation of returns — higher means riskier.'
     },
     {
+      name: 'ADX 14',
+      value: adx !== null ? adx.toFixed(1) : '—',
+      meaning:
+        'Trend strength (>25 = strong trend, <20 = weak/rangebound; direction comes from other indicators).'
+    },
+    {
+      name: 'Stochastic %K / %D',
+      value:
+        stochK !== null || stochD !== null
+          ? `${stochK !== null ? stochK.toFixed(1) : '—'} / ${stochD !== null ? stochD.toFixed(1) : '—'}`
+          : '—',
+      meaning: 'Where price sits in its 14-day range (>80 overbought, <20 oversold).'
+    },
+    {
+      name: 'Williams %R 14',
+      value: williamsR !== null ? williamsR.toFixed(1) : '—',
+      meaning:
+        'Same 14-day range idea on a −100…0 scale (above −20 overbought, below −80 oversold).'
+    },
+    {
+      name: 'CCI 20',
+      value: cci !== null ? cci.toFixed(1) : '—',
+      meaning: 'Deviation from typical price (±100 = stretched).'
+    },
+    {
+      name: 'Donchian (upper / lower)',
+      value: donchian ? `${formatCompact(donchian.upper)} / ${formatCompact(donchian.lower)}` : '—',
+      meaning: '20-day high/low channel — breakout levels.'
+    },
+    {
+      name: 'Keltner (upper / mid / lower)',
+      value: keltner
+        ? `${formatCompact(keltner.upper)} / ${formatCompact(keltner.mid)} / ${formatCompact(keltner.lower)}`
+        : '—',
+      meaning: 'Volatility channel around EMA20 (±2×ATR).'
+    },
+    {
+      name: 'Corr. vs XAU (20d)',
+      value: corrXau !== null ? corrXau.toFixed(2) : '—',
+      meaning: 'How closely 18k follows the global ounce lately (1 = in lockstep).'
+    },
+    {
+      name: 'Drawdown',
+      value: drawdown !== null ? `${drawdown.toFixed(2)}%` : '—',
+      meaning: 'Distance below the 90-day high.'
+    },
+    {
       name: 'Support / Resistance',
       value: `${support !== null ? formatToman(support, unit, false) : '—'} / ${resistance !== null ? formatToman(resistance, unit, false) : '—'}`,
       meaning: 'Recent floor and ceiling levels where price has previously turned.'
@@ -187,14 +253,36 @@ export default function Technical() {
       <div className="card">
         <div className="row space-between">
           <div className="card-title">Price with moving averages (90d, daily)</div>
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={showBollinger}
-              onChange={(e) => setShowBollinger(e.target.checked)}
-            />{' '}
-            Bollinger bands
-          </label>
+          <div className="row">
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={showBollinger}
+                onChange={(e) => setShowBollinger(e.target.checked)}
+              />{' '}
+              Bollinger bands
+            </label>
+            {donchian && (
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={showDonchian}
+                  onChange={(e) => setShowDonchian(e.target.checked)}
+                />{' '}
+                Donchian channel
+              </label>
+            )}
+            {keltner && (
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={showKeltner}
+                  onChange={(e) => setShowKeltner(e.target.checked)}
+                />{' '}
+                Keltner channel
+              </label>
+            )}
+          </div>
         </div>
         <div className="chart-box" style={{ height: 340 }}>
           <ResponsiveContainer width="100%" height="100%">
@@ -272,6 +360,41 @@ export default function Technical() {
                   stroke="var(--neg)"
                   strokeDasharray="4 4"
                   label={{ value: 'Resistance', fill: 'var(--neg)', fontSize: 11, position: 'insideTopLeft' }}
+                />
+              )}
+              {showDonchian && donchian && (
+                <ReferenceLine
+                  y={donchian.upper}
+                  stroke="var(--warn)"
+                  strokeDasharray="6 3"
+                  label={{ value: 'Donchian ↑', fill: 'var(--warn)', fontSize: 11, position: 'insideTopRight' }}
+                />
+              )}
+              {showDonchian && donchian && (
+                <ReferenceLine
+                  y={donchian.lower}
+                  stroke="var(--warn)"
+                  strokeDasharray="6 3"
+                  label={{ value: 'Donchian ↓', fill: 'var(--warn)', fontSize: 11, position: 'insideBottomRight' }}
+                />
+              )}
+              {showKeltner && keltner && (
+                <ReferenceLine
+                  y={keltner.upper}
+                  stroke="var(--purple)"
+                  strokeDasharray="2 4"
+                  label={{ value: 'Keltner ↑', fill: 'var(--purple)', fontSize: 11, position: 'right' }}
+                />
+              )}
+              {showKeltner && keltner && (
+                <ReferenceLine y={keltner.mid} stroke="var(--purple)" strokeDasharray="2 4" />
+              )}
+              {showKeltner && keltner && (
+                <ReferenceLine
+                  y={keltner.lower}
+                  stroke="var(--purple)"
+                  strokeDasharray="2 4"
+                  label={{ value: 'Keltner ↓', fill: 'var(--purple)', fontSize: 11, position: 'right' }}
                 />
               )}
             </ComposedChart>
@@ -366,6 +489,113 @@ export default function Technical() {
               </ComposedChart>
             </ResponsiveContainer>
           </div>
+        </div>
+      </div>
+
+      <h3 className="section-title">Trend strength &amp; oscillators</h3>
+      <div className="grid grid-2">
+        <div className="card">
+          <div className="card-title">ADX 14 — trend strength</div>
+          <div className="chart-box" style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                  minTickGap={28}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                />
+                <YAxis
+                  domain={[0, 'auto']}
+                  tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                  width={36}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                />
+                <Tooltip content={<ChartTip format={(v) => v.toFixed(1)} />} />
+                <ReferenceLine
+                  y={20}
+                  stroke="var(--muted)"
+                  strokeDasharray="4 4"
+                  label={{ value: 'weak <20', fill: 'var(--muted)', fontSize: 11, position: 'insideBottomLeft' }}
+                />
+                <ReferenceLine
+                  y={25}
+                  stroke="var(--warn)"
+                  strokeDasharray="4 4"
+                  label={{ value: 'trending >25', fill: 'var(--warn)', fontSize: 11, position: 'insideTopLeft' }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="adx"
+                  name="ADX"
+                  stroke="var(--info)"
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                  connectNulls
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="muted small">
+            Measures trend strength only — direction comes from other indicators.
+          </p>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Stochastic %K / %D (14, 3)</div>
+          <div className="chart-box" style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                  minTickGap={28}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                />
+                <YAxis
+                  domain={[0, 100]}
+                  ticks={[0, 20, 50, 80, 100]}
+                  tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                  width={36}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                />
+                <Tooltip content={<ChartTip format={(v) => v.toFixed(1)} />} />
+                <ReferenceArea y1={20} y2={80} fill="var(--band-fill)" strokeOpacity={0} />
+                <ReferenceLine y={80} stroke="var(--neg)" strokeDasharray="4 4" />
+                <ReferenceLine y={20} stroke="var(--pos)" strokeDasharray="4 4" />
+                <Line
+                  type="monotone"
+                  dataKey="stochK"
+                  name="%K"
+                  stroke="var(--info)"
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                  connectNulls
+                />
+                <Line
+                  type="monotone"
+                  dataKey="stochD"
+                  name="%D"
+                  stroke="var(--accent)"
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                  connectNulls
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="muted small">
+            Where price sits in its 14-day range: above 80 overbought, below 20 oversold.
+          </p>
         </div>
       </div>
 

@@ -130,8 +130,8 @@ export default function Drivers() {
           value={
             xauValues.length > 0
               ? formatUsd(xauValues[xauValues.length - 1])
-              : s
-                ? formatUsd(s.xau_usd)
+              : s?.xau_usd
+                ? formatUsd(s.xau_usd.value)
                 : '—'
           }
           delta={changePct(xauValues, 1)}
@@ -157,8 +157,8 @@ export default function Drivers() {
           value={
             usdValues.length > 0
               ? formatToman(usdValues[usdValues.length - 1], unit)
-              : s
-                ? formatToman(s.usd_irt, unit)
+              : s?.usd_irt
+                ? formatToman(s.usd_irt.value, unit)
                 : '—'
           }
           delta={changePct(usdValues, 1)}

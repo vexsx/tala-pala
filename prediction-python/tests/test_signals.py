@@ -112,3 +112,24 @@ def test_high_premium_penalizes_buying():
     rich = compute_signal(_bullish_inputs(premium_z=2.5))
     cheap = compute_signal(_bullish_inputs(premium_z=-1.2))
     assert rich["score"] < cheap["score"]
+
+
+def test_market_closed_with_last_session_data_does_not_force_hold():
+    """Addendum 1: last-session data during a closure scores normally and just
+    carries an informational note in the risks."""
+    closed = compute_signal(_bullish_inputs(market_closed=True, data_fresh=True))
+    open_market = compute_signal(_bullish_inputs())
+    assert closed["signal"] in ("buy", "strong_buy")
+    assert closed["score"] == open_market["score"]  # scoring unaffected
+    assert any("last session (market closed)" in r for r in closed["risks"])
+    assert not any("last session" in r for r in open_market["risks"])
+    assert closed["inputs"]["market_closed"] is True
+
+
+def test_market_closed_with_truly_stale_data_still_forces_hold():
+    result = compute_signal(_bullish_inputs(market_closed=True, data_fresh=False))
+    assert result["signal"] == "hold"
+    assert result["score"] == 50
+    assert any("STALE" in r for r in result["risks"])
+    # the informational last-session note is NOT added on truly stale data
+    assert not any("last session" in r for r in result["risks"])

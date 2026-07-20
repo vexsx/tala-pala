@@ -84,7 +84,11 @@ function TopBar() {
             <span className={`delta ${pctClass(gold.change_24h_pct)}`}>
               {formatPct(gold.change_24h_pct)}
             </span>
-            <DataFreshness timestamp={gold.observed_at} stale={gold.stale} />
+            <DataFreshness
+              timestamp={gold.observed_at}
+              stale={gold.stale}
+              marketState={gold.market_state}
+            />
           </>
         ) : (
           <span className="muted small">

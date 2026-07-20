@@ -29,13 +29,13 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
 from ..config import Settings
-from ..core.freshness import is_fresh, staleness_minutes
+from ..core.freshness import is_acceptably_fresh, is_fresh, staleness_minutes
 from ..db import app_settings, ensure_utc, model_versions, predictions, prices, utcnow
 from ..metrics import PREDICTION_DURATION
 from .base import ForecastModel
 from .ensemble import EnsembleModel, inverse_smape_weights, live_member_smapes
 from .intervals import empirical_interval
-from .training import HORIZON_SPECS, detect_regime, load_series
+from .training import CONTEXT_SYMBOLS, HORIZON_SPECS, detect_regime, load_series
 
 log = logging.getLogger(__name__)
 
@@ -231,8 +231,11 @@ def _predict_one(
     ]
     latest = _latest_observation(engine, "IR_GOLD_18K")
     now = utcnow()
+    # market-hours aware (Addendum 1): during a Tehran closure last-session
+    # data still counts as fresh and only carries an informational note
     data_fresh = bool(
-        latest and is_fresh(latest["observed_at"], settings.stale_minutes, now)
+        latest
+        and is_acceptably_fresh("IR_GOLD_18K", latest["observed_at"], now, settings)
     )
     if not data_fresh:
         age = staleness_minutes(latest["observed_at"], now) if latest else None
@@ -241,6 +244,8 @@ def _predict_one(
             + (f" (last observation {age:.0f} minutes old)" if age is not None else "")
             + "; treat this forecast with extra caution."
         )
+    elif latest and not is_fresh(latest["observed_at"], settings.stale_minutes, now):
+        warnings.append("prices from last session (market closed)")
 
     # adaptive ensemble: once every member has enough matured live
     # predictions, re-weight by inverse live sMAPE instead of validation sMAPE
@@ -250,11 +255,29 @@ def _predict_one(
             model.weights = inverse_smape_weights(live_smapes)
             log.info("%s: ensemble re-weighted from live sMAPE %s", horizon, live_smapes)
 
-    # refit on the freshest series (cheap for all model families used here)
+    # refit on the freshest series (cheap for all model families used here);
+    # exog-aware models get the auxiliary series via set_context
+    aux_key = f"aux_{freq}"
+    if aux_key not in series_cache:
+        series_cache[aux_key] = {
+            key: load_series(engine, symbol, freq)
+            for key, symbol in CONTEXT_SYMBOLS.items()
+        }
+    model.set_context(series_cache[aux_key])
     model.fit(series, steps)
     point = float(model.predict_point())
     last_price = float(series.iloc[-1])
-    lower, upper = empirical_interval(point, residuals)
+
+    # a model exposing its own interval (e.g. quantile_gbr) takes precedence
+    # over the empirical residual-quantile interval
+    native = model.predict_interval()
+    if native is not None:
+        lower, upper = float(native[0]), float(native[1])
+        if lower > upper:
+            lower, upper = upper, lower
+        lower, upper = min(lower, point), max(upper, point)
+    else:
+        lower, upper = empirical_interval(point, residuals)
 
     # live calibration: widen recently under-covering intervals, then blend
     # confidence toward the observed directional hit rate (docstrings above)

@@ -1,8 +1,20 @@
-"""Data staleness checks (STALE_MINUTES contract)."""
+"""Data staleness checks (STALE_MINUTES contract).
+
+:func:`is_fresh` is the plain age rule.  The market-hours-aware variants
+(Addendum 1) live in :mod:`app.core.market_hours` and are re-exported here so
+callers keep a single import point: during a market closure, data from the
+last session still counts as acceptably fresh.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+from .market_hours import (  # noqa: F401  (re-exported per module docstring)
+    closure_started_at,
+    is_acceptably_fresh,
+    is_market_open,
+)
 
 
 def is_fresh(

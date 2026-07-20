@@ -81,15 +81,24 @@ class Provider(abc.ABC):
             follow_redirects=True,
         )
 
-    def _request(self, url: str, params: Optional[dict] = None) -> httpx.Response:
-        """GET with courtesy delay + bounded exponential-backoff retry."""
+    def _request(
+        self,
+        url: str,
+        params: Optional[dict] = None,
+        headers: Optional[dict] = None,
+    ) -> httpx.Response:
+        """GET with courtesy delay + bounded exponential-backoff retry.
+
+        ``headers`` are merged over the client defaults (e.g. a Bearer
+        ``Authorization`` header for keyed providers).
+        """
         last_exc: Optional[Exception] = None
         for attempt in range(MAX_ATTEMPTS):
             if self.courtesy_delay > 0:
                 time.sleep(self.courtesy_delay)
             try:
                 with self._client() as client:
-                    resp = client.get(url, params=params)
+                    resp = client.get(url, params=params, headers=headers)
                 if resp.status_code in (401, 403):
                     # Auth wall or bot-block: never retry, never bypass.
                     raise ProviderError(
@@ -113,12 +122,16 @@ class Provider(abc.ABC):
         raise ProviderError(f"{self.code}: request to {url} failed after "
                             f"{MAX_ATTEMPTS} attempts: {last_exc}")
 
-    def _get_json(self, url: str, params: Optional[dict] = None) -> Any:
-        resp = self._request(url, params=params)
+    def _get_json(
+        self, url: str, params: Optional[dict] = None, headers: Optional[dict] = None
+    ) -> Any:
+        resp = self._request(url, params=params, headers=headers)
         try:
             return resp.json()
         except ValueError as exc:
             raise ProviderError(f"{self.code}: non-JSON response from {url}: {exc}") from exc
 
-    def _get_text(self, url: str, params: Optional[dict] = None) -> str:
-        return self._request(url, params=params).text
+    def _get_text(
+        self, url: str, params: Optional[dict] = None, headers: Optional[dict] = None
+    ) -> str:
+        return self._request(url, params=params, headers=headers).text

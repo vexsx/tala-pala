@@ -28,12 +28,15 @@ from ..config import Settings
 from ..db import model_versions, prices, training_runs, utcnow
 from ..features.engineering import daily_close, hourly_close
 from ..metrics import MODEL_SMAPE
+from .analogue import KNNAnalogueModel  # noqa: F401  (registers 'knn_analogue')
 from .arima import ARIMAModel  # noqa: F401  (registers 'arima')
-from .base import ForecastModel, make
+from .base import ForecastModel, ModelUnavailable, make
 from .baselines import NaiveModel  # noqa: F401  (registers baselines)
+from .classical import ThetaForecastModel  # noqa: F401  (registers 'theta', 'holt_damped')
 from .ensemble import EnsembleModel, combine, inverse_smape_weights
 from .intervals import relative_residuals, walk_forward_coverage
 from .ml import TabularModel  # noqa: F401  (registers ml models)
+from .sarimax_exog import SarimaxExogModel  # noqa: F401  (registers 'sarimax_exog')
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +56,13 @@ HORIZON_SPECS: dict[str, tuple[str, int]] = {
     "30d": ("daily", 30),
 }
 
-CANDIDATES = ("naive", "sma", "ses", "arima", "linear", "rf", "gbr")
+CANDIDATES = (
+    "naive", "sma", "ses", "arima", "theta", "holt_damped", "sarimax_exog",
+    "linear", "rf", "gbr", "quantile_gbr", "hist_gb", "knn_analogue",
+)
+
+# auxiliary symbols made available to exog-aware models via set_context
+CONTEXT_SYMBOLS: dict[str, str] = {"usd_irt": "USD_IRT", "xau_usd": "XAUUSD"}
 
 
 @dataclass(frozen=True)
@@ -109,13 +118,17 @@ def walk_forward(
     horizon_steps: int,
     min_train: int = MIN_TRAIN_POINTS,
     max_folds: int = MAX_FOLDS,
+    context: Optional[dict] = None,
 ) -> list[Fold]:
     """Expanding-window walk-forward validation (no shuffling).
 
     Fold ``i``: fit on ``series[:i+1]`` (data known at time i), predict the
     value at ``i + horizon_steps``, compare with the realized value.  A fresh
-    model instance is created per fold except ARIMA, which reuses its order
-    selection from the earliest window (train-only information).
+    model instance is created per fold except models flagged
+    ``reuse_across_folds`` (ARIMA/SARIMAX), which reuse their order selection
+    from the earliest window (train-only information).  ``context`` carries
+    auxiliary point-in-time series for exog-aware models; a model raising
+    :class:`ModelUnavailable` (e.g. exog missing) is skipped entirely.
     """
     n = len(series)
     last_now = n - 1 - horizon_steps
@@ -124,14 +137,18 @@ def walk_forward(
         return []
     step = max(1, (last_now - first_now) // max_folds + 1)
 
-    reusable = make(model_name)  # ARIMA benefits from cached order selection
+    reusable = make(model_name)  # ARIMA/SARIMAX benefit from cached order selection
     folds: list[Fold] = []
     for i in range(first_now, last_now + 1, step):
         train = series.iloc[: i + 1]
         try:
-            model = reusable if isinstance(reusable, ARIMAModel) else make(model_name)
+            model = reusable if reusable.reuse_across_folds else make(model_name)
+            model.set_context(context)
             model.fit(train, horizon_steps)
             pred = float(model.predict_point())
+        except ModelUnavailable as exc:
+            log.info("walk_forward %s skipped: %s", model_name, exc)
+            return []
         except Exception as exc:  # a fold failure should not sink the run
             log.warning("walk_forward %s fold@%d failed: %s", model_name, i, exc)
             continue
@@ -194,19 +211,23 @@ def detect_regime(series: pd.Series, window: int = 20) -> str:
 
 
 def evaluate_candidates(
-    series: pd.Series, horizon_steps: int, candidates: Optional[Sequence[str]] = None
+    series: pd.Series,
+    horizon_steps: int,
+    candidates: Optional[Sequence[str]] = None,
+    context: Optional[dict] = None,
 ) -> dict[str, dict]:
     """Walk-forward all candidates on the same folds; add the ensemble.
 
     Returns ``{model_name: {"folds": [...], "metrics": {...}}}``.
     ``candidates`` defaults to the module-level ``CANDIDATES`` (resolved at
-    call time so tests can narrow the set).
+    call time so tests can narrow the set); ``context`` feeds exog-aware
+    models (see :func:`walk_forward`).
     """
     if candidates is None:
         candidates = CANDIDATES
     results: dict[str, dict] = {}
     for name in candidates:
-        folds = walk_forward(series, name, horizon_steps)
+        folds = walk_forward(series, name, horizon_steps, context=context)
         if folds:
             results[name] = {"folds": folds, "metrics": fold_metrics(folds)}
 
@@ -262,7 +283,11 @@ def select_winner(results: dict[str, dict]) -> str:
 
 
 def _build_final_model(
-    name: str, results: dict[str, dict], series: pd.Series, horizon_steps: int
+    name: str,
+    results: dict[str, dict],
+    series: pd.Series,
+    horizon_steps: int,
+    context: Optional[dict] = None,
 ) -> ForecastModel:
     """Refit the chosen model on the full series for artifact persistence."""
     if name == "ensemble":
@@ -271,6 +296,7 @@ def _build_final_model(
         model: ForecastModel = EnsembleModel(members, weights)
     else:
         model = make(name)
+    model.set_context(context)
     model.fit(series, horizon_steps)
     return model
 
@@ -296,6 +322,7 @@ def train_all(
     selected: dict[str, str] = {}
     notes: list[str] = []
     series_cache: dict[str, pd.Series] = {}
+    context_cache: dict[str, dict] = {}
     any_trained = False
     error_msg: Optional[str] = None
 
@@ -312,7 +339,14 @@ def train_all(
                 summary["horizons"][horizon] = {"enabled": False, "reason": reason}
                 continue
 
-            results = evaluate_candidates(series, steps)
+            if freq not in context_cache:
+                context_cache[freq] = {
+                    key: load_series(engine, symbol, freq)
+                    for key, symbol in CONTEXT_SYMBOLS.items()
+                }
+            context = context_cache[freq]
+
+            results = evaluate_candidates(series, steps, context=context)
             if not results:
                 notes.append(f"{horizon}: no candidate produced folds")
                 summary["horizons"][horizon] = {"enabled": False, "reason": "no folds"}
@@ -323,7 +357,7 @@ def train_all(
             any_trained = True
             baseline_metrics = results.get("naive", {}).get("metrics", {})
 
-            final_model = _build_final_model(winner, results, series, steps)
+            final_model = _build_final_model(winner, results, series, steps, context)
             winner_folds = results[winner]["folds"]
             residuals = relative_residuals(
                 [f.pred for f in winner_folds], [f.actual for f in winner_folds]

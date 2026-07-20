@@ -20,6 +20,9 @@ type Runner struct {
 	Pool                *pgxpool.Pool
 	Log                 *slog.Logger
 	StaleMinutesDefault int
+	// Tehran session bounds ("HH:MM") for market-hours-aware staleness.
+	MarketOpen  string
+	MarketClose string
 }
 
 // Run performs one evaluation pass. Returns the number of events created.
@@ -136,6 +139,8 @@ func (rn *Runner) loadSnapshot(ctx context.Context) (Snapshot, error) {
 	snap := Snapshot{
 		Now:          now,
 		StaleMinutes: storage.GetStaleMinutes(ctx, rn.Pool, rn.StaleMinutesDefault),
+		MarketOpen:   rn.MarketOpen,
+		MarketClose:  rn.MarketClose,
 	}
 
 	// Latest gold / xau / usd prices.

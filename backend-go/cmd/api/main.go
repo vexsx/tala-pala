@@ -78,7 +78,10 @@ func run() error {
 	auditLog := audit.New(pool, logger)
 	tokens := auth.NewTokenManager(cfg.JWTSecret, time.Duration(cfg.JWTTTLHours)*time.Hour)
 	pyClient := internalclient.New(cfg.PredictionServiceURL, cfg.InternalAPIToken, logger)
-	alertRunner := &alerts.Runner{Pool: pool, Log: logger, StaleMinutesDefault: cfg.StaleMinutes}
+	alertRunner := &alerts.Runner{
+		Pool: pool, Log: logger, StaleMinutesDefault: cfg.StaleMinutes,
+		MarketOpen: cfg.MarketTehranOpen, MarketClose: cfg.MarketTehranClose,
+	}
 
 	// Rate limiters (stopped on shutdown).
 	globalLimiter := httpserver.NewRateLimiter(cfg.RateLimitRPM)
@@ -99,7 +102,10 @@ func run() error {
 			Pool: pool, Tokens: tokens, Audit: auditLog, Log: logger,
 			AllowOpenRegistration: cfg.AllowOpenRegistration,
 		},
-		Prices:      &prices.Handler{Pool: pool, Log: logger, StaleMinutesDefault: cfg.StaleMinutes},
+		Prices: &prices.Handler{
+			Pool: pool, Log: logger, StaleMinutesDefault: cfg.StaleMinutes,
+			MarketOpen: cfg.MarketTehranOpen, MarketClose: cfg.MarketTehranClose,
+		},
 		Predictions: &predictions.Handler{Pool: pool, Log: logger},
 		Signals:     &signalsvc.Handler{Pool: pool, Log: logger},
 		Models:      &models.Handler{Pool: pool, Log: logger},

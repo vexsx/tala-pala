@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
 from ..db import predictions
-from .base import ForecastModel
+from .base import ForecastModel, ModelUnavailable
 
 MIN_LIVE_MATURED = 20   # matured predictions required per member
 LIVE_SMAPE_WINDOW = 60  # most recent matured predictions considered
@@ -92,10 +92,20 @@ class EnsembleModel(ForecastModel):
         self.weights = {k: float(v) for k, v in weights.items() if k in members}
         self._point: Optional[float] = None
 
+    def set_context(self, context) -> "EnsembleModel":
+        for model in self.members.values():
+            model.set_context(context)
+        return self
+
     def fit(self, series: pd.Series, horizon: int) -> "EnsembleModel":
         preds: dict[str, float] = {}
         for name, model in self.members.items():
-            model.fit(series, horizon)
+            try:
+                model.fit(series, horizon)
+            except ModelUnavailable:
+                # e.g. an exog member whose auxiliary series vanished at
+                # predict time: drop it; combine() renormalizes the weights
+                continue
             preds[name] = model.predict_point()
         self._point = combine(preds, self.weights)
         return self

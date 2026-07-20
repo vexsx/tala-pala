@@ -64,9 +64,12 @@ export default function Overview() {
   const xau = prices?.XAUUSD
   const usdIrt = prices?.USD_IRT
 
-  const goldValue = gold?.value ?? s?.current_18k ?? null
-  const goldChange = gold?.change_24h_pct ?? s?.change_24h_pct ?? null
-  const premiumDeviation = s ? Math.abs(s.premium_pct - s.premium_avg_30d) : null
+  const goldValue = gold?.value ?? s?.current_18k?.value ?? null
+  const goldChange = gold?.change_24h_pct ?? s?.current_18k?.change_24h_pct ?? null
+  const premiumDeviation =
+    s && s.premium_pct != null && s.premium_avg_30d != null
+      ? Math.abs(s.premium_pct - s.premium_avg_30d)
+      : null
   const premiumAbnormal = premiumDeviation !== null && premiumDeviation >= 2
 
   return (
@@ -91,7 +94,11 @@ export default function Overview() {
           delta={goldChange}
           sub={
             gold ? (
-              <DataFreshness timestamp={gold.observed_at} stale={gold.stale} />
+              <DataFreshness
+                timestamp={gold.observed_at}
+                stale={gold.stale}
+                marketState={gold.market_state}
+              />
             ) : (
               <span className="muted small">no observation</span>
             )
@@ -100,15 +107,37 @@ export default function Overview() {
         />
         <StatCard
           label="Global gold (XAU/USD, per ozt)"
-          value={xau ? formatUsd(xau.value) : s ? formatUsd(s.xau_usd) : '—'}
+          value={xau ? formatUsd(xau.value) : s?.xau_usd ? formatUsd(s.xau_usd.value) : '—'}
           delta={xau?.change_24h_pct}
-          sub={xau && <DataFreshness timestamp={xau.observed_at} stale={xau.stale} />}
+          sub={
+            xau && (
+              <DataFreshness
+                timestamp={xau.observed_at}
+                stale={xau.stale}
+                marketState={xau.market_state}
+              />
+            )
+          }
         />
         <StatCard
           label={`USD / ${currencyCode(unit)} (free market)`}
-          value={usdIrt ? formatToman(usdIrt.value, unit) : s ? formatToman(s.usd_irt, unit) : '—'}
+          value={
+            usdIrt
+              ? formatToman(usdIrt.value, unit)
+              : s?.usd_irt
+                ? formatToman(s.usd_irt.value, unit)
+                : '—'
+          }
           delta={usdIrt?.change_24h_pct}
-          sub={usdIrt && <DataFreshness timestamp={usdIrt.observed_at} stale={usdIrt.stale} />}
+          sub={
+            usdIrt && (
+              <DataFreshness
+                timestamp={usdIrt.observed_at}
+                stale={usdIrt.stale}
+                marketState={usdIrt.market_state}
+              />
+            )
+          }
         />
         <StatCard
           label="Premium over theoretical"
@@ -127,7 +156,9 @@ export default function Overview() {
               <>
                 <div className="kv">
                   <span className="muted">Theoretical</span>
-                  <span className="mono">{formatToman(s.theoretical_18k, unit)}</span>
+                  <span className="mono">
+                    {s.theoretical_18k != null ? formatToman(s.theoretical_18k, unit) : '—'}
+                  </span>
                 </div>
                 <div className="kv">
                   <span className="muted">Observed</span>

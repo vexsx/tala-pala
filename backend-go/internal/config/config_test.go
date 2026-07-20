@@ -34,6 +34,32 @@ func TestLoad_DefaultsAndRequired(t *testing.T) {
 	if cfg.MigrationsDir != "/app/migrations" {
 		t.Fatalf("bad migrations dir: %s", cfg.MigrationsDir)
 	}
+	if cfg.MarketTehranOpen != "09:00" || cfg.MarketTehranClose != "20:00" {
+		t.Fatalf("bad market-hours defaults: %q-%q", cfg.MarketTehranOpen, cfg.MarketTehranClose)
+	}
+}
+
+func TestLoad_MarketHours(t *testing.T) {
+	env := baseEnv()
+	env["MARKET_TEHRAN_OPEN"] = "08:30"
+	env["MARKET_TEHRAN_CLOSE"] = "21:15"
+	cfg, err := Load(env, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MarketTehranOpen != "08:30" || cfg.MarketTehranClose != "21:15" {
+		t.Fatalf("overrides not applied: %q-%q", cfg.MarketTehranOpen, cfg.MarketTehranClose)
+	}
+
+	env["MARKET_TEHRAN_OPEN"] = "9am"
+	if _, err := Load(env, nil); err == nil || !strings.Contains(err.Error(), "MARKET_TEHRAN_OPEN") {
+		t.Fatalf("invalid MARKET_TEHRAN_OPEN accepted: %v", err)
+	}
+	env["MARKET_TEHRAN_OPEN"] = "08:30"
+	env["MARKET_TEHRAN_CLOSE"] = "25:00"
+	if _, err := Load(env, nil); err == nil || !strings.Contains(err.Error(), "MARKET_TEHRAN_CLOSE") {
+		t.Fatalf("invalid MARKET_TEHRAN_CLOSE accepted: %v", err)
+	}
 }
 
 func TestLoad_MissingRequired(t *testing.T) {

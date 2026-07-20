@@ -152,11 +152,40 @@ describe('AdvisorCard', () => {
     expect(screen.getByTestId('signal-badge')).toHaveTextContent('No signal')
   })
 
-  it('treats a missing signal (or missing data_fresh flag) as stale', () => {
-    const { unmount } = renderCard({ signal: null })
+  it('treats a missing signal as no-recommendation', () => {
+    renderCard({ signal: null })
     expect(screen.getByTestId('advisor-card')).toHaveTextContent(/insufficient fresh data/i)
-    unmount()
+  })
+
+  it('still recommends when data_fresh is missing (only false silences it)', () => {
     renderCard({ signal: sig('buy', { data_fresh: undefined }) })
-    expect(screen.getByTestId('advisor-card')).toHaveTextContent(/insufficient fresh data/i)
+    const card = screen.getByTestId('advisor-card')
+    expect(card).not.toHaveTextContent(/insufficient fresh data/i)
+    expect(card).toHaveTextContent(/conditions currently favor accumulating/i)
+  })
+
+  it('shows the last-session note when the signal carries a market-closed note', () => {
+    renderCard({
+      signal: sig('buy', { notes: ['prices from last session (market closed)'] })
+    })
+    const card = screen.getByTestId('advisor-card')
+    expect(card).toHaveTextContent(/conditions currently favor accumulating/i)
+    expect(card).toHaveTextContent(/assessment based on last session.s closing prices/i)
+  })
+
+  it('detects the market-closed note when it arrives among risks', () => {
+    renderCard({
+      signal: sig('buy', { risks: ['prices from last session (market closed)'] })
+    })
+    expect(screen.getByTestId('advisor-card')).toHaveTextContent(
+      /assessment based on last session.s closing prices/i
+    )
+  })
+
+  it('omits the last-session note when the market is open', () => {
+    renderCard()
+    expect(screen.getByTestId('advisor-card')).not.toHaveTextContent(
+      /assessment based on last session/i
+    )
   })
 })

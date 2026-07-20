@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/indicators"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/markethours"
 )
 
 // TroyOunceGrams is the gram weight of one troy ounce.
@@ -65,6 +66,9 @@ type IndicatorPoint struct {
 	BollMid    *float64 `json:"bollinger_mid"`
 	BollLower  *float64 `json:"bollinger_lower"`
 	ATR14      *float64 `json:"atr_14"`
+	ADX14      *float64 `json:"adx_14"`
+	StochK     *float64 `json:"stoch_k"`
+	StochD     *float64 `json:"stoch_d"`
 }
 
 // IndicatorsResult is the response of GET /api/v1/market/indicators.
@@ -85,6 +89,15 @@ type IndicatorsResult struct {
 	Volatility *float64         `json:"volatility_20"`
 	Support    *float64         `json:"support"`
 	Resistance *float64         `json:"resistance"`
+	ADX14      *float64         `json:"adx_14"`
+	StochK     *float64         `json:"stoch_k"`
+	StochD     *float64         `json:"stoch_d"`
+	WilliamsR  *float64         `json:"williams_r_14"`
+	CCI20      *float64         `json:"cci_20"`
+	Donchian   donchianOut      `json:"donchian"`
+	Keltner    keltnerOut       `json:"keltner"`
+	CorrXAU20  *float64         `json:"corr_xau_20"`
+	Drawdown   *float64         `json:"drawdown_pct"`
 	Series     []IndicatorPoint `json:"series"`
 }
 
@@ -95,6 +108,17 @@ type macdOut struct {
 }
 
 type bollingerOut struct {
+	Upper *float64 `json:"upper"`
+	Mid   *float64 `json:"mid"`
+	Lower *float64 `json:"lower"`
+}
+
+type donchianOut struct {
+	Upper *float64 `json:"upper"`
+	Lower *float64 `json:"lower"`
+}
+
+type keltnerOut struct {
 	Upper *float64 `json:"upper"`
 	Mid   *float64 `json:"mid"`
 	Lower *float64 `json:"lower"`
@@ -111,8 +135,10 @@ func fp(v float64) *float64 {
 
 // ComputeIndicators runs the full indicator suite over daily bars. The last
 // `days` points are returned as a series; the full history is used as
-// warm-up so leading values are well-defined. Pure function (unit tested).
-func ComputeIndicators(bars []DayBar, days int) IndicatorsResult {
+// warm-up so leading values are well-defined. `xau` is the XAUUSD daily
+// close series used for corr_xau_20 (rolling Pearson correlation of daily
+// log returns, joined by date). Pure function (unit tested).
+func ComputeIndicators(bars []DayBar, xau []dailyPoint, days int) IndicatorsResult {
 	res := IndicatorsResult{Symbol: "IR_GOLD_18K", Days: days, Series: []IndicatorPoint{}}
 	n := len(bars)
 	if n == 0 {
@@ -140,6 +166,12 @@ func ComputeIndicators(bars []DayBar, days int) IndicatorsResult {
 	roc10 := indicators.ROC(closes, 10)
 	vol20 := indicators.Volatility(closes, 20)
 	support, resistance := indicators.SupportResistance(closes, 20)
+	adx14 := indicators.ADX(highs, lows, closes, 14)
+	stochK, stochD := indicators.Stochastic(highs, lows, closes, 14, 3)
+	wr14 := indicators.WilliamsR(highs, lows, closes, 14)
+	cci20 := indicators.CCI(highs, lows, closes, 20)
+	donU, donL := indicators.Donchian(highs, lows, 20)
+	kelU, kelM, kelL := indicators.Keltner(highs, lows, closes, 20, 14, 2)
 
 	last := n - 1
 	asOf := bars[last].Date.UTC().Format(time.RFC3339)
@@ -157,6 +189,31 @@ func ComputeIndicators(bars []DayBar, days int) IndicatorsResult {
 	res.Volatility = fp(vol20[last])
 	res.Support = fp(support)
 	res.Resistance = fp(resistance)
+	res.ADX14 = fp(adx14[last])
+	res.StochK = fp(stochK[last])
+	res.StochD = fp(stochD[last])
+	res.WilliamsR = fp(wr14[last])
+	res.CCI20 = fp(cci20[last])
+	res.Donchian = donchianOut{Upper: fp(donU[last]), Lower: fp(donL[last])}
+	res.Keltner = keltnerOut{Upper: fp(kelU[last]), Mid: fp(kelM[last]), Lower: fp(kelL[last])}
+	res.Drawdown = fp(indicators.DrawdownPct(closes, 90))
+
+	// corr_xau_20: pair the two daily series by date, then take the latest
+	// rolling correlation of log returns over 20 return observations.
+	xauBy := map[string]float64{}
+	for _, p := range xau {
+		xauBy[p.Date.Format("2006-01-02")] = p.Value
+	}
+	var goldAligned, xauAligned []float64
+	for i, b := range bars {
+		if v, ok := xauBy[b.Date.Format("2006-01-02")]; ok {
+			goldAligned = append(goldAligned, closes[i])
+			xauAligned = append(xauAligned, v)
+		}
+	}
+	if corr := indicators.CorrelationLogReturns(goldAligned, xauAligned, 20); len(corr) > 0 {
+		res.CorrXAU20 = fp(corr[len(corr)-1])
+	}
 
 	start := n - days
 	if start < 0 {
@@ -178,12 +235,26 @@ func ComputeIndicators(bars []DayBar, days int) IndicatorsResult {
 			BollMid:    fp(bbM[i]),
 			BollLower:  fp(bbL[i]),
 			ATR14:      fp(atr14[i]),
+			ADX14:      fp(adx14[i]),
+			StochK:     fp(stochK[i]),
+			StochD:     fp(stochD[i]),
 		})
 	}
 	return res
 }
 
-// IsStale reports whether an observation is older than staleMinutes.
+// IsStale reports whether an observation is older than staleMinutes
+// (the fixed-age check; endpoints use markethours.AcceptablyFresh so that
+// last-session data does not read as stale while the market is closed).
 func IsStale(observedAt, now time.Time, staleMinutes int) bool {
 	return now.Sub(observedAt) > time.Duration(staleMinutes)*time.Minute
+}
+
+// MarketState returns "open" or "closed" for a symbol at `now` under the
+// Addendum 1 market-calendar rules.
+func MarketState(symbol string, now time.Time, open, close string) string {
+	if markethours.IsOpen(symbol, now, open, close) {
+		return "open"
+	}
+	return "closed"
 }

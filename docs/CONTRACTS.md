@@ -83,6 +83,20 @@ Rate limiting: token bucket per IP (default 60 req/min, env `RATE_LIMIT_RPM`), l
 
 Calls the API at same-origin `/api/v1/...` (nginx in the frontend container proxies `/api/` and `/metrics` is NOT exposed). Login page stores JWT in memory + localStorage. Pages: Overview, Forecast, Technical, Drivers, Portfolio, Alerts, Models. Global banner: "Predictions are uncertain estimates, not financial advice." Numbers displayed in toman with thousands separators; toggle IRT/IRR display (display-only ×10); Jalali+Gregorian date toggle.
 
+## Addendum 1 — market-hours awareness (2026-07-20)
+
+Iranian symbols (IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI) trade Sat–Thu, roughly `MARKET_TEHRAN_OPEN`(default 09:00)–`MARKET_TEHRAN_CLOSE`(default 20:00) Asia/Tehran; closed Friday. Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y) are closed from Fri 21:00 UTC to Sun 22:00 UTC. Both Go and Python implement the same rules from the same env vars.
+
+- Every per-symbol price object (`/prices/current` entries, summary `current_18k`/`xau_usd`/`usd_irt`) gains `"market_state": "open"|"closed"`.
+- `stale` semantics: while the market is OPEN, stale = older than STALE_MINUTES (unchanged). While CLOSED, data observed within the last session (≤ closed-duration + STALE_MINUTES) is NOT stale; older is.
+- Python signal engine uses the same rule: market-closed last-session data does not force `hold`; the signal carries a note "prices from last session (market closed)". The stale_data alert evaluator (Go) also respects this.
+
+## Addendum 2 — expanded indicators (2026-07-20)
+
+`GET /market/indicators` adds scalars: `adx_14`, `stoch_k`, `stoch_d` (14,3), `williams_r_14`, `cci_20`, `donchian` {upper,lower} (20), `keltner` {upper,mid,lower} (20,2×ATR), `corr_xau_20` (rolling correlation of daily log-returns 18k vs XAUUSD), `drawdown_pct` (from 90d high). Series rows gain `adx_14`, `stoch_k`, `stoch_d`. Frontend Technical page displays each with a one-line plain-language meaning.
+
+New model names that may appear in `model_versions.model_name` / predictions: `theta`, `sarimax_exog`, `quantile_gbr`, `hist_gb`, `knn_analogue`, `holt_damped`.
+
 ## Environment variables (.env.example is authoritative)
 
 Shared: `POSTGRES_HOST/PORT/DB/USER/PASSWORD`, `REDIS_ADDR`, `INTERNAL_API_TOKEN`.

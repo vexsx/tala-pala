@@ -684,7 +684,12 @@ components:
         unit: { type: string }
         source: { type: string }
         observed_at: { type: string, format: date-time }
-        stale: { type: boolean }
+        stale:
+          type: boolean
+          description: >
+            Market-hours aware: while the market is open, true when older than
+            STALE_MINUTES; while closed, last-session data is not stale.
+        market_state: { $ref: "#/components/schemas/MarketState" }
         change_24h_pct: { type: number, nullable: true }
     SummaryPrice:
       type: object
@@ -695,8 +700,20 @@ components:
         unit: { type: string }
         observed_at: { type: string, format: date-time }
         source: { type: string }
-        stale: { type: boolean }
+        stale:
+          type: boolean
+          description: >
+            Market-hours aware: while the market is open, true when older than
+            STALE_MINUTES; while closed, last-session data is not stale.
+        market_state: { $ref: "#/components/schemas/MarketState" }
         change_24h_pct: { type: number, nullable: true }
+    MarketState:
+      type: string
+      enum: [open, closed]
+      description: >
+        Iranian symbols (IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI) trade Sat-Thu
+        between MARKET_TEHRAN_OPEN and MARKET_TEHRAN_CLOSE (Asia/Tehran);
+        closed Friday. Global symbols are closed Fri 21:00 UTC - Sun 22:00 UTC.
     ProviderHealth:
       type: object
       properties:
@@ -741,6 +758,51 @@ components:
           description: Annualized volatility (stdev of log returns x sqrt(365))
         support: { type: number, nullable: true }
         resistance: { type: number, nullable: true }
+        adx_14:
+          type: number
+          nullable: true
+          description: Average Directional Index (Wilder, 14) — trend strength 0-100
+        stoch_k:
+          type: number
+          nullable: true
+          description: Fast stochastic %K (14)
+        stoch_d:
+          type: number
+          nullable: true
+          description: Stochastic %D = SMA(%K, 3)
+        williams_r_14:
+          type: number
+          nullable: true
+          description: Williams %R (14), 0 (at high) to -100 (at low)
+        cci_20:
+          type: number
+          nullable: true
+          description: Commodity Channel Index (20) over typical prices
+        donchian:
+          type: object
+          description: Donchian Channel (20) highest high / lowest low
+          properties:
+            upper: { type: number, nullable: true }
+            lower: { type: number, nullable: true }
+        keltner:
+          type: object
+          description: Keltner Channel (EMA20 mid, ±2×ATR14)
+          properties:
+            upper: { type: number, nullable: true }
+            mid: { type: number, nullable: true }
+            lower: { type: number, nullable: true }
+        corr_xau_20:
+          type: number
+          nullable: true
+          description: >
+            Rolling Pearson correlation (20) of daily log returns between
+            IR_GOLD_18K and XAUUSD, joined by date
+        drawdown_pct:
+          type: number
+          nullable: true
+          description: >
+            Percent decline of the latest close from the trailing 90-day high
+            (0 = at the high)
         series:
           type: array
           items:
@@ -760,6 +822,9 @@ components:
               bollinger_mid: { type: number, nullable: true }
               bollinger_lower: { type: number, nullable: true }
               atr_14: { type: number, nullable: true }
+              adx_14: { type: number, nullable: true }
+              stoch_k: { type: number, nullable: true }
+              stoch_d: { type: number, nullable: true }
     Prediction:
       type: object
       properties:
@@ -882,7 +947,7 @@ components:
         alert_type: { $ref: "#/components/schemas/AlertType" }
         condition:
           type: object
-          description: e.g. {"threshold": 5000000}
+          description: 'e.g. {"threshold": 5000000}'
         enabled: { type: boolean, default: true }
         cooldown_minutes: { type: integer, minimum: 1, maximum: 10080, default: 60 }
     AlertType:

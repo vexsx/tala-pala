@@ -23,6 +23,16 @@ import Loading from './Loading'
 
 const DISCLAIMER = 'Decision support only — not financial advice.'
 
+/** Detects the engine's "prices from last session (market closed)" note. */
+function hasClosedMarketNote(signal: SignalSummary): boolean {
+  const texts = [
+    ...(signal.notes ?? []),
+    ...(signal.risks ?? []),
+    ...(signal.conflicting ?? [])
+  ]
+  return texts.some((t) => /market closed|last session/i.test(t))
+}
+
 type Bias = 'buy' | 'sell' | 'hold'
 
 function biasOf(level: SignalLevel): Bias {
@@ -97,7 +107,9 @@ export function AdvisorCard({
 }: AdvisorCardProps) {
   const { unit, calendar } = useSettings()
 
-  if (signal === null || signal.data_fresh !== true) {
+  // Only stay silent when the signal is missing or explicitly marked unfresh;
+  // during market closure the engine still emits signals from last-session data.
+  if (signal === null || signal.data_fresh === false) {
     return (
       <section className="card advisor-card advisor-stale" data-testid="advisor-card">
         <div className="card-title">Advisor</div>
@@ -118,6 +130,7 @@ export function AdvisorCard({
   const bias = biasOf(signal.signal)
   const headlinePrediction = pickHeadlinePrediction(predictions, bias)
   const cPct = confidencePct(signal.confidence)
+  const marketClosed = hasClosedMarketNote(signal)
 
   const supporting = (signal.supporting ?? []).slice(0, 4)
   const conflicting = (signal.conflicting ?? []).concat(signal.risks ?? []).slice(0, 5)
@@ -225,6 +238,11 @@ export function AdvisorCard({
         </div>
       )}
 
+      {marketClosed && (
+        <p className="warn-text small advisor-closed-note">
+          Assessment based on last session&rsquo;s closing prices.
+        </p>
+      )}
       <div className="advisor-footer muted small">{DISCLAIMER}</div>
     </section>
   )

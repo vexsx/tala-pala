@@ -1,4 +1,5 @@
-"""Tabular ML forecasters (Ridge / RandomForest / GradientBoosting).
+"""Tabular ML forecasters (Ridge / RandomForest / GradientBoosting /
+HistGradientBoosting / quantile GradientBoosting).
 
 Features are built causally from the price series itself
 (:func:`app.features.engineering.compute_feature_frame`); the target is the
@@ -136,6 +137,108 @@ def _make_gbr() -> TabularModel:
     )
 
 
+def _make_hist_gb() -> TabularModel:
+    from sklearn.ensemble import HistGradientBoostingRegressor
+
+    # capacity kept modest (leaf cap + early stopping) so 40-fold walk-forward
+    # stays affordable at this data scale
+    return TabularModel(
+        "hist_gb",
+        lambda: HistGradientBoostingRegressor(
+            max_iter=150, learning_rate=0.06, min_samples_leaf=5,
+            max_leaf_nodes=15, l2_regularization=1e-3,
+            early_stopping=True, n_iter_no_change=8, validation_fraction=0.15,
+            random_state=42,
+        ),
+    )
+
+
+QUANTILES = (0.05, 0.5, 0.95)  # native 90% interval + median point
+
+
+class QuantileGBRModel(ForecastModel):
+    """Three quantile GradientBoostingRegressors (5%/50%/95%) on the h-step
+    log-return.  The median model is the point forecast; the outer quantiles
+    give the model's OWN native interval via ``predict_interval`` (sorted to
+    repair any quantile crossing, so lower <= point <= upper always holds)."""
+
+    name = "quantile_gbr"
+
+    def __init__(self, min_rows: int = 30) -> None:
+        self.min_rows = min_rows
+        self.estimators: dict[float, object] = {}
+        self.feature_names: list[str] = []
+        self._last_close: Optional[float] = None
+        self._logrets: Optional[tuple[float, float, float]] = None  # lo, mid, hi
+
+    def fit(self, series: pd.Series, horizon: int) -> "QuantileGBRModel":
+        from sklearn.ensemble import GradientBoostingRegressor
+
+        series = series.astype(float)
+        self._last_close = float(series.iloc[-1])
+        self._logrets = None
+        self.estimators = {}
+
+        features = _feature_matrix(series)
+        target = np.log(series.shift(-horizon) / series)
+        train = features.copy()
+        train["__target__"] = target
+        train = train.dropna()
+        if len(train) < self.min_rows:
+            return self  # degrade to naive (no native interval either)
+
+        X = train.drop(columns="__target__")
+        y = train["__target__"].to_numpy()
+        self.feature_names = list(X.columns)
+        last_row = features.iloc[[-1]][self.feature_names]
+        if last_row.isna().any(axis=None):
+            return self
+
+        preds: dict[float, float] = {}
+        for alpha in QUANTILES:
+            # three fits per (re)fit call: keep each tree budget small so the
+            # walk-forward loop stays affordable (reduced size, not folds)
+            est = GradientBoostingRegressor(
+                loss="quantile", alpha=alpha, n_estimators=60, max_depth=2,
+                learning_rate=0.1, subsample=0.9, random_state=42,
+            )
+            est.fit(X.to_numpy(), y)
+            self.estimators[alpha] = est
+            preds[alpha] = float(est.predict(last_row.to_numpy())[0])
+        triple = np.sort([preds[a] for a in QUANTILES])  # repair crossings
+        if np.all(np.isfinite(triple)):
+            self._logrets = (float(triple[0]), float(triple[1]), float(triple[2]))
+        return self
+
+    def predict_point(self) -> float:
+        assert self._last_close is not None, "fit() first"
+        if self._logrets is None:
+            return self._last_close
+        return self._last_close * float(np.exp(self._logrets[1]))
+
+    def predict_interval(self) -> Optional[tuple[float, float]]:
+        if self._logrets is None or self._last_close is None:
+            return None
+        lower = self._last_close * float(np.exp(self._logrets[0]))
+        upper = self._last_close * float(np.exp(self._logrets[2]))
+        return (lower, upper)
+
+    def feature_importances(self) -> Optional[list[tuple[str, float]]]:
+        est = self.estimators.get(0.5)
+        importances = getattr(est, "feature_importances_", None)
+        if est is None or importances is None or not self.feature_names:
+            return None
+        total = float(np.sum(importances)) or 1.0
+        pairs = [
+            (name, float(imp) / total)
+            for name, imp in zip(self.feature_names, importances)
+        ]
+        pairs.sort(key=lambda p: p[1], reverse=True)
+        return pairs
+
+
 register("linear", _make_linear)
 register("rf", _make_rf)
 register("gbr", _make_gbr)
+register("hist_gb", _make_hist_gb)
+register("quantile_gbr", QuantileGBRModel)

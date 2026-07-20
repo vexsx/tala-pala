@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/markethours"
 )
 
 // AlertTypes is the full set from CONTRACTS.md.
@@ -65,6 +67,8 @@ type Snapshot struct {
 	PremiumPct       *float64
 	VolatilityAnnPct *float64 // annualized volatility (percent, e.g. 45.0)
 	StaleMinutes     int      // configured stale threshold
+	MarketOpen       string   // Tehran session open ("HH:MM"), Addendum 1
+	MarketClose      string   // Tehran session close ("HH:MM"), Addendum 1
 	Providers        []ProviderHealth
 	Models           []ModelPerf
 }
@@ -162,13 +166,20 @@ func Evaluate(a Alert, s Snapshot) Result {
 			return Result{true, "no 18k gold price data available",
 				map[string]any{"threshold_minutes": thresholdMin}}
 		}
-		age := s.Now.Sub(s.Gold.ObservedAt)
-		if age > time.Duration(thresholdMin)*time.Minute {
+		// Market-hours aware (Addendum 1): while the Tehran market is closed,
+		// last-session data is acceptably fresh — no nightly false alarms.
+		if !markethours.AcceptablyFresh("IR_GOLD_18K", s.Gold.ObservedAt, s.Now,
+			thresholdMin, s.MarketOpen, s.MarketClose) {
+			age := s.Now.Sub(s.Gold.ObservedAt)
+			state := "open"
+			if !markethours.IsOpen("IR_GOLD_18K", s.Now, s.MarketOpen, s.MarketClose) {
+				state = "closed"
+			}
 			return Result{true,
 				fmt.Sprintf("18k gold price is stale: last update %.0f minutes ago (threshold %d)",
 					age.Minutes(), thresholdMin),
 				map[string]any{"age_minutes": int(age.Minutes()), "threshold_minutes": thresholdMin,
-					"observed_at": s.Gold.ObservedAt.UTC()}}
+					"observed_at": s.Gold.ObservedAt.UTC(), "market_state": state}}
 		}
 	case "provider_failure":
 		threshold := int(condFloat(a.Condition, "threshold", 3))

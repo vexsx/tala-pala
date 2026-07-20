@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import timedelta
 from typing import Optional, Sequence
 
 from sqlalchemy import select
@@ -19,6 +18,7 @@ from sqlalchemy.engine import Engine
 
 from ..config import Settings
 from ..core import validation
+from ..core.market_hours import is_acceptably_fresh
 from ..db import insert_ignore, prices, raw_observations, utcnow
 from ..metrics import COLLECT_FAILURE, COLLECT_SUCCESS, JOB_LAST_SUCCESS, LAST_PRICE_TS
 from ..providers import registry
@@ -117,10 +117,12 @@ def run_collect(
     fetch_cache: dict[str, list[Observation]] = {}
     failed_providers: set[str] = set()
 
-    # An observation older than this still gets stored, but does NOT satisfy the
-    # symbol — fallback continues so a provider with a lagging ticker (e.g. TGJU
-    # 'ons') cannot mask a fresher source further down the priority list.
-    fresh_limit = timedelta(minutes=settings.stale_minutes)
+    # A stale observation still gets stored, but does NOT satisfy the symbol —
+    # fallback continues so a provider with a lagging ticker (e.g. TGJU 'ons')
+    # cannot mask a fresher source further down the priority list.  The gate is
+    # market-hours aware (Addendum 1): while a market is closed, last-session
+    # data satisfies the symbol instead of spamming "only stale values" errors
+    # every Iranian evening/Friday and global weekend.
 
     for job in requested:
         symbols_needed = set(JOB_SYMBOLS[job])
@@ -192,7 +194,7 @@ def run_collect(
                     LAST_PRICE_TS.labels(symbol=obs.symbol).set(
                         obs.observed_at.timestamp()
                     )
-                if utcnow() - obs.observed_at <= fresh_limit:
+                if is_acceptably_fresh(obs.symbol, obs.observed_at, utcnow(), settings):
                     symbols_needed.discard(obs.symbol)
                 else:
                     stale_only.add(obs.symbol)

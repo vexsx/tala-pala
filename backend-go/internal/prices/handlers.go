@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/httpserver"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/markethours"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/storage"
 )
 
@@ -28,6 +29,9 @@ type Handler struct {
 	Pool                *pgxpool.Pool
 	Log                 *slog.Logger
 	StaleMinutesDefault int
+	// Tehran session bounds ("HH:MM") for market_state / freshness.
+	MarketOpen  string
+	MarketClose string
 }
 
 type latestPrice struct {
@@ -103,12 +107,13 @@ func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{}
 	for sym, p := range latest {
 		entry := map[string]any{
-			"value":       p.Value,
-			"currency":    p.Currency,
-			"unit":        p.Unit,
-			"source":      p.Source,
-			"observed_at": p.ObservedAt.UTC(),
-			"stale":       IsStale(p.ObservedAt, now, staleMin),
+			"value":        p.Value,
+			"currency":     p.Currency,
+			"unit":         p.Unit,
+			"source":       p.Source,
+			"observed_at":  p.ObservedAt.UTC(),
+			"stale":        !markethours.AcceptablyFresh(sym, p.ObservedAt, now, staleMin, h.MarketOpen, h.MarketClose),
+			"market_state": MarketState(sym, now, h.MarketOpen, h.MarketClose),
 		}
 		if pv, ok := prev[sym]; ok {
 			entry["change_24h_pct"] = fp(ChangePct(p.Value, pv))
@@ -328,7 +333,9 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 		e := map[string]any{
 			"value": p.Value, "currency": p.Currency, "unit": p.Unit,
 			"observed_at": p.ObservedAt.UTC(),
-			"source":      p.Source, "stale": IsStale(p.ObservedAt, now, staleMin),
+			"source":      p.Source,
+			"stale":       !markethours.AcceptablyFresh(sym, p.ObservedAt, now, staleMin, h.MarketOpen, h.MarketClose),
+			"market_state": MarketState(sym, now, h.MarketOpen, h.MarketClose),
 		}
 		if pv, ok := prev[sym]; ok {
 			e["change_24h_pct"] = fp(ChangePct(p.Value, pv))
@@ -520,15 +527,25 @@ func (h *Handler) Premium(w http.ResponseWriter, r *http.Request) {
 // Indicators implements GET /api/v1/market/indicators.
 func (h *Handler) Indicators(w http.ResponseWriter, r *http.Request) {
 	days := intParam(r.URL.Query().Get("days"), 90, 1, 3650)
-	// Fetch extra history as indicator warm-up (SMA50/EMA26 need lead-in).
-	since := time.Now().UTC().AddDate(0, 0, -(days + 80))
-	bars, err := h.dailyBars(r.Context(), "IR_GOLD_18K", since)
+	// Fetch extra history as indicator warm-up: SMA50/EMA26/ADX(2x14) need
+	// lead-in, drawdown_pct looks back 90 days and corr_xau_20 needs 21
+	// paired closes, so 110 extra days covers every window.
+	since := time.Now().UTC().AddDate(0, 0, -(days + 110))
+	ctx := r.Context()
+	bars, err := h.dailyBars(ctx, "IR_GOLD_18K", since)
 	if err != nil {
 		h.Log.Error("indicators_bars", "error", err)
 		httpserver.Internal(w, "database error")
 		return
 	}
-	httpserver.JSON(w, http.StatusOK, ComputeIndicators(bars, days))
+	// XAUUSD daily closes for corr_xau_20 (rolling correlation of log returns).
+	xau, err := h.dailySeries(ctx, "XAUUSD", since)
+	if err != nil {
+		h.Log.Error("indicators_xau", "error", err)
+		httpserver.Internal(w, "database error")
+		return
+	}
+	httpserver.JSON(w, http.StatusOK, ComputeIndicators(bars, xau, days))
 }
 
 func intParam(s string, def, minV, maxV int) int {

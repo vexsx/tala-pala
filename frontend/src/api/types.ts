@@ -72,6 +72,9 @@ export interface LoginResponse {
 
 // ---------- Prices ----------
 
+/** Addendum 1: market-hours awareness. Optional so older payloads still parse. */
+export type MarketState = 'open' | 'closed'
+
 export interface CurrentPrice {
   value: number
   currency: string
@@ -79,6 +82,8 @@ export interface CurrentPrice {
   source: string
   observed_at: string
   stale: boolean
+  /** 'closed' means the last observation is a last-session price, not stale data. */
+  market_state?: MarketState
   change_24h_pct: number | null
 }
 
@@ -131,6 +136,8 @@ export interface SignalSummary {
   conflicting?: string[]
   /** Main risks attached to the signal. */
   risks?: string[]
+  /** Informational notes, e.g. "prices from last session (market closed)". */
+  notes?: string[]
   /** "This view is wrong if …" condition. */
   invalidation?: string
   review_at?: string | null
@@ -138,14 +145,14 @@ export interface SignalSummary {
 }
 
 export interface MarketSummary {
-  current_18k: number
-  change_24h_pct: number | null
-  xau_usd: number
-  usd_irt: number
-  theoretical_18k: number
-  premium_pct: number
-  premium_avg_30d: number
-  last_update: string
+  /** Full price objects (same shape as /prices/current entries), null when no data. */
+  current_18k: CurrentPrice | null
+  xau_usd: CurrentPrice | null
+  usd_irt: CurrentPrice | null
+  theoretical_18k: number | null
+  premium_pct: number | null
+  premium_avg_30d: number | null
+  last_update: string | null
   providers: ProviderHealth[]
   signal: SignalSummary | null
 }
@@ -169,6 +176,19 @@ export interface BollingerValue {
   lower: number
 }
 
+/** Addendum 2: 20-day high/low breakout channel. */
+export interface DonchianValue {
+  upper: number
+  lower: number
+}
+
+/** Addendum 2: EMA20 ± 2×ATR volatility channel. */
+export interface KeltnerValue {
+  upper: number
+  mid: number
+  lower: number
+}
+
 export interface IndicatorPoint {
   date: string
   close: number
@@ -183,12 +203,28 @@ export interface IndicatorPoint {
   momentum_10: number | null
   roc_10: number | null
   volatility_20: number | null
+  // Addendum 2 series additions (optional so older payloads still parse).
+  adx_14?: number | null
+  stoch_k?: number | null
+  stoch_d?: number | null
 }
 
 export interface IndicatorsResponse {
   items: IndicatorPoint[]
   support: number | null
   resistance: number | null
+  // Addendum 2 scalar additions (latest values; optional for older payloads).
+  adx_14?: number | null
+  stoch_k?: number | null
+  stoch_d?: number | null
+  williams_r_14?: number | null
+  cci_20?: number | null
+  donchian?: DonchianValue | null
+  keltner?: KeltnerValue | null
+  /** Rolling 20-day correlation of daily log-returns, 18k vs XAUUSD. */
+  corr_xau_20?: number | null
+  /** Percent distance below the 90-day high (≤ 0 or 0). */
+  drawdown_pct?: number | null
 }
 
 // ---------- Predictions & signals ----------
@@ -237,6 +273,8 @@ export interface Signal {
   supporting?: string[]
   conflicting?: string[]
   risks?: string[]
+  /** Informational notes, e.g. "prices from last session (market closed)". */
+  notes?: string[]
   invalidation?: string
   review_at?: string | null
   data_fresh?: boolean

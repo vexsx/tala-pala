@@ -19,6 +19,14 @@ LAGS = (1, 2, 3, 5, 10, 20)
 ROLL_WINDOWS = (5, 10, 20)
 RSI_PERIOD = 14
 PREMIUM_Z_WINDOW = 30
+ADX_PERIOD = 14
+STOCH_PERIOD = 14
+STOCH_SMOOTH = 3
+CCI_PERIOD = 20
+CHANNEL_PERIOD = 20   # Donchian + Keltner
+CORR_WINDOW = 20      # rolling 18k-vs-XAU log-return correlation
+DRAWDOWN_WINDOW = 90
+PREMIUM_MOM_LAG = 5
 
 
 class LeakageError(AssertionError):
@@ -137,8 +145,72 @@ def compute_feature_frame(
     df[f"rsi_{RSI_PERIOD}"] = rsi(close)
     df["vol_20"] = close.pct_change().rolling(20).std()
 
+    # --- OHLC-style indicators (Addendum 2) ----------------------------------
+    # The daily series is synthesized from ticks (last good observation per
+    # day) with no true OHLC, so intraday high/low are APPROXIMATED with the
+    # backward-looking rolling max/min of the daily closes (2-day window for
+    # bar-level high/low, longer windows for channel indicators).  Documented
+    # approximation; all windows end at the current row (causal).
+    high = close.rolling(2).max()
+    low = close.rolling(2).min()
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+
+    # ADX(14) over simple rolling means (Wilder-less, matching rsi() above)
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = pd.Series(
+        np.where((up_move > down_move) & (up_move > 0.0), up_move, 0.0), index=df.index
+    )
+    minus_dm = pd.Series(
+        np.where((down_move > up_move) & (down_move > 0.0), down_move, 0.0),
+        index=df.index,
+    )
+    atr_14 = tr.rolling(ADX_PERIOD).mean().replace(0.0, np.nan)
+    plus_di = 100.0 * plus_dm.rolling(ADX_PERIOD).mean() / atr_14
+    minus_di = 100.0 * minus_dm.rolling(ADX_PERIOD).mean() / atr_14
+    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0.0, np.nan)
+    df["adx_14"] = dx.rolling(ADX_PERIOD).mean()
+
+    # Stochastic %K/%D (14, 3) and Williams %R(14)
+    high_14 = high.rolling(STOCH_PERIOD).max()
+    low_14 = low.rolling(STOCH_PERIOD).min()
+    stoch_range = (high_14 - low_14).replace(0.0, np.nan)
+    df["stoch_k"] = 100.0 * (close - low_14) / stoch_range
+    df["stoch_d"] = df["stoch_k"].rolling(STOCH_SMOOTH).mean()
+    df["williams_r_14"] = -100.0 * (high_14 - close) / stoch_range
+
+    # CCI(20) on the (approximated) typical price
+    tp = (high + low + close) / 3.0
+    tp_mean = tp.rolling(CCI_PERIOD).mean()
+    tp_mad = tp.rolling(CCI_PERIOD).apply(
+        lambda x: float(np.mean(np.abs(x - x.mean()))), raw=True
+    )
+    df["cci_20"] = (tp - tp_mean) / (0.015 * tp_mad.replace(0.0, np.nan))
+
+    # Donchian(20) channel: pct distance of close from the upper/lower band
+    donchian_upper = high.rolling(CHANNEL_PERIOD).max()
+    donchian_lower = low.rolling(CHANNEL_PERIOD).min()
+    df["donchian_upper_dist_20"] = close / donchian_upper - 1.0
+    df["donchian_lower_dist_20"] = close / donchian_lower - 1.0
+
+    # Keltner(20, 2xATR): distance of close from the EMA20 mid, normalized by
+    # the 2xATR band half-width (+1 = at the upper band, -1 = at the lower)
+    ema_20 = close.ewm(span=CHANNEL_PERIOD, adjust=False).mean()
+    atr_20 = tr.rolling(CHANNEL_PERIOD).mean().replace(0.0, np.nan)
+    df["keltner_pos_20"] = (close - ema_20) / (2.0 * atr_20)
+
+    # drawdown from the 90-day high (uses whatever history exists early on)
+    df["drawdown_90d_pct"] = (
+        close / close.rolling(DRAWDOWN_WINDOW, min_periods=1).max() - 1.0
+    ) * 100.0
+
     index = pd.DatetimeIndex(df.index)
     df["dow"] = index.dayofweek
+    for d in range(7):  # day-of-week one-hot (Monday=0 .. Sunday=6)
+        df[f"dow_{d}"] = (index.dayofweek == d).astype(float)
     df["hour"] = index.hour
     df["jalali_month"] = [jalali_month(ts) for ts in index]
 
@@ -157,6 +229,10 @@ def compute_feature_frame(
         df["xau_usd"] = xau
         df["xau_ret_1"] = xau.pct_change()
         df["xau_ret_5"] = xau.pct_change(5)
+        # rolling 20d correlation of 18k vs XAUUSD daily log-returns
+        gold_logret = np.log(close).diff()
+        xau_logret = np.log(xau).diff()
+        df["corr_xau_20"] = gold_logret.rolling(CORR_WINDOW).corr(xau_logret)
     if usd is not None and xau is not None:
         theoretical = xau / TROY_OUNCE_GRAMS * usd * KARAT_18_PURITY
         premium = (close - theoretical) / theoretical * 100.0
@@ -165,6 +241,8 @@ def compute_feature_frame(
         prem_mean = premium.rolling(PREMIUM_Z_WINDOW).mean()
         prem_std = premium.rolling(PREMIUM_Z_WINDOW).std()
         df["premium_z_30"] = (premium - prem_mean) / prem_std.replace(0.0, np.nan)
+        # premium momentum: 5-day change of premium_pct
+        df["premium_mom_5"] = premium.diff(PREMIUM_MOM_LAG)
 
     return df
 

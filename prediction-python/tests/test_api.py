@@ -250,35 +250,40 @@ def test_empty_body_collect_runs_all_jobs(client, engine, monkeypatch):
     assert resp.json()["collected"].get("IR_GOLD_18K") == 1
 
 
+def _xau(provider_code, value, observed_at):
+    return Observation(
+        provider_code=provider_code,
+        symbol="XAUUSD",
+        raw_value=value,
+        raw_unit="USD/ozt",
+        raw_currency="USD",
+        value=value,
+        currency="USD",
+        unit="ozt",
+        observed_at=observed_at,
+        raw_payload={},
+    )
+
+
 def test_stale_observation_does_not_block_fresher_fallback(client, engine, monkeypatch):
     """A provider whose ticker lags (e.g. TGJU 'ons', seen 40m behind on
     2026-07-20) is stored but must NOT satisfy the symbol: a fresher
-    lower-priority source is still consulted afterwards."""
+    lower-priority source is still consulted afterwards.  Fixed to a Wednesday
+    mid-session so the market-hours-aware gate sees an OPEN market."""
     from datetime import timedelta
 
-    from app.db import utcnow
+    from app.jobs import collect as collect_mod
     from app.providers import registry
+
+    fixed_now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)  # Wed, all open
+    monkeypatch.setattr(collect_mod, "utcnow", lambda: fixed_now)
 
     _seed_provider(engine, code="laggy", category="global_gold", priority=5)
     _seed_provider(engine, code="fresh", category="global_gold", priority=20)
 
-    def xau(provider_code, value, observed_at):
-        return Observation(
-            provider_code=provider_code,
-            symbol="XAUUSD",
-            raw_value=value,
-            raw_unit="USD/ozt",
-            raw_currency="USD",
-            value=value,
-            currency="USD",
-            unit="ozt",
-            observed_at=observed_at,
-            raw_payload={},
-        )
-
     stubs = {
-        "laggy": StubProvider([xau("laggy", 4000.0, utcnow() - timedelta(hours=2))]),
-        "fresh": StubProvider([xau("fresh", 4014.5, utcnow())]),
+        "laggy": StubProvider([_xau("laggy", 4000.0, fixed_now - timedelta(hours=2))]),
+        "fresh": StubProvider([_xau("fresh", 4014.5, fixed_now)]),
     }
     monkeypatch.setattr(
         registry, "build_provider", lambda code, settings: stubs[code]
@@ -294,3 +299,25 @@ def test_stale_observation_does_not_block_fresher_fallback(client, engine, monke
         }
     # both stored; crucially the fresh fallback was consulted at all
     assert sources == {"laggy", "fresh"}
+
+
+def test_market_closed_last_session_data_satisfies_collect(client, engine, monkeypatch):
+    """Addendum 1: during the global weekend closure a Friday-session
+    observation satisfies the symbol — no 'only stale values' error and no
+    pointless fallback churn for closed markets."""
+    from app.jobs import collect as collect_mod
+    from app.providers import registry
+
+    fixed_now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)  # Saturday
+    monkeypatch.setattr(collect_mod, "utcnow", lambda: fixed_now)
+
+    _seed_provider(engine, code="laggy", category="global_gold", priority=5)
+    last_session = datetime(2026, 7, 17, 20, 50, tzinfo=timezone.utc)  # Fri, pre-close
+    stub = StubProvider([_xau("laggy", 4000.0, last_session)])
+    monkeypatch.setattr(registry, "build_provider", lambda code, settings: stub)
+
+    resp = client.post("/internal/collect", json={"jobs": ["global"]}, headers=AUTH)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["collected"].get("XAUUSD") == 1
+    assert not any("XAUUSD" in e and "stale" in e for e in body["errors"])

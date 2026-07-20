@@ -27,6 +27,7 @@ GRID: tuple[tuple[int, int, int], ...] = (
 
 class ARIMAModel(ForecastModel):
     name = "arima"
+    reuse_across_folds = True  # order selected once on the earliest window
 
     def __init__(self) -> None:
         self.order: Optional[tuple[int, int, int]] = None

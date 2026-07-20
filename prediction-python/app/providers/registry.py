@@ -21,6 +21,7 @@ from .base import Provider
 from .brsapi import BrsApiProvider
 from .gold_api import GoldAPIProvider
 from .metals_dev import MetalsDevProvider
+from .milligold import MilligoldProvider
 from .navasan import NavasanProvider
 from .pricedb import PriceDBProvider
 from .stooq import StooqProvider
@@ -46,7 +47,11 @@ def build_provider(code: str, settings: Settings) -> Optional[Provider]:
     if code == "tgju":
         return TGJUProvider(**kwargs)
     if code == "alanchand":
-        return AlanchandProvider(**kwargs)
+        # two modes: documented Bearer-token API when ALANCHAND_TOKEN is set,
+        # keyless HTML parsing of the public 18ayar page otherwise
+        return AlanchandProvider(token=settings.alanchand_token, **kwargs)
+    if code == "milligold":
+        return MilligoldProvider(**kwargs)
     if code == "yahoo":
         return YahooProvider(**kwargs)
     if code == "stooq":

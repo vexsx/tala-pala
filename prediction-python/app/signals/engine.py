@@ -52,6 +52,11 @@ class SignalInputs:
     premium_z: Optional[float] = None
     regime: str = "unknown"
     data_fresh: bool = True
+    # Addendum 1: True while the Tehran market is closed.  With market_closed
+    # and data_fresh both set (= last-session data), scoring proceeds normally
+    # and the signal just carries an informational note; only truly stale data
+    # (older than the last session) forces hold.
+    market_closed: bool = False
     round_trip_cost_pct: float = DEFAULT_ROUND_TRIP_COST_PCT
 
 
@@ -188,11 +193,15 @@ def compute_signal(inputs: SignalInputs, now: Optional[datetime] = None) -> dict
         risks.append("Volatility is in its top decile; price swings can overwhelm the signal.")
         conflicting.append("Market is in a high-volatility regime.")
 
-    # --- freshness gate (hard) ---------------------------------------------
+    # --- freshness gate (hard; market-hours aware upstream) -----------------
+    # data_fresh is computed with is_acceptably_fresh, so last-session data
+    # during a closure arrives here as fresh and does NOT force hold.
     forced_hold = False
     if not inputs.data_fresh:
         forced_hold = True
         risks.insert(0, "Input data is STALE; the signal was forced to hold until fresh data arrives.")
+    elif inputs.market_closed:
+        risks.append("prices from last session (market closed)")
 
     final_score = int(np.clip(round(score), 0, 100))
     if forced_hold:
@@ -259,6 +268,7 @@ def compute_signal(inputs: SignalInputs, now: Optional[datetime] = None) -> dict
             "momentum_10_pct": inputs.momentum_10_pct,
             "premium_z": inputs.premium_z,
             "regime": inputs.regime,
+            "market_closed": inputs.market_closed,
             "round_trip_cost_pct": inputs.round_trip_cost_pct,
         },
     }
@@ -302,7 +312,7 @@ def generate_signal(engine, settings) -> dict:
     import pandas as pd
     from sqlalchemy import select
 
-    from ..core.freshness import is_fresh
+    from ..core.freshness import is_acceptably_fresh, is_market_open
     from ..db import prices as prices_t
     from ..db import signals as signals_t
     from ..db import utcnow
@@ -358,17 +368,21 @@ def generate_signal(engine, settings) -> dict:
             inputs.regime = detect_regime(gold)
 
         gold_rows = df[df["symbol"] == "IR_GOLD_18K"]
+        inputs.market_closed = not is_market_open("IR_GOLD_18K", now, settings)
         if not gold_rows.empty:
             last_obs = pd.to_datetime(gold_rows["observed_at"].max())
             if last_obs.tzinfo is None:
                 last_obs = last_obs.tz_localize("UTC")
-            inputs.data_fresh = is_fresh(
-                last_obs.to_pydatetime(), settings.stale_minutes, now
+            # market-hours aware (Addendum 1): last-session data during a
+            # closure stays fresh and only adds an informational note
+            inputs.data_fresh = is_acceptably_fresh(
+                "IR_GOLD_18K", last_obs.to_pydatetime(), now, settings
             )
         else:
             inputs.data_fresh = False
     else:
         inputs.data_fresh = False
+        inputs.market_closed = not is_market_open("IR_GOLD_18K", now, settings)
 
     result = compute_signal(inputs, now=now)
 

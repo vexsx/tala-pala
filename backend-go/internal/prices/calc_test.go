@@ -46,14 +46,17 @@ func TestIsStale(t *testing.T) {
 }
 
 func TestComputeIndicators(t *testing.T) {
-	// 120 daily bars of a gentle uptrend.
+	// 120 daily bars of a gentle uptrend; XAUUSD is a constant multiple of
+	// the 18k series so their log returns are identical (corr exactly 1).
 	bars := make([]DayBar, 120)
+	xau := make([]dailyPoint, 120)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := range bars {
 		v := 1000.0 + float64(i)*2
 		bars[i] = DayBar{Date: base.AddDate(0, 0, i), High: v + 5, Low: v - 5, Close: v}
+		xau[i] = dailyPoint{Date: bars[i].Date, Value: v / 400}
 	}
-	res := ComputeIndicators(bars, 90)
+	res := ComputeIndicators(bars, xau, 90)
 	if len(res.Series) != 90 {
 		t.Fatalf("series length = %d, want 90", len(res.Series))
 	}
@@ -62,6 +65,30 @@ func TestComputeIndicators(t *testing.T) {
 		res.Momentum10 == nil || res.ROC10 == nil || res.Volatility == nil ||
 		res.Support == nil || res.Resistance == nil {
 		t.Fatal("expected all indicators to be computable with 120 bars")
+	}
+	if res.ADX14 == nil || res.StochK == nil || res.StochD == nil ||
+		res.WilliamsR == nil || res.CCI20 == nil ||
+		res.Donchian.Upper == nil || res.Donchian.Lower == nil ||
+		res.Keltner.Upper == nil || res.Keltner.Mid == nil || res.Keltner.Lower == nil ||
+		res.CorrXAU20 == nil || res.Drawdown == nil {
+		t.Fatal("expected all Addendum 2 indicators to be computable with 120 bars")
+	}
+	// Donchian over the last 20 bars: upper = 1238+5, lower = 1200-5.
+	if math.Abs(*res.Donchian.Upper-1243) > 1e-6 || math.Abs(*res.Donchian.Lower-1195) > 1e-6 {
+		t.Fatalf("donchian = %v/%v, want 1243/1195", *res.Donchian.Upper, *res.Donchian.Lower)
+	}
+	// Identical log returns: correlation exactly 1.
+	if math.Abs(*res.CorrXAU20-1) > 1e-9 {
+		t.Fatalf("corr_xau_20 = %v, want 1", *res.CorrXAU20)
+	}
+	// Monotone uptrend ends at its 90d high: drawdown 0.
+	if math.Abs(*res.Drawdown) > 1e-9 {
+		t.Fatalf("drawdown_pct = %v, want 0", *res.Drawdown)
+	}
+	// Series points carry the new per-day fields once warmed up.
+	lastPt := res.Series[len(res.Series)-1]
+	if lastPt.ADX14 == nil || lastPt.StochK == nil || lastPt.StochD == nil {
+		t.Fatal("series points must include adx_14/stoch_k/stoch_d")
 	}
 	// Uptrend sanity: last close 1238; sma20 mean of closes 1200..1238 = 1219.
 	if math.Abs(*res.SMA20-1219) > 1e-6 {
@@ -81,9 +108,36 @@ func TestComputeIndicators(t *testing.T) {
 	}
 
 	// Empty input stays well-formed.
-	empty := ComputeIndicators(nil, 90)
+	empty := ComputeIndicators(nil, nil, 90)
 	if empty.AsOf != nil || len(empty.Series) != 0 {
 		t.Fatalf("empty input mishandled: %+v", empty)
+	}
+
+	// Without any overlapping XAUUSD data the correlation is simply absent.
+	noXau := ComputeIndicators(bars, nil, 90)
+	if noXau.CorrXAU20 != nil {
+		t.Fatalf("corr_xau_20 without xau data = %v, want nil", *noXau.CorrXAU20)
+	}
+}
+
+func TestMarketState(t *testing.T) {
+	// Wednesday 2026-07-15 08:30 UTC = 12:00 Asia/Tehran.
+	tehranNoon := time.Date(2026, 7, 15, 8, 30, 0, 0, time.UTC)
+	if s := MarketState("IR_GOLD_18K", tehranNoon, "09:00", "20:00"); s != "open" {
+		t.Fatalf("tehran midday = %s, want open", s)
+	}
+	// Friday 2026-07-17: Tehran closed, but before 21:00 UTC global is open.
+	friday := time.Date(2026, 7, 17, 8, 30, 0, 0, time.UTC)
+	if s := MarketState("IR_GOLD_18K", friday, "09:00", "20:00"); s != "closed" {
+		t.Fatalf("tehran friday = %s, want closed", s)
+	}
+	if s := MarketState("XAUUSD", friday, "09:00", "20:00"); s != "open" {
+		t.Fatalf("global friday morning = %s, want open", s)
+	}
+	// Saturday: global weekend.
+	saturday := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	if s := MarketState("XAUUSD", saturday, "09:00", "20:00"); s != "closed" {
+		t.Fatalf("global saturday = %s, want closed", s)
 	}
 }
 

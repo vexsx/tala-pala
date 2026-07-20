@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // CronConfig holds the cron specs (standard 5-field, UTC) for scheduler jobs.
@@ -44,6 +45,11 @@ type Config struct {
 	LogLevel              string
 	MigrationsDir         string
 	StaleMinutes          int
+
+	// Tehran session bounds ("HH:MM", Asia/Tehran local) for the Addendum 1
+	// market-hours rules, shared with the Python service.
+	MarketTehranOpen  string
+	MarketTehranClose string
 
 	Crons CronConfig
 }
@@ -127,6 +133,9 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 		MigrationsDir:         get("MIGRATIONS_DIR", "/app/migrations"),
 		StaleMinutes:          getInt("STALE_MINUTES", 30),
 
+		MarketTehranOpen:  get("MARKET_TEHRAN_OPEN", "09:00"),
+		MarketTehranClose: get("MARKET_TEHRAN_CLOSE", "20:00"),
+
 		Crons: CronConfig{
 			Collect:  get("SCHEDULE_COLLECT_CRON", "*/10 * * * *"),
 			Predict:  get("SCHEDULE_PREDICT_CRON", "5 * * * *"),
@@ -161,6 +170,14 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 	}
 	if cfg.RateLimitRPM <= 0 {
 		errs = append(errs, "RATE_LIMIT_RPM must be positive")
+	}
+	for key, val := range map[string]string{
+		"MARKET_TEHRAN_OPEN":  cfg.MarketTehranOpen,
+		"MARKET_TEHRAN_CLOSE": cfg.MarketTehranClose,
+	} {
+		if _, err := time.Parse("15:04", val); err != nil {
+			errs = append(errs, fmt.Sprintf("%s must be HH:MM, got %q", key, val))
+		}
 	}
 
 	if len(errs) > 0 {

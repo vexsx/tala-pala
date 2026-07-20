@@ -230,6 +230,14 @@ h3 {
   margin: 0;
 }
 
+.section-title {
+  font-size: 15px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 /* ---------- Cards & grid ---------- */
 
 .grid {
@@ -1108,6 +1116,10 @@ input[type='checkbox'] {
 
 .advisor-portfolio p:last-child {
   margin-bottom: 0;
+}
+
+.advisor-closed-note {
+  margin: 0;
 }
 
 .advisor-footer {

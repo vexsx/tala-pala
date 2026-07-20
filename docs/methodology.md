@@ -22,7 +22,13 @@ Computed point-in-time (using only data with `observed_at <= as_of`; enforced by
 | Ridge regression | ML | Linear signal extraction from features |
 | Random Forest | ML | Non-linear interactions, robust |
 | Gradient Boosting | ML | Usually the strongest tabular learner |
-| Ensemble | meta | Inverse-sMAPE-weighted blend of validated models |
+| Theta | statistical | Top family of the M4 competition |
+| Holt (damped trend) | statistical | Avoids runaway trend extrapolation |
+| SARIMAX + exogenous | statistical | Lets USD/IRT and XAU returns inform the gold forecast (exog point-in-time lagged, held constant over the horizon) |
+| Quantile Gradient Boosting | ML | Learns its own 5/50/95% quantiles → native prediction intervals |
+| HistGradientBoosting | ML | Fast strong tabular learner (early stopping) |
+| k-NN pattern analogue | ML | Forecasts from the 25 most similar historical 20-day return patterns |
+| Ensemble | meta | Inverse-sMAPE-weighted blend of validated models (weights shift to live accuracy once ≥20 matured predictions per member) |
 
 **Deliberately excluded** (documented decision, revisit when justified): LSTM/GRU, temporal transformers and Prophet. With a single series of a few thousand daily points, recurrent nets tend to collapse into echoing the last value while appearing "99% accurate"; the M4/M5 competition literature shows simple statistical methods and boosted trees dominate this regime. Excluding torch/tensorflow also keeps the image small and the attack surface low. See `docs/repo-review.md` for citations.
 

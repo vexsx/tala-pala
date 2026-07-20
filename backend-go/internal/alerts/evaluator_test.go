@@ -18,6 +18,8 @@ func baseSnapshot() Snapshot {
 		PremiumPct:       &premium,
 		VolatilityAnnPct: &vol,
 		StaleMinutes:     30,
+		MarketOpen:       "09:00",
+		MarketClose:      "20:00",
 		Providers: []ProviderHealth{
 			{Code: "tgju", Enabled: true, ConsecutiveFailures: 0},
 			{Code: "yahoo", Enabled: true, ConsecutiveFailures: 1},
@@ -132,6 +134,33 @@ func TestStaleData(t *testing.T) {
 	s.Gold = nil
 	if !Evaluate(alertOf("stale_data", nil), s).Triggered {
 		t.Fatal("missing data should trigger stale_data")
+	}
+}
+
+func TestStaleData_MarketClosed(t *testing.T) {
+	// Monday 2026-07-20 18:00 UTC = 21:30 Tehran: market closed since
+	// 20:00 Tehran (16:30 UTC). `now` above (12:00 UTC = 15:30 Tehran) is open.
+	closedNow := time.Date(2026, 7, 20, 18, 0, 0, 0, time.UTC)
+	s := baseSnapshot()
+	s.Now = closedNow
+
+	// Last-session data (16:20 UTC, 100 minutes old) must NOT trigger:
+	// no nightly false alarms while the market is closed.
+	s.Gold = &PricePoint{Value: 5_000_000,
+		ObservedAt: time.Date(2026, 7, 20, 16, 20, 0, 0, time.UTC)}
+	if Evaluate(alertOf("stale_data", nil), s).Triggered {
+		t.Fatal("last-session data must not trigger stale_data while closed")
+	}
+
+	// Data from before (closure start - 30m) = 16:00 UTC still triggers.
+	s.Gold = &PricePoint{Value: 5_000_000,
+		ObservedAt: time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)}
+	res := Evaluate(alertOf("stale_data", nil), s)
+	if !res.Triggered {
+		t.Fatal("pre-session data should trigger stale_data even while closed")
+	}
+	if res.Payload["market_state"] != "closed" {
+		t.Fatalf("payload market_state = %v, want closed", res.Payload["market_state"])
 	}
 }
 

@@ -12,6 +12,7 @@ from app.providers import (
     brsapi,
     gold_api,
     metals_dev,
+    milligold,
     navasan,
     pricedb,
     registry,
@@ -172,7 +173,99 @@ def test_navasan_requires_key():
 # --- Alanchand --------------------------------------------------------------
 
 
-def test_alanchand_parse_html_fixture():
+def test_alanchand_token_api_parse_rial_division():
+    payload = [
+        {"slug": "18ayar", "price": 182_954_000},
+        {"slug": "sekkeh", "price": "1,915,000,000"},
+        {"slug": "unknown", "price": 1},
+    ]
+    observations = alanchand.parse_api_payload(payload)
+    by_symbol = {o.symbol: o for o in observations}
+    assert set(by_symbol) == {"IR_GOLD_18K", "IR_COIN_EMAMI"}
+    gold = by_symbol["IR_GOLD_18K"]
+    assert gold.raw_value == 182_954_000.0
+    assert gold.raw_currency == "IRR"
+    assert gold.value == pytest.approx(18_295_400.0)  # rial -> toman
+    assert gold.currency == "IRT" and gold.unit == "gram"
+    # dict-wrapped shapes are tolerated too
+    wrapped = alanchand.parse_api_payload({"currencies": [{"slug": "usd", "price": 1_065_300}]})
+    assert wrapped[0].symbol == "USD_IRT"
+    assert wrapped[0].value == pytest.approx(106_530.0)
+
+
+@respx.mock
+def test_alanchand_token_fetch_sends_bearer(settings):
+    gold_route = respx.get(
+        "https://api.alanchand.com", params={"type": "gold", "symbols": "18ayar,sekkeh"}
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {"slug": "18ayar", "price": 182_954_000},
+                {"slug": "sekkeh", "price": 1_915_000_000},
+            ],
+        )
+    )
+    respx.get(
+        "https://api.alanchand.com", params={"type": "currencies", "symbols": "usd"}
+    ).mock(return_value=httpx.Response(200, json=[{"slug": "usd", "price": 1_065_300}]))
+    provider = alanchand.AlanchandProvider(
+        token="secret-token", timeout=2.0, courtesy_delay=0.0, backoff_base=0.0
+    )
+    by_symbol = {o.symbol: o for o in provider.fetch()}
+    assert set(by_symbol) == {"IR_GOLD_18K", "IR_COIN_EMAMI", "USD_IRT"}
+    assert by_symbol["IR_GOLD_18K"].value == pytest.approx(18_295_400.0)
+    assert by_symbol["IR_COIN_EMAMI"].value == pytest.approx(191_500_000.0)
+    assert (
+        gold_route.calls.last.request.headers["Authorization"] == "Bearer secret-token"
+    )
+
+
+@respx.mock
+def test_alanchand_bad_token_fails_fast_no_retry(settings):
+    route = respx.get("https://api.alanchand.com").mock(
+        return_value=httpx.Response(401)
+    )
+    provider = alanchand.AlanchandProvider(
+        token="bad", timeout=2.0, courtesy_delay=0.0, backoff_base=0.0
+    )
+    with pytest.raises(ProviderError):
+        provider.fetch()
+    assert route.call_count == 2  # one attempt per query type, 401 never retried
+
+
+def test_alanchand_parse_gold_page_fixture():
+    obs = alanchand.parse_gold_page(load_fixture_text("alanchand_18ayar.html"))
+    assert obs is not None
+    assert obs.symbol == "IR_GOLD_18K"
+    assert obs.raw_value == 181_679_700.0  # page quotes RIAL
+    assert obs.raw_currency == "IRR"
+    assert obs.raw_unit == "IRR/gram (html)"  # auditable source method
+    assert obs.value == pytest.approx(18_167_970.0)  # rial -> toman
+    assert obs.observed_at.tzinfo is not None
+
+
+def test_alanchand_parse_gold_page_skips_real_price():
+    # "Real Price" (theoretical) before any current quote must NOT be used
+    html = "<h1>18K Gold per Gram</h1><p>Real Price 182,350,000 IRR</p>"
+    assert alanchand.parse_gold_page(html) is None
+    assert alanchand.parse_gold_page("<html>challenge</html>") is None
+
+
+@respx.mock
+def test_alanchand_keyless_html_mode(settings):
+    respx.get("https://alanchand.com/en/gold-price/18ayar").mock(
+        return_value=httpx.Response(200, text=load_fixture_text("alanchand_18ayar.html"))
+    )
+    provider = alanchand.AlanchandProvider(
+        timeout=2.0, courtesy_delay=0.0, backoff_base=0.0  # no token -> HTML mode
+    )
+    (obs,) = provider.fetch()
+    assert obs.symbol == "IR_GOLD_18K"
+    assert obs.value == pytest.approx(18_167_970.0)
+
+
+def test_alanchand_legacy_parse_html_fixture():
     observations = alanchand.parse_html(load_fixture_text("alanchand_page.html"))
     by_symbol = {o.symbol: o for o in observations}
     assert by_symbol["IR_GOLD_18K"].value == pytest.approx(18_295_400.0)
@@ -180,13 +273,70 @@ def test_alanchand_parse_html_fixture():
     assert by_symbol["IR_COIN_EMAMI"].value == pytest.approx(191_500_000.0)
 
 
-def test_alanchand_parse_json_payload():
+def test_alanchand_legacy_parse_json_payload():
     payload = {
         "gold": [{"slug": "18ayar", "price": 18295400}],
         "currency": [{"slug": "usd", "price": "106,530"}],
     }
     observations = alanchand.parse_json_payload(payload)
     assert {o.symbol for o in observations} == {"IR_GOLD_18K", "USD_IRT"}
+
+
+# --- Milli Gold (milli.gold) --------------------------------------------------
+
+
+def test_milligold_parse_home_fixture():
+    obs = milligold.parse_home(load_fixture_text("milligold_home.html"))
+    assert obs is not None
+    assert obs.symbol == "IR_GOLD_18K"
+    assert obs.raw_value == 182_050_000.0  # page quotes RIAL
+    assert obs.raw_currency == "IRR"
+    assert obs.raw_unit == "IRR/gram (html)"
+    assert obs.value == pytest.approx(18_205_000.0)  # rial -> toman
+    assert obs.observed_at.tzinfo is not None
+
+
+def test_milligold_parse_persian_digits_and_zero_width():
+    # Persian/Arabic-Indic digits, Persian thousands separator and a
+    # zero-width non-joiner inside the label must all be handled
+    html = (
+        "<div>قیمت ۱ گرم طلای‌ ۱۸ عیار</div>"
+        "<div>۱۸۲٬۰۵۰٬۰۰۰ ریال</div>"
+    )
+    obs = milligold.parse_home(html)
+    assert obs is not None
+    assert obs.raw_value == 182_050_000.0
+    assert obs.value == pytest.approx(18_205_000.0)
+
+
+def test_milligold_parse_garbage():
+    assert milligold.parse_home("<html>challenge page</html>") is None
+    assert milligold.parse_home("قیمت ۱ گرم طلای ۱۸ عیار بدون قیمت") is None
+
+
+@respx.mock
+def test_milligold_fetch_round_trip(settings):
+    respx.get("https://milli.gold/").mock(
+        return_value=httpx.Response(200, text=load_fixture_text("milligold_home.html"))
+    )
+    provider = milligold.MilligoldProvider(
+        timeout=2.0, courtesy_delay=0.0, backoff_base=0.0
+    )
+    (obs,) = provider.fetch()
+    assert obs.symbol == "IR_GOLD_18K"
+    assert obs.value == pytest.approx(18_205_000.0)
+
+
+@respx.mock
+def test_milligold_layout_change_raises_not_bypasses(settings):
+    respx.get("https://milli.gold/").mock(
+        return_value=httpx.Response(200, text="<html>js challenge</html>")
+    )
+    provider = milligold.MilligoldProvider(
+        timeout=2.0, courtesy_delay=0.0, backoff_base=0.0
+    )
+    with pytest.raises(ProviderError):
+        provider.fetch()
 
 
 # --- pricedb (margani/pricedb GitHub dataset) --------------------------------
@@ -358,6 +508,21 @@ def test_registry_builds_new_providers(settings):
     settings.brsapi_api_key = "test-key"
     provider = registry.build_provider("brsapi", settings)
     assert isinstance(provider, brsapi.BrsApiProvider)
+
+
+def test_registry_builds_html_providers(settings):
+    assert isinstance(
+        registry.build_provider("milligold", settings), milligold.MilligoldProvider
+    )
+    # alanchand is always built: HTML mode without a token, API mode with one
+    settings.alanchand_token = ""
+    keyless = registry.build_provider("alanchand", settings)
+    assert isinstance(keyless, alanchand.AlanchandProvider)
+    assert keyless.token == ""
+    settings.alanchand_token = "tok"
+    keyed = registry.build_provider("alanchand", settings)
+    assert isinstance(keyed, alanchand.AlanchandProvider)
+    assert keyed.token == "tok"
 
 
 # --- metals.dev -------------------------------------------------------------

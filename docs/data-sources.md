@@ -20,11 +20,14 @@
 ### Navasan (optional; keyed)
 `https://api.navasan.tech/latest/?api_key=...` — free tier 120 calls/month (2h update cadence); paid tiers for real-time. Unique value: pre-computed bubble/premium symbols (`bub_18ayar`, `bub_sekkeh`, …). Unit is nominally IRR but **must be verified per symbol with a live key** before trusting — the adapter cross-checks magnitude against TGJU and marks mismatches `suspect`.
 
-### Alanchand (fallback; paid token)
-`https://api.alanchand.com?type=gold&symbols=18ayar,...` — Bearer token, 65 USDT/6mo; English/IRR figures are rial. 3-day trial tokens available. Adapter included, disabled without a token.
+### Alanchand (fallback; two modes)
+API mode: `https://api.alanchand.com?type=gold&symbols=18ayar,...` — Bearer token, 65 USDT/6mo (`ALANCHAND_TOKEN`). Keyless HTML mode (verified 2026-07-20): `https://alanchand.com/en/gold-price/18ayar` server-renders the 18k price in **rial** in plain HTML — parsed defensively as a fallback for `IR_GOLD_18K` only. No protections are circumvented; if the page ever adds them, the provider fails gracefully.
+
+### Milli Gold (fallback; keyless HTML)
+`https://milli.gold/` (verified 2026-07-20) server-renders "قیمت ۱ گرم طلای ۱۸ عیار" in **rial** (Persian digits handled). `IR_GOLD_18K` only, priority 35.
 
 ### Evaluated and not used
-- **Bonbast** — paid only ($450+/yr), license forbids competing use; noted as an option. Its daily archive mirror (github.com/SamadiPour/rial-exchange-rates-archive, MIT) is a legitimate free backfill source.
+- **Bonbast** — paid only ($450+/yr), license forbids competing use, and its public page loads values through deliberately obfuscated rotating-token requests — an anti-scraping measure we do not bypass (unlike plain server-rendered pages, which we do parse). Its daily archive mirror (github.com/SamadiPour/rial-exchange-rates-archive, MIT) remains a legitimate free backfill source.
 - **priceto.day** — free but behind Cloudflare JS challenges + rate limiting (verified blocked server-side); we do not bypass anti-bot systems. Its upstream dataset (github.com/margani/pricedb, MIT) is usable directly for backfill.
 - **Hamrah Gold** — **no official public API** (site/app/terms document none; API subdomains 404). Per project policy, no scraping of the PWA's private endpoints; holdings are entered manually or by CSV.
 
