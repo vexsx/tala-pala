@@ -79,6 +79,9 @@ class Provider(abc.ABC):
     # UA (e.g. BrsApi documents that default programming-language UAs are
     # blocked and asks clients to send a real browser string).
     user_agent: str = USER_AGENT
+    # Per-provider retry budget. Quota-billed providers (every attempt counts
+    # against a daily request cap) should set this to 1.
+    max_attempts: int = MAX_ATTEMPTS
 
     def _client(self) -> httpx.Client:
         return httpx.Client(
@@ -99,7 +102,7 @@ class Provider(abc.ABC):
         ``Authorization`` header for keyed providers).
         """
         last_exc: Optional[Exception] = None
-        for attempt in range(MAX_ATTEMPTS):
+        for attempt in range(self.max_attempts):
             if self.courtesy_delay > 0:
                 time.sleep(self.courtesy_delay)
             try:
@@ -123,10 +126,10 @@ class Provider(abc.ABC):
                 raise
             except (httpx.HTTPError, OSError) as exc:
                 last_exc = exc
-                if attempt < MAX_ATTEMPTS - 1 and self.backoff_base > 0:
+                if attempt < self.max_attempts - 1 and self.backoff_base > 0:
                     time.sleep(self.backoff_base * (2**attempt))
         raise ProviderError(f"{self.code}: request to {url} failed after "
-                            f"{MAX_ATTEMPTS} attempts: {last_exc}")
+                            f"{self.max_attempts} attempts: {last_exc}")
 
     def _get_json(
         self, url: str, params: Optional[dict] = None, headers: Optional[dict] = None

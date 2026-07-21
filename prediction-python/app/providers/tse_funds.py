@@ -168,6 +168,8 @@ class TSEFundsProvider(Provider):
     code = "tse_funds"
     category = "iran_fund"
     user_agent = BRSAPI_BROWSER_UA  # per BrsApi's documented UA policy
+    # every attempt bills the ~10/day TSETMC_Symbol quota: never retry
+    max_attempts = 1
 
     def __init__(self, api_key: str, funds: Optional[dict[str, str]] = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
