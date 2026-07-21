@@ -88,5 +88,13 @@ ADMIN_ID=$(echo "$ADMIN_LOGIN" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AAUTH[@]}" -X DELETE "$BASE/api/v1/admin/users/$ADMIN_ID")
 [ "$CODE" = "409" ] || { echo "ASSERT FAILED: self-delete returned $CODE, want 409"; FAIL=1; }
 
+step "cleanup test accounts"
+# throwaway itest users share a password that lives in this script — they
+# must never survive a test run on a real deployment
+PGUSER_ENV=$(grep '^POSTGRES_USER=' .env 2>/dev/null | cut -d= -f2)
+PGDB_ENV=$(grep '^POSTGRES_DB=' .env 2>/dev/null | cut -d= -f2)
+docker compose exec -T postgres psql -U "${PGUSER_ENV:-goldpred}" -d "${PGDB_ENV:-goldpred}" \
+  -c "DELETE FROM users WHERE email LIKE 'itest-%@local.test';" >/dev/null
+
 echo
 if [ "$FAIL" -eq 0 ]; then echo "INTEGRATION TESTS PASSED"; else echo "INTEGRATION TESTS FAILED"; exit 1; fi
