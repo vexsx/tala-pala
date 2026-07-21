@@ -25,6 +25,7 @@ import Drivers from './pages/Drivers'
 import Portfolio from './pages/Portfolio'
 import Alerts from './pages/Alerts'
 import Models from './pages/Models'
+import Issues from './pages/Issues'
 
 const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean }> = [
   { to: '/', label: 'Overview', end: true },
@@ -33,7 +34,8 @@ const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean }> = [
   { to: '/drivers', label: 'Drivers' },
   { to: '/portfolio', label: 'Portfolio' },
   { to: '/alerts', label: 'Alerts' },
-  { to: '/models', label: 'Models' }
+  { to: '/models', label: 'Models' },
+  { to: '/issues', label: 'Issues' }
 ]
 
 function Sidebar() {
@@ -182,6 +184,7 @@ export default function App() {
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/alerts" element={<Alerts />} />
               <Route path="/models" element={<Models />} />
+              <Route path="/issues" element={<Issues />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

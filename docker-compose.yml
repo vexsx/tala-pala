@@ -109,7 +109,9 @@ services:
       - "${FRONTEND_PORT:-8088}:80"
     networks: [internal]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:80/"]
+      # 127.0.0.1 (not localhost): Alpine resolves localhost to ::1 first and
+      # nginx only listens on IPv4, so the busybox wget probe gets refused.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:80/"]
       interval: 20s
       timeout: 5s
       retries: 5

@@ -231,6 +231,23 @@ app_settings = Table(
     Column("updated_at", _TS, nullable=False, server_default=func.now()),
 )
 
+# --- tables mirroring database/migrations/0008_app_issues.up.sql ------------
+
+# Central issue log shared by all services (Issues tab). Written by the
+# logging bridge in app/core/issues.py; read/served by the Go API.
+app_issues = Table(
+    "app_issues",
+    metadata,
+    _big_pk(),
+    Column("occurred_at", _TS, nullable=False, server_default=func.now()),
+    Column("service", Text, nullable=False),
+    Column("level", Text, nullable=False),
+    Column("source", Text, nullable=False, server_default=""),
+    Column("message", Text, nullable=False),
+    Column("details", JSON, nullable=False, default=dict),
+    Column("created_at", _TS, nullable=False, server_default=func.now()),
+)
+
 # --- helpers ----------------------------------------------------------------
 
 

@@ -68,7 +68,7 @@ class Settings:
     alanchand_token: str = field(default_factory=lambda: _env("ALANCHAND_TOKEN", ""))
     # Tehran market hours (Addendum 1): Sat-Thu open window, Asia/Tehran local,
     # "HH:MM" strings; Friday is always closed for Iranian symbols.
-    market_tehran_open: str = field(default_factory=lambda: _env("MARKET_TEHRAN_OPEN", "09:00"))
+    market_tehran_open: str = field(default_factory=lambda: _env("MARKET_TEHRAN_OPEN", "12:00"))
     market_tehran_close: str = field(default_factory=lambda: _env("MARKET_TEHRAN_CLOSE", "20:00"))
     # Courtesy delay between outbound provider requests (seconds); 0 in tests.
     provider_courtesy_delay: float = field(

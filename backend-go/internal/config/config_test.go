@@ -34,7 +34,7 @@ func TestLoad_DefaultsAndRequired(t *testing.T) {
 	if cfg.MigrationsDir != "/app/migrations" {
 		t.Fatalf("bad migrations dir: %s", cfg.MigrationsDir)
 	}
-	if cfg.MarketTehranOpen != "09:00" || cfg.MarketTehranClose != "20:00" {
+	if cfg.MarketTehranOpen != "12:00" || cfg.MarketTehranClose != "20:00" {
 		t.Fatalf("bad market-hours defaults: %q-%q", cfg.MarketTehranOpen, cfg.MarketTehranClose)
 	}
 }

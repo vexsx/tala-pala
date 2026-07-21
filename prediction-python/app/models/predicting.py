@@ -53,6 +53,47 @@ UNDER_COVERAGE_WARNING = (
 )
 
 
+# --- provider gap (quote uncertainty across Iranian sources) ----------------
+PROVIDER_GAP_WINDOW_MIN = 120  # look-back for "current" quotes per provider
+PROVIDER_GAP_WARN_PCT = 1.0    # gaps above this widen the interval + warn
+
+
+def provider_gap_pct(
+    engine: Engine, symbol: str = "IR_GOLD_18K", window_minutes: int = PROVIDER_GAP_WINDOW_MIN
+) -> Optional[float]:
+    """Percent spread between providers' latest quotes for ``symbol``.
+
+    Latest good observation per source within the window; gap = (max - min) /
+    median * 100. Returns None with fewer than two quoting providers. This is
+    *quote* uncertainty (bid/ask handling, update cadence, retail vs wholesale
+    pricing differ across Iranian sources) — orthogonal to model uncertainty,
+    so predictions add it to their interval half-width.
+    """
+    since = utcnow() - timedelta(minutes=window_minutes)
+    stmt = (
+        select(prices.c.source, prices.c.value, prices.c.observed_at)
+        .where(
+            prices.c.symbol == symbol,
+            prices.c.quality == "ok",
+            prices.c.observed_at >= since,
+        )
+        .order_by(prices.c.observed_at.desc())
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(stmt).all()
+    latest_per_source: dict[str, float] = {}
+    for source, value, _observed in rows:  # newest first -> first hit wins
+        if source not in latest_per_source:
+            latest_per_source[source] = float(value)
+    values = sorted(latest_per_source.values())
+    if len(values) < 2:
+        return None
+    mid = float(np.median(values))
+    if mid <= 0:
+        return None
+    return (values[-1] - values[0]) / mid * 100.0
+
+
 def _target_time(horizon: str, now: datetime) -> datetime:
     if horizon == "1h":
         return now + timedelta(hours=1)
@@ -287,6 +328,18 @@ def _predict_one(
         lower = point - (point - lower) * widen
         upper = point + (upper - point) * widen
         warnings.append(UNDER_COVERAGE_WARNING)
+
+    # provider gap: when Iranian sources disagree materially on the current
+    # price, that quote uncertainty is added to the interval half-width
+    gap_pct = provider_gap_pct(engine)
+    if gap_pct is not None and gap_pct >= PROVIDER_GAP_WARN_PCT:
+        half_gap = gap_pct / 2.0 / 100.0 * point
+        lower -= half_gap
+        upper += half_gap
+        warnings.append(
+            f"Iranian data providers currently disagree by {gap_pct:.1f}% on the "
+            "18k price; the interval was widened to reflect this quote uncertainty."
+        )
 
     expected_change_pct = (point / last_price - 1.0) * 100.0
     direction = _direction(expected_change_pct)

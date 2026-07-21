@@ -21,6 +21,7 @@ import { buildForecastChartData } from '../lib/forecastChart'
 import StatCard from '../components/StatCard'
 import DataFreshness from '../components/DataFreshness'
 import ProviderStatus from '../components/ProviderStatus'
+import ProviderGapCard from '../components/ProviderGapCard'
 import AdvisorPanel from '../components/AdvisorCard'
 import PriceChart, { type ChartPoint } from '../components/PriceChart'
 import Loading from '../components/Loading'
@@ -222,6 +223,10 @@ export default function Overview() {
           </div>
           <ProviderStatus providers={s?.providers ?? []} />
         </div>
+      </div>
+
+      <div className="grid grid-wide">
+        <ProviderGapCard />
       </div>
     </div>
   )

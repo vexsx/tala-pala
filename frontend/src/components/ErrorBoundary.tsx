@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { reportIssue } from '../api/client'
 
 interface Props {
   children: ReactNode
@@ -18,6 +19,11 @@ export default class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, info: ErrorInfo): void {
     // eslint-disable-next-line no-console
     console.error('Unhandled UI error:', error, info.componentStack)
+    reportIssue('error-boundary', `${error.name}: ${error.message}`, {
+      path: window.location.pathname,
+      stack: (error.stack ?? '').slice(0, 4000),
+      componentStack: (info.componentStack ?? '').slice(0, 2000)
+    })
   }
 
   render() {

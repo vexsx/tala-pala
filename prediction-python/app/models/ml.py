@@ -106,51 +106,62 @@ class TabularModel(ForecastModel):
         return pairs
 
 
-def _make_linear() -> TabularModel:
+# Estimator factories are module-level named functions (never lambdas/closures):
+# TabularModel keeps a reference to its factory, and the trained winner is
+# persisted with joblib — a lambda here makes every artifact unpicklable.
+
+def _linear_estimator() -> object:
     from sklearn.linear_model import Ridge
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
-    return TabularModel("linear", lambda: make_pipeline(StandardScaler(), Ridge(alpha=1.0)))
+    return make_pipeline(StandardScaler(), Ridge(alpha=1.0))
 
 
-def _make_rf() -> TabularModel:
+def _rf_estimator() -> object:
     from sklearn.ensemble import RandomForestRegressor
 
-    return TabularModel(
-        "rf",
-        lambda: RandomForestRegressor(
-            n_estimators=120, max_depth=6, min_samples_leaf=5, random_state=42, n_jobs=-1
-        ),
+    return RandomForestRegressor(
+        n_estimators=120, max_depth=6, min_samples_leaf=5, random_state=42, n_jobs=-1
     )
 
 
-def _make_gbr() -> TabularModel:
+def _gbr_estimator() -> object:
     from sklearn.ensemble import GradientBoostingRegressor
 
-    return TabularModel(
-        "gbr",
-        lambda: GradientBoostingRegressor(
-            n_estimators=150, max_depth=3, learning_rate=0.05, subsample=0.9,
-            random_state=42,
-        ),
+    return GradientBoostingRegressor(
+        n_estimators=150, max_depth=3, learning_rate=0.05, subsample=0.9,
+        random_state=42,
     )
 
 
-def _make_hist_gb() -> TabularModel:
+def _hist_gb_estimator() -> object:
     from sklearn.ensemble import HistGradientBoostingRegressor
 
     # capacity kept modest (leaf cap + early stopping) so 40-fold walk-forward
     # stays affordable at this data scale
-    return TabularModel(
-        "hist_gb",
-        lambda: HistGradientBoostingRegressor(
-            max_iter=150, learning_rate=0.06, min_samples_leaf=5,
-            max_leaf_nodes=15, l2_regularization=1e-3,
-            early_stopping=True, n_iter_no_change=8, validation_fraction=0.15,
-            random_state=42,
-        ),
+    return HistGradientBoostingRegressor(
+        max_iter=150, learning_rate=0.06, min_samples_leaf=5,
+        max_leaf_nodes=15, l2_regularization=1e-3,
+        early_stopping=True, n_iter_no_change=8, validation_fraction=0.15,
+        random_state=42,
     )
+
+
+def _make_linear() -> TabularModel:
+    return TabularModel("linear", _linear_estimator)
+
+
+def _make_rf() -> TabularModel:
+    return TabularModel("rf", _rf_estimator)
+
+
+def _make_gbr() -> TabularModel:
+    return TabularModel("gbr", _gbr_estimator)
+
+
+def _make_hist_gb() -> TabularModel:
+    return TabularModel("hist_gb", _hist_gb_estimator)
 
 
 QUANTILES = (0.05, 0.5, 0.95)  # native 90% interval + median point

@@ -14,9 +14,12 @@ import (
 	"time"
 )
 
-// Timeouts per CONTRACTS.md / task spec.
+// Timeouts per CONTRACTS.md / task spec. Training walk-forward validates 13
+// candidate families over up to 40 folds per horizon; on the production host
+// that takes well over the old 120s budget (observed >4 min), so the train
+// timeout is generous — the scheduler runs it in the background anyway.
 const (
-	TrainTimeout   = 120 * time.Second
+	TrainTimeout   = 30 * time.Minute
 	CollectTimeout = 60 * time.Second
 	DefaultTimeout = 60 * time.Second
 )
@@ -156,6 +159,13 @@ func (c *Client) Predict(ctx context.Context, horizons []string) (json.RawMessag
 		horizons = []string{}
 	}
 	return c.Post(ctx, "/internal/predict", map[string]any{"horizons": horizons}, DefaultTimeout)
+}
+
+// PredictCustom asks for an on-demand N-day forecast. It walk-forward
+// validates fast model candidates on the fly, so it gets a training-class
+// timeout rather than the default one.
+func (c *Client) PredictCustom(ctx context.Context, days int) (json.RawMessage, error) {
+	return c.Post(ctx, "/internal/predict/custom", map[string]any{"days": days}, 5*time.Minute)
 }
 
 func (c *Client) GenerateSignals(ctx context.Context) (json.RawMessage, error) {

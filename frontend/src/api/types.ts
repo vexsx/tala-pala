@@ -231,9 +231,18 @@ export interface IndicatorsResponse {
 
 export type Direction = 'up' | 'down' | 'flat'
 
+/**
+ * The prediction service emits drivers as {factor, importance} (feature
+ * attributions, importance 0..1) or {factor, note} (heuristic drivers, e.g.
+ * "momentum_10: +1.2% over 10 steps"). Older payloads used {name, impact}.
+ * All fields are optional — render defensively.
+ */
 export interface PredictionDriver {
-  name: string
-  impact: number
+  factor?: string
+  importance?: number
+  note?: string
+  name?: string
+  impact?: number
   description?: string
 }
 
@@ -278,6 +287,29 @@ export interface Signal {
   invalidation?: string
   review_at?: string | null
   data_fresh?: boolean
+}
+
+/** On-demand forecast for an arbitrary N-day horizon (GET /predictions/custom?days=N). */
+export interface CustomForecast {
+  symbol: string
+  horizon_days: number
+  model_name: string
+  beats_naive: boolean
+  point_forecast: number
+  lower_bound: number
+  upper_bound: number
+  last_price: number
+  expected_change_pct: number
+  direction: Direction
+  confidence: number
+  regime: string
+  metrics?: ModelMetrics
+  drivers?: PredictionDriver[]
+  decision_lean: 'buy' | 'hold' | 'sell'
+  decision_note: string
+  round_trip_cost_pct: number
+  provider_gap_pct: number | null
+  warnings: string[]
 }
 
 // ---------- Models ----------
@@ -363,6 +395,54 @@ export interface PortfolioSummary {
 
 export interface PortfolioResponse extends PortfolioSummary {
   holdings: Transaction[]
+}
+
+// ---------- Provider gap ----------
+
+export interface ProviderGapQuote {
+  provider: string
+  value: number
+  observed_at: string
+}
+
+export interface ProviderGapHistoryPoint {
+  date: string
+  gap_abs: number
+  gap_pct: number
+  mid: number
+  n_providers: number
+}
+
+/** GET /market/provider-gap — dispersion between providers quoting the same symbol. */
+export interface ProviderGapResponse {
+  symbol: string
+  window_minutes: number
+  providers: ProviderGapQuote[]
+  gap_abs: number | null
+  gap_pct: number | null
+  mid: number | null
+  history?: ProviderGapHistoryPoint[]
+  as_of: string
+}
+
+// ---------- Issues ----------
+
+export type IssueService = 'api' | 'prediction' | 'frontend'
+export type IssueLevel = 'warning' | 'error'
+
+export interface AppIssue {
+  id: number
+  occurred_at: string
+  service: IssueService
+  level: IssueLevel
+  source: string
+  message: string
+  details: Record<string, unknown> | null
+}
+
+export interface IssuesResponse {
+  items: AppIssue[]
+  as_of: string
 }
 
 // ---------- Alerts ----------

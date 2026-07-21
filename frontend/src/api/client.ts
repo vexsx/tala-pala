@@ -96,6 +96,42 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
   return payload as T
 }
 
+/** Authenticated plain-text GET (e.g. the Issues markdown report). */
+export async function apiText(path: string, signal?: AbortSignal): Promise<string> {
+  const res = await fetch(BASE + path, {
+    method: 'GET',
+    headers: buildHeaders(false),
+    signal
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    let payload: unknown = null
+    try {
+      payload = JSON.parse(text)
+    } catch {
+      payload = null
+    }
+    handleUnauthorized(res.status)
+    throw parseEnvelope(res.status, payload)
+  }
+  return text
+}
+
+/**
+ * Fire-and-forget frontend error report into the shared Issues log.
+ * Never throws — error reporting must not cause more errors.
+ */
+export function reportIssue(source: string, message: string, details?: Record<string, unknown>): void {
+  try {
+    void api('/issues', {
+      method: 'POST',
+      body: { level: 'error', source, message, details }
+    }).catch(() => undefined)
+  } catch {
+    // ignore
+  }
+}
+
 /** Authenticated download (e.g. portfolio CSV export). */
 export async function apiBlob(path: string, signal?: AbortSignal): Promise<Blob> {
   const res = await fetch(BASE + path, {

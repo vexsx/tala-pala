@@ -21,11 +21,11 @@ func TestIsOpen(t *testing.T) {
 		at     time.Time
 		want   bool
 	}{
-		// Iranian symbols: Sat-Thu 09:00-20:00 Asia/Tehran (UTC+03:30).
+		// Iranian symbols: Sat-Thu 12:00-20:00 Asia/Tehran (UTC+03:30).
 		{"tehran wed midday open", "IR_GOLD_18K", utc(15, 8, 30), true},     // 12:00 Tehran
 		{"tehran wed 21:00 closed", "IR_GOLD_18K", utc(15, 17, 30), false},  // 21:00 Tehran
-		{"tehran open boundary 09:00", "USD_IRT", utc(15, 5, 30), true},     // 09:00 Tehran inclusive
-		{"tehran before open 08:59", "USD_IRT", utc(15, 5, 29), false},      // 08:59 Tehran
+		{"tehran open boundary 12:00", "USD_IRT", utc(15, 8, 30), true},     // 12:00 Tehran inclusive
+		{"tehran before open 11:59", "USD_IRT", utc(15, 8, 29), false},      // 11:59 Tehran
 		{"tehran last minute 19:59", "IR_COIN_EMAMI", utc(15, 16, 29), true},// 19:59 Tehran
 		{"tehran close boundary 20:00", "IR_COIN_EMAMI", utc(15, 16, 30), false}, // 20:00 Tehran exclusive
 		{"tehran friday closed", "IR_GOLD_18K", utc(17, 8, 30), false},      // Friday noon Tehran

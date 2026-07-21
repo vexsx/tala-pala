@@ -36,6 +36,10 @@ interface Row {
   adx: number | null
   stochK: number | null
   stochD: number | null
+  /** Rolling 20-day return volatility, % (annualization-free, per-step). */
+  vol20: number | null
+  /** Percent below the running high of the loaded window (<= 0). */
+  drawdown: number
 }
 
 function lastDefined<T>(items: IndicatorPoint[], pick: (p: IndicatorPoint) => T | null | undefined): T | null {
@@ -55,14 +59,16 @@ export default function Technical() {
 
   const items = useMemo(() => res.data?.items ?? [], [res.data])
 
-  const rows: Row[] = useMemo(
-    () =>
-      items.map((p) => ({
+  const rows: Row[] = useMemo(() => {
+    let runningHigh = -Infinity
+    return items.map((p) => {
+      runningHigh = Math.max(runningHigh, p.close)
+      return {
         label: shortDate(p.date, calendar),
         close: p.close,
         sma20: p.sma_20,
         sma50: p.sma_50,
-        bb: p.bollinger ? [p.bollinger.lower, p.bollinger.upper] : null,
+        bb: p.bollinger ? ([p.bollinger.lower, p.bollinger.upper] as [number, number]) : null,
         bbMid: p.bollinger?.mid ?? null,
         rsi: p.rsi_14,
         macdLine: p.macd?.line ?? null,
@@ -70,10 +76,12 @@ export default function Technical() {
         macdHist: p.macd?.hist ?? null,
         adx: p.adx_14 ?? null,
         stochK: p.stoch_k ?? null,
-        stochD: p.stoch_d ?? null
-      })),
-    [items, calendar]
-  )
+        stochD: p.stoch_d ?? null,
+        vol20: p.volatility_20 !== null && p.volatility_20 !== undefined ? p.volatility_20 * 100 : null,
+        drawdown: runningHigh > 0 ? (p.close / runningHigh - 1) * 100 : 0
+      }
+    })
+  }, [items, calendar])
 
   if (res.loading) return <Loading label="Computing indicators…" />
   if (res.error) return <ErrorMessage message={res.error} onRetry={res.reload} />
@@ -595,6 +603,90 @@ export default function Technical() {
           </div>
           <p className="muted small">
             Where price sits in its 14-day range: above 80 overbought, below 20 oversold.
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-2">
+        <div className="card">
+          <div className="card-title">Annualized volatility (20d)</div>
+          <div className="chart-box" style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                  minTickGap={28}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                />
+                <YAxis
+                  tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                  width={44}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                  tickFormatter={(v: number) => `${v.toFixed(0)}%`}
+                />
+                <Tooltip content={<ChartTip format={(v) => `${v.toFixed(1)}%`} />} />
+                <Line
+                  type="monotone"
+                  dataKey="vol20"
+                  name="volatility"
+                  stroke="var(--warn)"
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                  connectNulls
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="muted small">
+            Rising volatility means wider expected swings — position sizes and forecast intervals
+            should widen with it.
+          </p>
+        </div>
+
+        <div className="card">
+          <div className="card-title">Drawdown from 90-day high</div>
+          <div className="chart-box" style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>
+                <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                  minTickGap={28}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                />
+                <YAxis
+                  tick={{ fill: 'var(--muted)', fontSize: 11 }}
+                  width={44}
+                  tickLine={false}
+                  axisLine={{ stroke: 'var(--border)' }}
+                  tickFormatter={(v: number) => `${v.toFixed(0)}%`}
+                />
+                <Tooltip content={<ChartTip format={(v) => `${v.toFixed(2)}%`} />} />
+                <ReferenceLine y={0} stroke="var(--border)" />
+                <Area
+                  type="monotone"
+                  dataKey="drawdown"
+                  name="drawdown"
+                  stroke="var(--neg)"
+                  fill="var(--neg)"
+                  fillOpacity={0.15}
+                  strokeWidth={1.5}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="muted small">
+            How far below the running 90-day peak the price sits. 0% = at the high; deeper troughs
+            show correction depth and recovery speed.
           </p>
         </div>
       </div>

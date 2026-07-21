@@ -42,6 +42,13 @@ class HorizonsRequest(BaseModel):
     horizons: list[str] = Field(default_factory=list)
 
 
+class CustomPredictRequest(BaseModel):
+    days: int = 7
+    fee_pct: Optional[float] = None
+    spread_pct: Optional[float] = None
+    slippage_pct: Optional[float] = None
+
+
 class BacktestRequest(BaseModel):
     horizon: str = "1d"
     fee_pct: float = 0.5
@@ -55,6 +62,11 @@ class BacktestRequest(BaseModel):
 def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
     settings = settings or get_settings()
     engine = engine if engine is not None else create_db_engine(settings.database_url)
+
+    # Mirror every WARNING/ERROR into the shared app_issues table (Issues tab).
+    from .core.issues import install_issue_capture
+
+    install_issue_capture(engine)
 
     app = FastAPI(
         title="goldpred prediction service",
@@ -113,6 +125,22 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
     def predict(req: Optional[HorizonsRequest] = None) -> dict:
         horizons = req.horizons if req and req.horizons else None
         return predict_all(engine, settings, horizons)
+
+    @app.post("/internal/predict/custom")
+    def predict_custom_endpoint(req: CustomPredictRequest) -> dict:
+        from .models.custom import predict_custom
+
+        try:
+            return predict_custom(
+                engine, settings, req.days,
+                fee_pct=req.fee_pct, spread_pct=req.spread_pct,
+                slippage_pct=req.slippage_pct,
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
 
     @app.post("/internal/signals/generate")
     def signals_generate() -> dict:

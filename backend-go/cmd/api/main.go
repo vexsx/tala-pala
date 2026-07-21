@@ -22,6 +22,7 @@ import (
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/config"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/httpserver"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/internalclient"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/issues"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/models"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/obs"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/portfolio"
@@ -66,6 +67,13 @@ func run() error {
 		return err
 	}
 
+	// Issue capture: mirror every WARN/ERROR into app_issues (Issues tab).
+	// Wired after migrations so the table exists before the first insert.
+	issueRecorder := issues.NewRecorder(pool)
+	defer issueRecorder.Close()
+	logger = slog.New(issues.NewTeeHandler(logger.Handler(), issueRecorder))
+	slog.SetDefault(logger)
+
 	// Redis.
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer func() { _ = rdb.Close() }()
@@ -106,12 +114,13 @@ func run() error {
 			Pool: pool, Log: logger, StaleMinutesDefault: cfg.StaleMinutes,
 			MarketOpen: cfg.MarketTehranOpen, MarketClose: cfg.MarketTehranClose,
 		},
-		Predictions: &predictions.Handler{Pool: pool, Log: logger},
+		Predictions: &predictions.Handler{Pool: pool, Log: logger, Client: pyClient},
 		Signals:     &signalsvc.Handler{Pool: pool, Log: logger},
 		Models:      &models.Handler{Pool: pool, Log: logger},
 		Portfolio:   &portfolio.Handler{Pool: pool, Audit: auditLog, Log: logger},
 		Alerts:      &alerts.Handler{Pool: pool, Audit: auditLog, Log: logger},
 		Admin:       &admin.Handler{Pool: pool, Client: pyClient, Audit: auditLog, Log: logger},
+		Issues:      &issues.Handler{Pool: pool, Recorder: issueRecorder, Log: logger},
 
 		GlobalLimiter: globalLimiter,
 		LoginLimiter:  loginLimiter,

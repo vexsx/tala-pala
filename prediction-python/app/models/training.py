@@ -215,19 +215,21 @@ def evaluate_candidates(
     horizon_steps: int,
     candidates: Optional[Sequence[str]] = None,
     context: Optional[dict] = None,
+    max_folds: int = MAX_FOLDS,
 ) -> dict[str, dict]:
     """Walk-forward all candidates on the same folds; add the ensemble.
 
     Returns ``{model_name: {"folds": [...], "metrics": {...}}}``.
     ``candidates`` defaults to the module-level ``CANDIDATES`` (resolved at
     call time so tests can narrow the set); ``context`` feeds exog-aware
-    models (see :func:`walk_forward`).
+    models (see :func:`walk_forward`); ``max_folds`` lets interactive callers
+    (custom horizons) trade validation depth for latency.
     """
     if candidates is None:
         candidates = CANDIDATES
     results: dict[str, dict] = {}
     for name in candidates:
-        folds = walk_forward(series, name, horizon_steps, context=context)
+        folds = walk_forward(series, name, horizon_steps, context=context, max_folds=max_folds)
         if folds:
             results[name] = {"folds": folds, "metrics": fold_metrics(folds)}
 

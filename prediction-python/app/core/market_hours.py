@@ -55,7 +55,7 @@ def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
         local = at_utc.astimezone(TEHRAN)
         if local.weekday() == FRIDAY:
             return False
-        open_t = _parse_hhmm(settings.market_tehran_open, time(9, 0))
+        open_t = _parse_hhmm(settings.market_tehran_open, time(12, 0))
         close_t = _parse_hhmm(settings.market_tehran_close, time(20, 0))
         return open_t <= local.time() < close_t
     if symbol in GLOBAL_SYMBOLS:

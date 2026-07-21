@@ -16,7 +16,7 @@ import "time"
 
 // Contract defaults for the Tehran session (Asia/Tehran local, HH:MM).
 const (
-	DefaultOpen  = "09:00"
+	DefaultOpen  = "12:00"
 	DefaultClose = "20:00"
 )
 

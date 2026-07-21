@@ -37,6 +37,7 @@ Auth: every `/internal/*` request requires header `X-Internal-Token: $INTERNAL_A
 - `POST /internal/features/generate` → builds `feature_snapshots` for `IR_GOLD_18K` from `prices` (point-in-time correct).
 - `POST /internal/train` body `{"horizons":["1d",...]}` (empty=all enabled) → walk-forward model comparison per horizon, writes `training_runs`, `model_versions` (activates winner only if it beats naive baseline), saves artifacts under `/app/models`.
 - `POST /internal/predict` body `{"horizons":[...]}` → uses active model per horizon, writes rows to `predictions`, returns them.
+- `POST /internal/predict/custom` body `{"days":N, "fee_pct"?, "spread_pct"?, "slippage_pct"?}` (1 ≤ N ≤ 90) → on-demand forecast at exactly N daily steps: walk-forward validates a fast candidate subset, returns point/interval/direction/confidence plus a cost-aware `decision_lean` (buy/hold/sell). Ephemeral — nothing persisted, no artifact written. 400 on bad input or insufficient history.
 - `POST /internal/signals/generate` → composes latest predictions + indicators + premium into one row in `signals`, returns it.
 - `POST /internal/backtest` body `{"horizon":"1d","fee_pct":0.5,"spread_pct":1.0,"slippage_pct":0.1,"min_holding_days":1,"start":null,"end":null}` → writes `backtest_runs`, returns results JSON (strategy vs buy_and_hold vs sma_crossover vs no_action; metrics: total_return_pct, annualized_return_pct, win_rate, profit_factor, max_drawdown_pct, n_trades, avg_trade_return_pct, sharpe_like, directional_accuracy, per-regime table, gross vs net).
 - `POST /internal/evaluate` → fills `predictions.actual_value` for matured predictions; returns live-accuracy summary.
@@ -85,7 +86,7 @@ Calls the API at same-origin `/api/v1/...` (nginx in the frontend container prox
 
 ## Addendum 1 — market-hours awareness (2026-07-20)
 
-Iranian symbols (IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI) trade Sat–Thu, roughly `MARKET_TEHRAN_OPEN`(default 09:00)–`MARKET_TEHRAN_CLOSE`(default 20:00) Asia/Tehran; closed Friday. Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y) are closed from Fri 21:00 UTC to Sun 22:00 UTC. Both Go and Python implement the same rules from the same env vars.
+Iranian symbols (IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI) trade Sat–Thu, roughly `MARKET_TEHRAN_OPEN`(default 12:00)–`MARKET_TEHRAN_CLOSE`(default 20:00) Asia/Tehran; closed Friday. Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y) are closed from Fri 21:00 UTC to Sun 22:00 UTC. Both Go and Python implement the same rules from the same env vars.
 
 - Every per-symbol price object (`/prices/current` entries, summary `current_18k`/`xau_usd`/`usd_irt`) gains `"market_state": "open"|"closed"`.
 - `stale` semantics: while the market is OPEN, stale = older than STALE_MINUTES (unchanged). While CLOSED, data observed within the last session (≤ closed-duration + STALE_MINUTES) is NOT stale; older is.
@@ -103,3 +104,13 @@ Shared: `POSTGRES_HOST/PORT/DB/USER/PASSWORD`, `REDIS_ADDR`, `INTERNAL_API_TOKEN
 Go: `API_PORT=8080`, `JWT_SECRET`, `JWT_TTL_HOURS=24`, `ALLOW_OPEN_REGISTRATION=false`, `PREDICTION_SERVICE_URL=http://prediction-service:8500`, `SCHEDULER_ENABLED=true`, `RATE_LIMIT_RPM=60`, `CORS_ALLOWED_ORIGINS`, `LOG_LEVEL=info`, cron overrides `SCHEDULE_COLLECT_CRON` etc.
 Python: `PREDICTION_PORT=8500`, `DATABASE_URL=postgresql+psycopg://...`, `MODELS_DIR=/app/models`, `HTTP_TIMEOUT_SECONDS=15`, `NAVASAN_API_KEY=` (optional), `METALS_DEV_API_KEY=` (optional), `RAW_RETENTION_DAYS=365`, `STALE_MINUTES=30`.
 Both support `*_FILE` variants for Docker secrets (e.g. `POSTGRES_PASSWORD_FILE`).
+
+## Addendum 3 — issue log, provider gap, custom horizons (2026-07-21)
+
+**Issue log.** Migration `0008_app_issues` adds `app_issues(id, occurred_at, service, level, source, message, details, created_at)` with `service ∈ {api, prediction, frontend}` and `level ∈ {warning, error}`. Both services mirror every WARN/ERROR log record into it (Go: slog tee handler, async + drop-on-saturation; Python: logging handler with re-entrancy guard). The Go API serves `GET /api/v1/issues`, `POST /api/v1/issues` (frontend error reports; service forced to `frontend`) and `GET /api/v1/issues/report` (Markdown digest: recent issues + provider health + training runs). Rows older than 30 days are pruned by the Python cleanup job.
+
+**Provider gap.** `GET /api/v1/market/provider-gap?symbol=IR_GOLD_18K&window_minutes=120&history_days=30` reports the dispersion between providers' latest good quotes (per-provider values, `gap_pct = (max-min)/median*100`, daily history). The prediction service computes the same gap before writing predictions: a gap ≥ 1% widens the interval by half the gap on each side and appends a warning. Rationale: cross-provider spread is *quote* uncertainty, orthogonal to model uncertainty.
+
+**Tehran session default.** `MARKET_TEHRAN_OPEN` default changed 09:00 → 12:00 (observed market practice); `.env` on deployments should be updated to match.
+
+**Train timeout.** The Go internal-client timeout for `/internal/train` rose from 120s to 30m — full walk-forward over all candidate families takes minutes on small hosts, and the old budget aborted training mid-run.

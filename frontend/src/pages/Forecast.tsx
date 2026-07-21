@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
 import { useApi } from '../hooks/useApi'
+import { api, errorMessage } from '../api/client'
 import {
   HORIZONS,
   HORIZON_LABELS,
+  type CustomForecast,
   type Horizon,
   type Prediction,
   type PriceHistoryResponse
@@ -28,6 +30,121 @@ import EmptyState from '../components/EmptyState'
 const DAY_MS = 24 * 60 * 60 * 1000
 
 const DIRECTION_ARROWS: Record<string, string> = { up: '▲', down: '▼', flat: '▶' }
+
+const LEAN_LABELS: Record<CustomForecast['decision_lean'], string> = {
+  buy: 'Buy lean',
+  hold: 'Hold',
+  sell: 'Sell lean'
+}
+
+/** "How many days ahead should I decide for?" — on-demand forecast card. */
+function CustomHorizonCard({ fmt }: { fmt: (v: number) => string }) {
+  const [days, setDays] = useState('7')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<CustomForecast | null>(null)
+
+  const run = async () => {
+    const n = Number.parseInt(days, 10)
+    if (!Number.isInteger(n) || n < 1 || n > 90) {
+      setError('Enter a whole number of days between 1 and 90.')
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      setResult(await api<CustomForecast>(`/predictions/custom?days=${n}`))
+    } catch (err) {
+      setResult(null)
+      setError(errorMessage(err))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const leanClass =
+    result?.decision_lean === 'buy' ? 'pos' : result?.decision_lean === 'sell' ? 'neg' : ''
+
+  return (
+    <div className="card">
+      <div className="card-title">Decide over a custom horizon</div>
+      <p className="muted small">
+        Pick any number of days (1–90). Fast models are validated live at exactly that horizon —
+        this takes a few seconds and is not stored.
+      </p>
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <input
+          type="number"
+          min={1}
+          max={90}
+          step={1}
+          value={days}
+          onChange={(e) => setDays(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !loading) void run()
+          }}
+          aria-label="Horizon in days"
+          style={{ width: '6rem' }}
+        />
+        <span className="muted">days</span>
+        <button type="button" className="btn btn-sm" onClick={run} disabled={loading}>
+          {loading ? 'Computing…' : 'Compute forecast'}
+        </button>
+      </div>
+      {error && <ErrorMessage message={error} />}
+      {result && !loading && (
+        <>
+          {(result.warnings ?? []).map((w, i) => (
+            <div key={i} className="callout callout-warn">
+              {w}
+            </div>
+          ))}
+          <div className="stat-value" style={{ marginTop: '0.75rem' }}>
+            <span className={`direction-arrow ${pctClass(result.expected_change_pct)}`}>
+              {DIRECTION_ARROWS[result.direction] ?? '•'}
+            </span>{' '}
+            {fmt(result.point_forecast)}
+          </div>
+          <div className={`delta ${pctClass(result.expected_change_pct)}`}>
+            {formatPct(result.expected_change_pct)} expected over {result.horizon_days} day
+            {result.horizon_days > 1 ? 's' : ''}
+          </div>
+          <div className="stat-sub">
+            <div className="kv">
+              <span className="muted">90% interval</span>
+              <span className="mono">
+                {fmt(result.lower_bound)} – {fmt(result.upper_bound)}
+              </span>
+            </div>
+            <div className="kv">
+              <span className="muted">Model</span>
+              <span className="mono">
+                {result.model_name}
+                {result.beats_naive ? '' : ' (naive baseline won)'}
+              </span>
+            </div>
+            <div className="kv">
+              <span className="muted">Regime</span>
+              <span className="mono">{result.regime}</span>
+            </div>
+            {result.provider_gap_pct !== null && (
+              <div className="kv">
+                <span className="muted">Provider gap now</span>
+                <span className="mono">{formatPct(result.provider_gap_pct)}</span>
+              </div>
+            )}
+          </div>
+          <GaugeBar value={confidencePct(result.confidence)} label="Confidence" />
+          <div className={`callout ${result.decision_lean === 'hold' ? '' : 'callout-warn'}`}>
+            <strong className={leanClass}>{LEAN_LABELS[result.decision_lean]}</strong> —{' '}
+            {result.decision_note} Costs assumed ≈{result.round_trip_cost_pct}% round-trip. Not
+            financial advice.
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
 
 /** The live API emits point_forecast/predicted_at; older payloads used predicted_value/created_at. */
 function normalizePrediction(p: Prediction): Prediction {
@@ -142,6 +259,8 @@ export default function Forecast() {
         )}
       </div>
 
+      <CustomHorizonCard fmt={fmt} />
+
       <div className="tabs" role="tablist">
         {predictions.map((p) => (
           <button
@@ -208,15 +327,21 @@ export default function Forecast() {
               <div className="card-title">Drivers</div>
               {activePrediction.drivers && activePrediction.drivers.length > 0 ? (
                 <ul className="driver-list">
-                  {activePrediction.drivers.map((d) => (
-                    <li key={d.name} className="driver-row" title={d.description}>
-                      <span className="driver-name">{d.name.replace(/_/g, ' ')}</span>
-                      <span className={`mono ${pctClass(d.impact)}`}>
-                        {d.impact > 0 ? '+' : ''}
-                        {d.impact.toFixed(2)}
-                      </span>
-                    </li>
-                  ))}
+                  {activePrediction.drivers.map((d, i) => {
+                    const label = d.factor ?? d.name ?? 'unknown'
+                    const weight = d.importance ?? d.impact
+                    const detail = d.note ?? d.description
+                    return (
+                      <li key={`${label}-${i}`} className="driver-row" title={detail}>
+                        <span className="driver-name">{label.replace(/_/g, ' ')}</span>
+                        <span className={`mono ${weight !== undefined ? pctClass(weight) : 'muted'}`}>
+                          {weight !== undefined
+                            ? `${weight > 0 ? '+' : ''}${weight.toFixed(2)}`
+                            : detail ?? '—'}
+                        </span>
+                      </li>
+                    )
+                  })}
                 </ul>
               ) : (
                 <EmptyState title="No driver breakdown" hint="This model did not report feature attributions." />

@@ -3,6 +3,7 @@ package predictions
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/httpserver"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/internalclient"
 )
 
 // Horizons is the canonical horizon set.
@@ -24,6 +26,9 @@ var Horizons = map[string]bool{
 type Handler struct {
 	Pool *pgxpool.Pool
 	Log  *slog.Logger
+	// Client reaches the Python prediction service for on-demand custom
+	// horizons (may be nil in tests; Custom then responds 503).
+	Client *internalclient.Client
 }
 
 type prediction struct {
@@ -131,6 +136,41 @@ func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpserver.JSON(w, http.StatusOK, map[string]any{"horizon": horizon, "items": items})
+}
+
+// Custom implements GET /api/v1/predictions/custom?days=N — an on-demand
+// forecast for an arbitrary 1-90 day decision horizon, computed live by the
+// prediction service (nothing is persisted).
+func (h *Handler) Custom(w http.ResponseWriter, r *http.Request) {
+	if h.Client == nil {
+		httpserver.Error(w, http.StatusServiceUnavailable, "unavailable",
+			"prediction service not configured", nil)
+		return
+	}
+	days, err := strconv.Atoi(r.URL.Query().Get("days"))
+	if err != nil || days < 1 || days > 90 {
+		httpserver.BadRequest(w, "days must be an integer between 1 and 90",
+			map[string]any{"days": r.URL.Query().Get("days")})
+		return
+	}
+	payload, err := h.Client.PredictCustom(r.Context(), days)
+	if err != nil {
+		var apiErr *internalclient.APIError
+		if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 {
+			// pass the Python error envelope through (e.g. "not enough history")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(apiErr.Status)
+			_, _ = w.Write([]byte(apiErr.Body))
+			return
+		}
+		h.Log.Error("predictions_custom", "error", err)
+		httpserver.Error(w, http.StatusBadGateway, "upstream_error",
+			"prediction service failed to compute the custom forecast", nil)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(payload)
 }
 
 func limitParam(s string, def, maxV int) int {

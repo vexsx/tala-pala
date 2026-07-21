@@ -133,7 +133,7 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 		MigrationsDir:         get("MIGRATIONS_DIR", "/app/migrations"),
 		StaleMinutes:          getInt("STALE_MINUTES", 30),
 
-		MarketTehranOpen:  get("MARKET_TEHRAN_OPEN", "09:00"),
+		MarketTehranOpen:  get("MARKET_TEHRAN_OPEN", "12:00"),
 		MarketTehranClose: get("MARKET_TEHRAN_CLOSE", "20:00"),
 
 		Crons: CronConfig{

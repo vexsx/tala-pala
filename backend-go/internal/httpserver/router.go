@@ -27,11 +27,13 @@ type PriceHandlers interface {
 	MarketSummary(http.ResponseWriter, *http.Request)
 	Premium(http.ResponseWriter, *http.Request)
 	Indicators(http.ResponseWriter, *http.Request)
+	ProviderGap(http.ResponseWriter, *http.Request)
 }
 
 type PredictionHandlers interface {
 	Latest(http.ResponseWriter, *http.Request)
 	History(http.ResponseWriter, *http.Request)
+	Custom(http.ResponseWriter, *http.Request)
 }
 
 type SignalHandlers interface {
@@ -67,6 +69,12 @@ type AdminHandlers interface {
 	AuditList(http.ResponseWriter, *http.Request)
 }
 
+type IssueHandlers interface {
+	List(http.ResponseWriter, *http.Request)
+	Create(http.ResponseWriter, *http.Request)
+	Report(http.ResponseWriter, *http.Request)
+}
+
 // Deps bundles everything the router needs.
 type Deps struct {
 	Logger  *slog.Logger
@@ -84,6 +92,7 @@ type Deps struct {
 	Portfolio   PortfolioHandlers
 	Alerts      AlertHandlers
 	Admin       AdminHandlers
+	Issues      IssueHandlers
 
 	// Limiters are created by the caller so it can Stop() them on shutdown.
 	GlobalLimiter *RateLimiter
@@ -132,8 +141,11 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			r.Get("/api/v1/market/summary", d.Prices.MarketSummary)
 			r.Get("/api/v1/market/premium", d.Prices.Premium)
 			r.Get("/api/v1/market/indicators", d.Prices.Indicators)
+			r.Get("/api/v1/market/provider-gap", d.Prices.ProviderGap)
 
 			r.Get("/api/v1/predictions", d.Predictions.Latest)
+			// static route wins over the {horizon} pattern in chi
+			r.Get("/api/v1/predictions/custom", d.Predictions.Custom)
 			r.Get("/api/v1/predictions/{horizon}", d.Predictions.History)
 
 			r.Get("/api/v1/signals/current", d.Signals.Current)
@@ -155,6 +167,10 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			r.Delete("/api/v1/alerts/{id}", d.Alerts.Delete)
 			r.Get("/api/v1/alerts/events", d.Alerts.Events)
 			r.Post("/api/v1/alerts/events/{id}/ack", d.Alerts.AckEvent)
+
+			r.Get("/api/v1/issues", d.Issues.List)
+			r.Get("/api/v1/issues/report", d.Issues.Report)
+			r.Post("/api/v1/issues", d.Issues.Create)
 
 			// Admin only.
 			r.Group(func(r chi.Router) {
