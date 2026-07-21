@@ -4,6 +4,7 @@ import { apiText, errorMessage } from '../api/client'
 import type { AppIssue, IssueLevel, IssueService, IssuesResponse } from '../api/types'
 import { useSettings } from '../lib/settings'
 import { formatDateTime } from '../lib/format'
+import { useAuth } from '../auth/AuthContext'
 import Loading from '../components/Loading'
 import ErrorMessage from '../components/ErrorMessage'
 import EmptyState from '../components/EmptyState'
@@ -27,6 +28,7 @@ function detailsText(details: Record<string, unknown> | null): string | null {
 }
 
 export default function Issues() {
+  const { user: me } = useAuth()
   const { calendar } = useSettings()
   const [service, setService] = useState<IssueService | ''>('')
   const [level, setLevel] = useState<IssueLevel | ''>('')
@@ -41,9 +43,18 @@ export default function Issues() {
     return `/issues?${params.toString()}`
   }, [service, level, hours])
 
-  const issues = useApi<IssuesResponse>(path)
+  const issues = useApi<IssuesResponse>(me?.role === 'admin' ? path : null)
   const items: AppIssue[] = issues.data?.items ?? []
   const errorCount = items.filter((i) => i.level === 'error').length
+
+  if (me?.role !== 'admin') {
+    return (
+      <div className="page-body">
+        <h2 className="page-title">Issues</h2>
+        <EmptyState title="Admin only" hint="The system issue log requires the admin role." />
+      </div>
+    )
+  }
 
   const copyReport = async () => {
     setCopyState('copying')

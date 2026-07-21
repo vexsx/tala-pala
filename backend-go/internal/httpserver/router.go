@@ -176,13 +176,15 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			r.Get("/api/v1/alerts/events", d.Alerts.Events)
 			r.Post("/api/v1/alerts/events/{id}/ack", d.Alerts.AckEvent)
 
-			r.Get("/api/v1/issues", d.Issues.List)
-			r.Get("/api/v1/issues/report", d.Issues.Report)
+			// Any authenticated session may REPORT a client-side error…
 			r.Post("/api/v1/issues", d.Issues.Create)
 
 			// Admin only.
 			r.Group(func(r chi.Router) {
 				r.Use(AdminOnly)
+				// …but viewing the issue log is system scope: admin only.
+				r.Get("/api/v1/issues", d.Issues.List)
+				r.Get("/api/v1/issues/report", d.Issues.Report)
 				r.Post("/api/v1/admin/jobs/{job}", d.Admin.TriggerJob)
 				r.Get("/api/v1/admin/audit", d.Admin.AuditList)
 				r.Get("/api/v1/admin/users", d.Admin.ListUsers)

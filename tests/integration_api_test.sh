@@ -65,6 +65,15 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "$BASE/api/v1
 [ "$CODE" = "403" ] || { echo "ASSERT FAILED: admin endpoint returned $CODE for user role"; FAIL=1; }
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "$BASE/api/v1/admin/users")
 [ "$CODE" = "403" ] || { echo "ASSERT FAILED: admin users returned $CODE for user role"; FAIL=1; }
+# the system issue log is admin scope: viewing forbidden for regular users…
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "$BASE/api/v1/issues")
+[ "$CODE" = "403" ] || { echo "ASSERT FAILED: issues list returned $CODE for user role"; FAIL=1; }
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "$BASE/api/v1/issues/report")
+[ "$CODE" = "403" ] || { echo "ASSERT FAILED: issues report returned $CODE for user role"; FAIL=1; }
+# …but error REPORTING stays open to any authenticated session
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "$BASE/api/v1/issues" \
+  -H 'Content-Type: application/json' -d '{"level":"error","source":"itest","message":"itest probe"}')
+[ "$CODE" = "202" ] || { echo "ASSERT FAILED: issue report returned $CODE for user role"; FAIL=1; }
 
 step "admin user management (create/list/update/delete)"
 ADMIN_EMAIL="itest-admin-$(date +%s)@local.test"

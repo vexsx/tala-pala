@@ -38,7 +38,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean; adminOnly?: b
   { to: '/portfolio', label: 'Portfolio' },
   { to: '/alerts', label: 'Alerts' },
   { to: '/models', label: 'Models' },
-  { to: '/issues', label: 'Issues' },
+  { to: '/issues', label: 'Issues', adminOnly: true },
   { to: '/users', label: 'Users', adminOnly: true }
 ]
 
