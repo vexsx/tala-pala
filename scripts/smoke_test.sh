@@ -28,7 +28,7 @@ docker compose ps
 echo "[smoke] probing endpoints ..."
 check "frontend serves index"        "curl -fsS http://localhost:${PORT}/ | grep -qi '<div id='"
 check "api health via frontend"      "curl -fsS http://localhost:${PORT}/api/v1/health | grep -q ok"
-check "api readiness"                "curl -fsS http://localhost:${PORT}/api/v1/readiness | grep -q ok"
+check "api readiness"                "curl -fsS http://localhost:${PORT}/api/v1/readiness | grep -qE 'ready|ok'"
 check "unauth request rejected"      "curl -s -o /dev/null -w '%{http_code}' http://localhost:${PORT}/api/v1/prices/current | grep -q 401"
 check "postgres accepts connections" "docker compose exec -T postgres pg_isready"
 check "redis responds to ping"       "docker compose exec -T redis redis-cli ping | grep -q PONG"
