@@ -397,6 +397,18 @@ export interface PortfolioResponse extends PortfolioSummary {
   holdings: Transaction[]
 }
 
+// ---------- Admin: user management ----------
+
+export interface AdminUser {
+  id: string
+  email: string
+  role: 'admin' | 'user' | string
+  created_at: string
+  updated_at: string
+  /** Portfolio transaction count — shown as a warning before deletion. */
+  transactions: number
+}
+
 // ---------- Candles (trading panel) ----------
 
 export interface Candle {

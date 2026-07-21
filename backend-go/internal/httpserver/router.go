@@ -68,6 +68,10 @@ type AlertHandlers interface {
 type AdminHandlers interface {
 	TriggerJob(http.ResponseWriter, *http.Request)
 	AuditList(http.ResponseWriter, *http.Request)
+	ListUsers(http.ResponseWriter, *http.Request)
+	CreateUser(http.ResponseWriter, *http.Request)
+	UpdateUser(http.ResponseWriter, *http.Request)
+	DeleteUser(http.ResponseWriter, *http.Request)
 }
 
 type IssueHandlers interface {
@@ -179,6 +183,10 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 				r.Use(AdminOnly)
 				r.Post("/api/v1/admin/jobs/{job}", d.Admin.TriggerJob)
 				r.Get("/api/v1/admin/audit", d.Admin.AuditList)
+				r.Get("/api/v1/admin/users", d.Admin.ListUsers)
+				r.Post("/api/v1/admin/users", d.Admin.CreateUser)
+				r.Put("/api/v1/admin/users/{id}", d.Admin.UpdateUser)
+				r.Delete("/api/v1/admin/users/{id}", d.Admin.DeleteUser)
 			})
 		})
 	})

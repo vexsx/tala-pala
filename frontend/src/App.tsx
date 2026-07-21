@@ -27,8 +27,9 @@ import Portfolio from './pages/Portfolio'
 import Alerts from './pages/Alerts'
 import Models from './pages/Models'
 import Issues from './pages/Issues'
+import Users from './pages/Users'
 
-const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean }> = [
+const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean; adminOnly?: boolean }> = [
   { to: '/', label: 'Overview', end: true },
   { to: '/trade', label: 'Trade' },
   { to: '/forecast', label: 'Forecast' },
@@ -37,10 +38,13 @@ const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean }> = [
   { to: '/portfolio', label: 'Portfolio' },
   { to: '/alerts', label: 'Alerts' },
   { to: '/models', label: 'Models' },
-  { to: '/issues', label: 'Issues' }
+  { to: '/issues', label: 'Issues' },
+  { to: '/users', label: 'Users', adminOnly: true }
 ]
 
 function Sidebar() {
+  const { user } = useAuth()
+  const items = NAV_ITEMS.filter((item) => !item.adminOnly || user?.role === 'admin')
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -50,7 +54,7 @@ function Sidebar() {
         </span>
       </div>
       <nav className="side-nav" aria-label="Main navigation">
-        {NAV_ITEMS.map((item) => (
+        {items.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -188,6 +192,7 @@ export default function App() {
               <Route path="/alerts" element={<Alerts />} />
               <Route path="/models" element={<Models />} />
               <Route path="/issues" element={<Issues />} />
+              <Route path="/users" element={<Users />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

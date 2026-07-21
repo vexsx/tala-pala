@@ -71,6 +71,7 @@ Authenticated endpoints:
 - Portfolio (scoped to authed user): `GET /api/v1/portfolio` → holdings + computed {total_grams_18k_equivalent, invested, current_value, unrealized_pnl, pnl_pct, avg_price, break_even_price, scenarios:[{change_pct,value,pnl}], target_price_for_profit_pct(10)}, `POST /api/v1/portfolio/transactions`, `PUT/DELETE /api/v1/portfolio/transactions/{id}`, `POST /api/v1/portfolio/import` (multipart CSV, max 1MB, columns: tx_type,grams,karat,price_per_gram,currency,fees,tx_date,notes), `GET /api/v1/portfolio/export` (CSV; cells starting with =+-@ prefixed with ' to block formula injection)
 - Alerts: `GET/POST /api/v1/alerts`, `PUT/DELETE /api/v1/alerts/{id}`, `GET /api/v1/alerts/events?unacked=true`, `POST /api/v1/alerts/events/{id}/ack`
 - Admin only: `POST /api/v1/admin/jobs/{collect|train|predict|signals|backtest|evaluate}` (proxy to Python), `GET /api/v1/admin/audit?page=`
+- Admin user management (Addendum 5; self-registration is closed by default): `GET /api/v1/admin/users` (list + portfolio tx counts), `POST /api/v1/admin/users {email,password,role}`, `PUT /api/v1/admin/users/{id} {role?,password?}`, `DELETE /api/v1/admin/users/{id}`. Guards: an admin cannot delete their own account; the last admin can neither be deleted nor demoted (409). All actions audited.
 
 Karat conversion for portfolio: value of k-karat grams priced via 18k price × (k/18) — documented approximation.
 

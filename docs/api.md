@@ -31,6 +31,7 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `GET/POST/PUT/DELETE /alerts*` (`/events`, `/events/{id}/ack`) | Alert rules and in-app events |
 | `POST /admin/jobs/{collect\|train\|predict\|signals\|backtest\|evaluate}` | Manual job triggers (proxied to the prediction service) |
 | `GET /admin/audit` | Audit log |
+| `GET/POST /admin/users` · `PUT/DELETE /admin/users/{id}` | Full user management (list/create/change role/reset password/delete; self-registration is closed) |
 
 ## Example
 

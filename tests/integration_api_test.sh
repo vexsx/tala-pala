@@ -63,6 +63,30 @@ assert_contains "$(curl -fsS "${AUTH[@]}" "$BASE/api/v1/alerts")" 'price_above'
 step "admin denied for regular user"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "$BASE/api/v1/admin/jobs/collect")
 [ "$CODE" = "403" ] || { echo "ASSERT FAILED: admin endpoint returned $CODE for user role"; FAIL=1; }
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "$BASE/api/v1/admin/users")
+[ "$CODE" = "403" ] || { echo "ASSERT FAILED: admin users returned $CODE for user role"; FAIL=1; }
+
+step "admin user management (create/list/update/delete)"
+ADMIN_EMAIL="itest-admin-$(date +%s)@local.test"
+docker compose exec -T api /app/createuser -email "$ADMIN_EMAIL" -password "$PASS" -role admin
+ADMIN_LOGIN=$(curl -fsS -X POST "$BASE/api/v1/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$PASS\"}")
+ADMIN_TOKEN=$(echo "$ADMIN_LOGIN" | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])' 2>/dev/null \
+     || echo "$ADMIN_LOGIN" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+AAUTH=(-H "Authorization: Bearer $ADMIN_TOKEN")
+MANAGED_EMAIL="itest-managed-$(date +%s)@local.test"
+CREATED=$(curl -fsS "${AAUTH[@]}" -X POST "$BASE/api/v1/admin/users" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"$MANAGED_EMAIL\",\"password\":\"$PASS\",\"role\":\"user\"}")
+assert_contains "$CREATED" '"id"'
+MANAGED_ID=$(echo "$CREATED" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+assert_contains "$(curl -fsS "${AAUTH[@]}" "$BASE/api/v1/admin/users")" "$MANAGED_EMAIL"
+assert_contains "$(curl -fsS "${AAUTH[@]}" -X PUT "$BASE/api/v1/admin/users/$MANAGED_ID" \
+  -H 'Content-Type: application/json' -d '{"password":"A-New-Pass-123456"}')" '"updated"'
+assert_contains "$(curl -fsS "${AAUTH[@]}" -X DELETE "$BASE/api/v1/admin/users/$MANAGED_ID")" '"deleted"'
+# self-deletion must be refused
+ADMIN_ID=$(echo "$ADMIN_LOGIN" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AAUTH[@]}" -X DELETE "$BASE/api/v1/admin/users/$ADMIN_ID")
+[ "$CODE" = "409" ] || { echo "ASSERT FAILED: self-delete returned $CODE, want 409"; FAIL=1; }
 
 echo
 if [ "$FAIL" -eq 0 ]; then echo "INTEGRATION TESTS PASSED"; else echo "INTEGRATION TESTS FAILED"; exit 1; fi
