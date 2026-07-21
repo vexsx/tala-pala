@@ -13,8 +13,13 @@ import logging
 import time
 from typing import Optional, Sequence
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from datetime import time as dt_time
 from typing import Optional as _Optional
+
+from zoneinfo import ZoneInfo
+
+TEHRAN_TZ = ZoneInfo("Asia/Tehran")
 
 from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
@@ -56,36 +61,56 @@ JOB_PROVIDER_CATEGORIES: dict[str, list[str]] = {
 RECENT_WINDOW = 30  # good values used for the MAD outlier test
 
 # TSE funds quota guard: BrsApi's free tier budgets the TSETMC_Symbol
-# endpoint at ~10 requests/day and each funds round costs one call per fund,
-# so the job only runs during the session (plus a short post-close grace to
-# capture the closing auction) and at most every TSETMC_MIN_INTERVAL_MINUTES.
+# endpoint at ~10 requests/day and each funds round costs one call per fund.
+# The job fires at FIXED Tehran-local slots (TSETMC_FETCH_TIMES, default
+# 12:00 / 15:00 / 18:00 -> 3 rounds x 2 funds = 6 requests/day): one round
+# per slot, at the first collect tick at/after the slot time. 18:00 runs
+# after the 17:00 close on purpose - it captures the settled closing data.
+# Thursdays and Fridays (no TSE session) spend nothing.
 FUNDS_JOB = "funds"
-FUNDS_POST_CLOSE_GRACE_MIN = 45
+_TSE_THURSDAY, _TSE_FRIDAY = 3, 4  # Python weekday(): Monday=0
+
+
+def _parse_fetch_times(raw: str) -> list[dt_time]:
+    out: list[dt_time] = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            hh, mm = part.split(":")
+            out.append(dt_time(int(hh), int(mm)))
+        except (TypeError, ValueError):
+            continue
+    return sorted(out) or [dt_time(12, 0), dt_time(15, 0), dt_time(18, 0)]
 
 
 def funds_job_due(
     engine: Engine, settings: Settings, now: _Optional[object] = None
 ) -> bool:
-    """True when the TSE funds job should spend its request budget now."""
-    at = now or utcnow()
-    in_session = is_market_open("IR_GOLD_FUND_AYAR", at, settings)
-    in_grace = is_market_open(
-        "IR_GOLD_FUND_AYAR",
-        at - timedelta(minutes=FUNDS_POST_CLOSE_GRACE_MIN),
-        settings,
-    )
-    if not (in_session or in_grace):
+    """True when the TSE funds job should spend its request budget now.
+
+    Due when the most recent passed slot today has not been fetched yet
+    (i.e. the last tse_funds fetch predates that slot). If several slots
+    were missed (downtime), only ONE round fires - quota is never repaid.
+    """
+    at = ensure_utc(now or utcnow())
+    local = at.astimezone(TEHRAN_TZ)
+    if local.weekday() in (_TSE_THURSDAY, _TSE_FRIDAY):
         return False
+    passed = [t for t in _parse_fetch_times(settings.tsetmc_fetch_times)
+              if local.time() >= t]
+    if not passed:
+        return False
+    slot_local = datetime.combine(local.date(), max(passed), tzinfo=TEHRAN_TZ)
+    slot_utc = slot_local.astimezone(timezone.utc)
     with engine.connect() as conn:
         last = conn.execute(
             select(func.max(raw_observations.c.collected_at)).where(
                 raw_observations.c.provider_code == "tse_funds"
             )
         ).scalar()
-    if last is None:
-        return True
-    interval = timedelta(minutes=settings.tsetmc_min_interval_minutes)
-    return (utcnow() - ensure_utc(last)) >= interval
+    return last is None or ensure_utc(last) < slot_utc
 
 
 def _recent_values(engine: Engine, symbol: str, limit: int = RECENT_WINDOW) -> list[float]:

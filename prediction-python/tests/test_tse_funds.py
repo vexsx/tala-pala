@@ -187,3 +187,48 @@ def test_feature_frame_includes_fund_features():
     # without fund context the columns must be absent (no NaN pollution)
     plain = compute_feature_frame(gold)
     assert "fund_ret_1" not in plain.columns
+
+
+# --- fetch-slot quota guard ---------------------------------------------------
+
+def _slot_settings():
+    return Settings(database_url="sqlite://", tsetmc_fetch_times="12:00,15:00,18:00")
+
+
+def test_funds_job_slots(engine):
+    from datetime import timedelta as _td
+
+    from app.db import raw_observations, utcnow
+    from app.jobs.collect import funds_job_due
+
+    s = _slot_settings()
+    # Tue 2026-07-21. Before the first slot (11:30 Tehran = 08:00 UTC): not due
+    assert not funds_job_due(engine, s, now=utc(2026, 7, 21, 8, 0))
+    # 12:05 Tehran (08:35 UTC), nothing fetched yet: due
+    assert funds_job_due(engine, s, now=utc(2026, 7, 21, 8, 35))
+
+    # record a fetch at 12:06 Tehran -> 12-slot consumed, 14:00 Tehran not due
+    with engine.begin() as conn:
+        conn.execute(raw_observations.insert().values(
+            provider_code="tse_funds", symbol="IR_GOLD_FUND_AYAR",
+            raw_value=1.0, unit="u", currency="IRR",
+            observed_at=utc(2026, 7, 21, 8, 36), collected_at=utc(2026, 7, 21, 8, 36),
+            quality="ok", dedupe_key="slot-test-1",
+        ))
+    assert not funds_job_due(engine, s, now=utc(2026, 7, 21, 9, 30))   # 13:00 Tehran
+    # 15:05 Tehran (11:35 UTC): the 15:00 slot is unconsumed -> due
+    assert funds_job_due(engine, s, now=utc(2026, 7, 21, 11, 35))
+    # 18:05 Tehran (14:35 UTC): 18:00 slot (post-close by design) -> due
+    assert funds_job_due(engine, s, now=utc(2026, 7, 21, 14, 35))
+
+
+def test_funds_job_skips_thu_fri_and_never_repays(engine):
+    from app.jobs.collect import funds_job_due
+
+    s = _slot_settings()
+    # Thursday 2026-07-23 and Friday 2026-07-24, mid-slot times: never due
+    assert not funds_job_due(engine, s, now=utc(2026, 7, 23, 8, 35))
+    assert not funds_job_due(engine, s, now=utc(2026, 7, 24, 11, 35))
+    # Saturday after ALL slots passed with no fetches: due exactly once
+    # (max(passed) = 18:00 slot; one round covers it, quota is not repaid)
+    assert funds_job_due(engine, s, now=utc(2026, 7, 25, 15, 0))  # 18:30 Tehran
