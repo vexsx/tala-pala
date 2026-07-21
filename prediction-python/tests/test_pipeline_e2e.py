@@ -66,7 +66,9 @@ def test_full_pipeline(client, seeded, engine, monkeypatch):
     with engine.connect() as conn:
         active = conn.execute(
             select(model_versions).where(
-                model_versions.c.horizon == "1d", model_versions.c.is_active.is_(True)
+                model_versions.c.symbol == "IR_GOLD_18K",
+                model_versions.c.horizon == "1d",
+                model_versions.c.is_active.is_(True),
             )
         ).all()
     assert len(active) == 1
@@ -76,14 +78,15 @@ def test_full_pipeline(client, seeded, engine, monkeypatch):
     resp = client.post("/internal/predict", json={"horizons": ["1d"]}, headers=AUTH)
     assert resp.status_code == 200
     preds = resp.json()["predictions"]
-    assert len(preds) == 1
-    pred = preds[0]
-    assert pred["direction"] in ("up", "down", "flat")
-    assert pred["lower_bound"] <= pred["point_forecast"] <= pred["upper_bound"]
-    assert 0.0 <= pred["confidence"] <= 1.0
-    assert pred["warnings"]  # always carries the uncertainty disclaimer
+    # multi-symbol (Addendum 8): one prediction per forecast symbol
+    assert {p["symbol"] for p in preds} == {"IR_GOLD_18K", "XAUUSD"}
+    for pred in preds:
+        assert pred["direction"] in ("up", "down", "flat")
+        assert pred["lower_bound"] <= pred["point_forecast"] <= pred["upper_bound"]
+        assert 0.0 <= pred["confidence"] <= 1.0
+        assert pred["warnings"]  # always carries the uncertainty disclaimer
     with engine.connect() as conn:
-        assert len(conn.execute(select(predictions)).all()) == 1
+        assert len(conn.execute(select(predictions)).all()) == len(preds)
 
     # signals
     resp = client.post("/internal/signals/generate", headers=AUTH)

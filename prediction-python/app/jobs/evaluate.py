@@ -86,19 +86,22 @@ def compute_live_calibration(engine: Engine, window: int = LIVE_CAL_WINDOW) -> d
       ``actual - base``);
     * ``coverage`` — fraction where ``lower_bound <= actual <= upper_bound``
       (empirical coverage of the nominal 90% interval).
+
+    Layout (Addendum 8): nested ``{symbol: {horizon: stats}}`` — one stats
+    block per forecast symbol so IR_GOLD_18K and XAUUSD never mix.
     """
     out: dict[str, dict] = {}
     now_iso = utcnow().isoformat()
     with engine.connect() as conn:
-        horizons = [
-            h
-            for (h,) in conn.execute(
-                select(predictions.c.horizon)
+        pairs = [
+            (s, h)
+            for (s, h) in conn.execute(
+                select(predictions.c.symbol, predictions.c.horizon)
                 .where(predictions.c.actual_value.is_not(None))
                 .distinct()
             )
         ]
-        for horizon in sorted(horizons):
+        for symbol, horizon in sorted(pairs):
             rows = conn.execute(
                 select(
                     predictions.c.point_forecast,
@@ -109,6 +112,7 @@ def compute_live_calibration(engine: Engine, window: int = LIVE_CAL_WINDOW) -> d
                     predictions.c.regime,
                 )
                 .where(
+                    predictions.c.symbol == symbol,
                     predictions.c.horizon == horizon,
                     predictions.c.actual_value.is_not(None),
                 )
@@ -139,7 +143,7 @@ def compute_live_calibration(engine: Engine, window: int = LIVE_CAL_WINDOW) -> d
                 for regime, hits in regime_hits.items()
                 if hits
             }
-            out[horizon] = {
+            out.setdefault(symbol, {})[horizon] = {
                 "n": len(rows),
                 "dir_hit_rate": round(float(np.mean(dir_hits)), 4) if dir_hits else None,
                 "coverage": round(float(np.mean(covered)), 4),

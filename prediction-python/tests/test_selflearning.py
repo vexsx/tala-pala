@@ -120,8 +120,8 @@ def test_meta_gate_custom_horizon_string():
 def test_live_calibration_has_regime_breakdown(engine):
     _insert_matured(engine, 40)
     cal = compute_live_calibration(engine)
-    assert "1d" in cal
-    by_regime = cal["1d"]["by_regime"]
+    assert "1d" in cal["IR_GOLD_18K"]
+    by_regime = cal["IR_GOLD_18K"]["1d"]["by_regime"]
     assert by_regime["trending_up"]["dir_hit_rate"] == 1.0
     assert by_regime["ranging"]["dir_hit_rate"] == 0.0
 

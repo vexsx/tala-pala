@@ -68,12 +68,24 @@ func scanPrediction(row pgx.Row) (prediction, error) {
 	return p, err
 }
 
-// Latest implements GET /api/v1/predictions — latest prediction per horizon.
+// ForecastSymbols mirrors the Python FORECAST_SYMBOLS set (Addendum 8).
+var ForecastSymbols = map[string]bool{"IR_GOLD_18K": true, "XAUUSD": true}
+
+// Latest implements GET /api/v1/predictions?symbol= — latest per horizon.
 func (h *Handler) Latest(w http.ResponseWriter, r *http.Request) {
+	symbol := r.URL.Query().Get("symbol")
+	if symbol == "" {
+		symbol = "IR_GOLD_18K"
+	}
+	if !ForecastSymbols[symbol] {
+		httpserver.BadRequest(w, "unknown forecast symbol", map[string]any{"symbol": symbol})
+		return
+	}
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT DISTINCT ON (horizon) `+predictionCols+`
 		FROM predictions
-		ORDER BY horizon, predicted_at DESC`)
+		WHERE symbol = $1
+		ORDER BY horizon, predicted_at DESC`, symbol)
 	if err != nil {
 		h.Log.Error("predictions_latest", "error", err)
 		httpserver.Internal(w, "database error")
@@ -96,24 +108,33 @@ func (h *Handler) Latest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpserver.JSON(w, http.StatusOK, map[string]any{
-		"items": items,
-		"as_of": time.Now().UTC(),
+		"symbol": symbol,
+		"items":  items,
+		"as_of":  time.Now().UTC(),
 	})
 }
 
-// History implements GET /api/v1/predictions/{horizon}?limit=50.
+// History implements GET /api/v1/predictions/{horizon}?symbol=&limit=50.
 func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
 	horizon := chi.URLParam(r, "horizon")
 	if !Horizons[horizon] {
 		httpserver.BadRequest(w, "unknown horizon", map[string]any{"horizon": horizon})
 		return
 	}
+	symbol := r.URL.Query().Get("symbol")
+	if symbol == "" {
+		symbol = "IR_GOLD_18K"
+	}
+	if !ForecastSymbols[symbol] {
+		httpserver.BadRequest(w, "unknown forecast symbol", map[string]any{"symbol": symbol})
+		return
+	}
 	limit := limitParam(r.URL.Query().Get("limit"), 50, 500)
 
 	rows, err := h.Pool.Query(r.Context(), `
 		SELECT `+predictionCols+`
-		FROM predictions WHERE horizon = $1
-		ORDER BY predicted_at DESC LIMIT $2`, horizon, limit)
+		FROM predictions WHERE horizon = $1 AND symbol = $3
+		ORDER BY predicted_at DESC LIMIT $2`, horizon, limit, symbol)
 	if err != nil {
 		h.Log.Error("predictions_history", "error", err)
 		httpserver.Internal(w, "database error")

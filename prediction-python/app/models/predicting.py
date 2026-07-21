@@ -222,10 +222,14 @@ def _drivers(model: ForecastModel, series, regime: str) -> list[dict]:
     return drivers
 
 
-def _load_active(engine: Engine, horizon: str) -> Optional[dict]:
+def _load_active(engine: Engine, symbol: str, horizon: str) -> Optional[dict]:
     stmt = (
         select(model_versions)
-        .where(model_versions.c.horizon == horizon, model_versions.c.is_active.is_(True))
+        .where(
+            model_versions.c.symbol == symbol,
+            model_versions.c.horizon == horizon,
+            model_versions.c.is_active.is_(True),
+        )
         .order_by(model_versions.c.trained_at.desc())
         .limit(1)
     )
@@ -249,32 +253,39 @@ def _latest_observation(engine: Engine, symbol: str) -> Optional[dict]:
 
 
 def predict_all(
-    engine: Engine, settings: Settings, horizons: Optional[Sequence[str]] = None
+    engine: Engine,
+    settings: Settings,
+    horizons: Optional[Sequence[str]] = None,
+    symbols: Optional[Sequence[str]] = None,
 ) -> dict:
-    """Run predictions for the requested horizons; returns rows + errors."""
+    """Run predictions for the requested symbols x horizons; rows + errors."""
+    from .training import FORECAST_SYMBOLS
+
     requested = [h for h in (horizons or list(HORIZON_SPECS)) if h in HORIZON_SPECS]
+    req_symbols = [s for s in (symbols or FORECAST_SYMBOLS) if s in FORECAST_SYMBOLS]
     out: list[dict] = []
     errors: list[str] = []
     with PREDICTION_DURATION.time():
-        series_cache: dict = {}
-        for horizon in requested:
-            try:
-                row = _predict_one(engine, settings, horizon, series_cache)
-                if isinstance(row, dict):
-                    out.append(row)
-                else:
-                    errors.append(f"{horizon}: {row}")
-            except Exception as exc:
-                log.exception("predict %s failed", horizon)
-                errors.append(f"{horizon}: {type(exc).__name__}: {exc}")
+        for symbol in req_symbols:
+            series_cache: dict = {}
+            for horizon in requested:
+                try:
+                    row = _predict_one(engine, settings, symbol, horizon, series_cache)
+                    if isinstance(row, dict):
+                        out.append(row)
+                    else:
+                        errors.append(f"{symbol}/{horizon}: {row}")
+                except Exception as exc:
+                    log.exception("predict %s/%s failed", symbol, horizon)
+                    errors.append(f"{symbol}/{horizon}: {type(exc).__name__}: {exc}")
     return {"predictions": out, "errors": errors}
 
 
 def _predict_one(
-    engine: Engine, settings: Settings, horizon: str, series_cache: dict
+    engine: Engine, settings: Settings, symbol: str, horizon: str, series_cache: dict
 ):
     freq, steps = HORIZON_SPECS[horizon]
-    active = _load_active(engine, horizon)
+    active = _load_active(engine, symbol, horizon)
     if active is None:
         return "no active model (run /internal/train first)"
     artifact_path = active.get("artifact_path")
@@ -285,7 +296,7 @@ def _predict_one(
     residuals: list[float] = list(artifact.get("residual_pcts", []))
 
     if freq not in series_cache:
-        series_cache[freq] = load_series(engine, "IR_GOLD_18K", freq)
+        series_cache[freq] = load_series(engine, symbol, freq)
     series = series_cache[freq]
     if series.empty:
         return "no price series available"
@@ -294,13 +305,13 @@ def _predict_one(
         "Forecast is an uncertain estimate based on historical patterns, "
         "not a guarantee and not financial advice."
     ]
-    latest = _latest_observation(engine, "IR_GOLD_18K")
+    latest = _latest_observation(engine, symbol)
     now = utcnow()
-    # market-hours aware (Addendum 1): during a Tehran closure last-session
-    # data still counts as fresh and only carries an informational note
+    # market-hours aware (Addendum 1): during a closure last-session data
+    # still counts as fresh and only carries an informational note
     data_fresh = bool(
         latest
-        and is_acceptably_fresh("IR_GOLD_18K", latest["observed_at"], now, settings)
+        and is_acceptably_fresh(symbol, latest["observed_at"], now, settings)
     )
     if not data_fresh:
         age = staleness_minutes(latest["observed_at"], now) if latest else None
@@ -315,25 +326,31 @@ def _predict_one(
     # adaptive ensemble: once every member has enough matured live
     # predictions, re-weight by inverse live sMAPE instead of validation sMAPE
     if isinstance(model, EnsembleModel):
-        live_smapes = live_member_smapes(engine, horizon, list(model.members))
+        live_smapes = live_member_smapes(engine, horizon, list(model.members), symbol=symbol)
         if live_smapes:
             model.weights = inverse_smape_weights(live_smapes)
             log.info("%s: ensemble re-weighted from live sMAPE %s", horizon, live_smapes)
 
     # refit on the freshest series (cheap for all model families used here);
     # exog-aware models get the auxiliary series via set_context
+    from .training import SYMBOL_CONTEXTS
+
     aux_key = f"aux_{freq}"
     if aux_key not in series_cache:
         series_cache[aux_key] = {
-            key: load_series(engine, symbol, freq)
-            for key, symbol in CONTEXT_SYMBOLS.items()
+            key: load_series(engine, ctx_sym, freq)
+            for key, ctx_sym in SYMBOL_CONTEXTS.get(symbol, {}).items()
         }
     model.set_context(series_cache[aux_key])
     model.fit(series, steps)
     point = float(model.predict_point())
     last_price = float(series.iloc[-1])
 
-    live_cal = load_live_calibration(engine).get(horizon)
+    cal_all = load_live_calibration(engine)
+    live_cal = (cal_all.get(symbol) or {}).get(horizon)
+    if live_cal is None and symbol == "IR_GOLD_18K":
+        legacy = cal_all.get(horizon)  # pre-multi-symbol flat layout
+        live_cal = legacy if isinstance(legacy, dict) and "n" in legacy else None
 
     # a model exposing its own interval (e.g. quantile_gbr) takes precedence
     # over the empirical residual-quantile interval
@@ -363,7 +380,7 @@ def _predict_one(
 
     # provider gap: when Iranian sources disagree materially on the current
     # price, that quote uncertainty is added to the interval half-width
-    gap_pct = provider_gap_pct(engine)
+    gap_pct = provider_gap_pct(engine) if symbol == "IR_GOLD_18K" else None
     if gap_pct is not None and gap_pct >= PROVIDER_GAP_WARN_PCT:
         half_gap = gap_pct / 2.0 / 100.0 * point
         lower -= half_gap
@@ -415,7 +432,7 @@ def _predict_one(
     with engine.begin() as conn:
         row_id = conn.execute(
             predictions.insert().values(
-                symbol="IR_GOLD_18K",
+                symbol=symbol,
                 horizon=horizon,
                 model_version_id=active["id"],
                 model_name=active["model_name"],
@@ -437,7 +454,7 @@ def _predict_one(
 
     return {
         "id": int(row_id),
-        "symbol": "IR_GOLD_18K",
+        "symbol": symbol,
         "horizon": horizon,
         "model_name": active["model_name"],
         "predicted_at": predicted_at.isoformat(),

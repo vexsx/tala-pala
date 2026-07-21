@@ -489,6 +489,34 @@ export interface CandlesResponse {
   as_of: string
 }
 
+// ---------- TSE gold funds ----------
+
+export interface FundSnapshot {
+  symbol: string
+  ticker: string
+  price: number
+  change_24h_pct: number | null
+  observed_at: string
+  volume: number
+  value: number
+  retail_buy_pct: number | null
+  retail_sell_pct: number | null
+  /** Per-capita retail buy vs sell volume (قدرت خریدار حقیقی); >1 = buyers more eager. */
+  buyer_power: number | null
+  today_avg_retail_buy_pct: number | null
+  today_avg_retail_sell_pct: number | null
+  snapshots_today: number
+}
+
+/** GET /market/funds — the gold-fund stats panel. */
+export interface FundsResponse {
+  funds: FundSnapshot[]
+  flow_pct: number | null
+  flow_history: Array<{ date: string; flow_pct: number }>
+  market_state: MarketState
+  as_of: string
+}
+
 // ---------- Provider gap ----------
 
 export interface ProviderGapQuote {

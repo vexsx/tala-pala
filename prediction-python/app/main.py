@@ -40,6 +40,7 @@ class CollectRequest(BaseModel):
 
 class HorizonsRequest(BaseModel):
     horizons: list[str] = Field(default_factory=list)
+    symbols: list[str] = Field(default_factory=list)
 
 
 class CustomPredictRequest(BaseModel):
@@ -119,12 +120,14 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
     @app.post("/internal/train")
     def train(req: Optional[HorizonsRequest] = None) -> dict:
         horizons = req.horizons if req and req.horizons else None
-        return train_all(engine, settings, horizons)
+        symbols = req.symbols if req and req.symbols else None
+        return train_all(engine, settings, horizons, symbols)
 
     @app.post("/internal/predict")
     def predict(req: Optional[HorizonsRequest] = None) -> dict:
         horizons = req.horizons if req and req.horizons else None
-        return predict_all(engine, settings, horizons)
+        symbols = req.symbols if req and req.symbols else None
+        return predict_all(engine, settings, horizons, symbols)
 
     @app.post("/internal/predict/custom")
     def predict_custom_endpoint(req: CustomPredictRequest) -> dict:

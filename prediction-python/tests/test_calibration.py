@@ -133,16 +133,16 @@ def test_evaluate_persists_live_calibration(engine, settings):
     summary = run_evaluate(engine, settings)
     assert summary["evaluated"] == 1
     cal = summary["live_calibration"]
-    assert cal["1d"]["n"] == 10
-    assert cal["1d"]["dir_hit_rate"] == pytest.approx(0.7)
-    assert cal["1d"]["coverage"] == pytest.approx(0.8)
+    assert cal["IR_GOLD_18K"]["1d"]["n"] == 10
+    assert cal["IR_GOLD_18K"]["1d"]["dir_hit_rate"] == pytest.approx(0.7)
+    assert cal["IR_GOLD_18K"]["1d"]["coverage"] == pytest.approx(0.8)
     # the freshly filled 1h prediction is part of the same calibration pass
-    assert cal["1h"]["n"] == 1
-    assert cal["1h"]["dir_hit_rate"] == pytest.approx(1.0)
-    assert "updated_at" in cal["1d"]
+    assert cal["IR_GOLD_18K"]["1h"]["n"] == 1
+    assert cal["IR_GOLD_18K"]["1h"]["dir_hit_rate"] == pytest.approx(1.0)
+    assert "updated_at" in cal["IR_GOLD_18K"]["1d"]
 
     # persisted to app_settings and readable by the prediction pass
-    assert load_live_calibration(engine)["1d"]["coverage"] == pytest.approx(0.8)
+    assert load_live_calibration(engine)["IR_GOLD_18K"]["1d"]["coverage"] == pytest.approx(0.8)
 
     # running again upserts (single row, no duplicates)
     run_evaluate(engine, settings)
@@ -162,8 +162,8 @@ def test_compute_live_calibration_uses_most_recent_window(engine):
     for i in range(5):
         _insert_prediction(engine, actual=110.0, target_offset_hours=-24.0 + i)
     cal = compute_live_calibration(engine, window=5)
-    assert cal["1d"]["n"] == 5
-    assert cal["1d"]["dir_hit_rate"] == pytest.approx(1.0)
+    assert cal["IR_GOLD_18K"]["1d"]["n"] == 5
+    assert cal["IR_GOLD_18K"]["1d"]["dir_hit_rate"] == pytest.approx(1.0)
 
 
 def test_upsert_setting_is_idempotent_update(engine):

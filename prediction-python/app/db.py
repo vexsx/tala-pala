@@ -130,6 +130,7 @@ model_versions = Table(
     "model_versions",
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("symbol", Text, nullable=False, server_default="IR_GOLD_18K"),
     Column("horizon", Text, nullable=False),
     Column("model_name", Text, nullable=False),
     Column("version", Text, nullable=False),
@@ -143,7 +144,7 @@ model_versions = Table(
     Column("artifact_path", Text),
     Column("is_active", Boolean, nullable=False, server_default=text("FALSE")),
     Column("created_at", _TS, nullable=False, server_default=func.now()),
-    UniqueConstraint("horizon", "model_name", "version", name="model_versions_unique"),
+    UniqueConstraint("symbol", "horizon", "model_name", "version", name="model_versions_unique"),
 )
 
 training_runs = Table(

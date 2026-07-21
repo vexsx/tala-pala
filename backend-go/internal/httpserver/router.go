@@ -29,6 +29,7 @@ type PriceHandlers interface {
 	Indicators(http.ResponseWriter, *http.Request)
 	ProviderGap(http.ResponseWriter, *http.Request)
 	Candles(http.ResponseWriter, *http.Request)
+	Funds(http.ResponseWriter, *http.Request)
 }
 
 type PredictionHandlers interface {
@@ -148,6 +149,7 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			r.Get("/api/v1/market/indicators", d.Prices.Indicators)
 			r.Get("/api/v1/market/provider-gap", d.Prices.ProviderGap)
 			r.Get("/api/v1/market/candles", d.Prices.Candles)
+			r.Get("/api/v1/market/funds", d.Prices.Funds)
 
 			r.Get("/api/v1/predictions", d.Predictions.Latest)
 			// static route wins over the {horizon} pattern in chi

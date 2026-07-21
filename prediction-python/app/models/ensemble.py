@@ -27,6 +27,7 @@ def live_member_smapes(
     members: Sequence[str],
     min_rows: int = MIN_LIVE_MATURED,
     window: int = LIVE_SMAPE_WINDOW,
+    symbol: str = "IR_GOLD_18K",
 ) -> Optional[dict[str, float]]:
     """Per-member live sMAPE from matured ``predictions`` rows for a horizon.
 
@@ -42,6 +43,7 @@ def live_member_smapes(
             rows = conn.execute(
                 select(predictions.c.point_forecast, predictions.c.actual_value)
                 .where(
+                    predictions.c.symbol == symbol,
                     predictions.c.horizon == horizon,
                     predictions.c.model_name == name,
                     predictions.c.actual_value.is_not(None),

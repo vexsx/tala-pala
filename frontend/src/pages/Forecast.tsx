@@ -16,6 +16,7 @@ import {
   formatDateTime,
   formatPct,
   formatToman,
+  formatUsd,
   pctClass,
   shortDate,
   formatTime
@@ -181,10 +182,18 @@ function sortByHorizon(predictions: Prediction[]): Prediction[] {
     .sort((a, b) => HORIZONS.indexOf(a.horizon) - HORIZONS.indexOf(b.horizon))
 }
 
+type ForecastSymbol = 'IR_GOLD_18K' | 'XAUUSD'
+
+const FORECAST_SYMBOL_LABELS: Record<ForecastSymbol, string> = {
+  IR_GOLD_18K: 'Tehran 18k (تومان)',
+  XAUUSD: 'Global gold (XAU/USD)'
+}
+
 export default function Forecast() {
   const { unit, calendar } = useSettings()
+  const [symbol, setSymbol] = useState<ForecastSymbol>('IR_GOLD_18K')
 
-  const latest = useApi<unknown>('/predictions')
+  const latest = useApi<unknown>(`/predictions?symbol=${symbol}`)
   const predictions = useMemo(
     () => sortByHorizon(unwrapList<Prediction>(latest.data, 'predictions', 'items')),
     [latest.data]
@@ -194,7 +203,9 @@ export default function Forecast() {
   const active: Horizon | null = selected ?? predictions[0]?.horizon ?? null
   const activePrediction = predictions.find((p) => p.horizon === active) ?? null
 
-  const history = useApi<unknown>(active ? `/predictions/${active}?limit=50` : null)
+  const history = useApi<unknown>(
+    active ? `/predictions/${active}?symbol=${symbol}&limit=50` : null
+  )
   const historyItems = useMemo(
     () => unwrapList<Prediction>(history.data, 'items', 'predictions').map(normalizePrediction),
     [history.data]
@@ -202,8 +213,8 @@ export default function Forecast() {
 
   const pricePath = useMemo(() => {
     const from = new Date(Date.now() - 14 * DAY_MS).toISOString()
-    return `/prices/history?symbol=IR_GOLD_18K&interval=hourly&page_size=500&from=${encodeURIComponent(from)}`
-  }, [])
+    return `/prices/history?symbol=${symbol}&interval=hourly&page_size=500&from=${encodeURIComponent(from)}`
+  }, [symbol])
   const priceHistory = useApi<PriceHistoryResponse>(pricePath)
 
   const toChartPoints = useMemo(
@@ -237,16 +248,34 @@ export default function Forecast() {
     [priceHistory.data, predictions, toChartPoints]
   )
 
-  const fmt = (v: number) => formatToman(v, unit)
+  const fmt = (v: number) => (symbol === 'XAUUSD' ? formatUsd(v) : formatToman(v, unit))
 
   if (latest.loading) return <Loading label="Loading predictions…" />
   if (latest.error) return <ErrorMessage message={latest.error} onRetry={latest.reload} />
   if (predictions.length === 0) {
     return (
-      <EmptyState
-        title="No predictions yet"
-        hint="Predictions appear once models have been trained and the hourly prediction job has run."
-      />
+      <div className="page-body">
+        <h2 className="page-title">Forecast</h2>
+        <div className="toggle-group" role="group" aria-label="Forecast symbol">
+          {(Object.keys(FORECAST_SYMBOL_LABELS) as ForecastSymbol[]).map((s) => (
+            <button
+              key={s}
+              type="button"
+              className={symbol === s ? 'active' : ''}
+              onClick={() => {
+                setSymbol(s)
+                setSelected(null)
+              }}
+            >
+              {FORECAST_SYMBOL_LABELS[s]}
+            </button>
+          ))}
+        </div>
+        <EmptyState
+          title={`No ${symbol} predictions yet`}
+          hint="Predictions appear once models have been trained and the hourly prediction job has run."
+        />
+      </div>
     )
   }
 
@@ -254,8 +283,24 @@ export default function Forecast() {
     <div className="page-body">
       <h2 className="page-title">Forecast</h2>
 
+      <div className="toggle-group" role="group" aria-label="Forecast symbol">
+        {(Object.keys(FORECAST_SYMBOL_LABELS) as ForecastSymbol[]).map((s) => (
+          <button
+            key={s}
+            type="button"
+            className={symbol === s ? 'active' : ''}
+            onClick={() => {
+              setSymbol(s)
+              setSelected(null)
+            }}
+          >
+            {FORECAST_SYMBOL_LABELS[s]}
+          </button>
+        ))}
+      </div>
+
       <div className="card">
-        <div className="card-title">All horizons — combined forecast fan (IR_GOLD_18K)</div>
+        <div className="card-title">All horizons — combined forecast fan ({symbol})</div>
         {priceHistory.loading ? (
           <Loading label="Loading price history…" />
         ) : priceHistory.error ? (
@@ -278,7 +323,7 @@ export default function Forecast() {
         )}
       </div>
 
-      <CustomHorizonCard fmt={fmt} />
+      {symbol === 'IR_GOLD_18K' && <CustomHorizonCard fmt={fmt} />}
 
       <div className="tabs" role="tablist">
         {predictions.map((p) => (
@@ -312,7 +357,7 @@ export default function Forecast() {
                 <span className={`direction-arrow ${pctClass(activePrediction.expected_change_pct)}`}>
                   {DIRECTION_ARROWS[activePrediction.direction] ?? '•'}
                 </span>{' '}
-                {formatToman(activePrediction.predicted_value, unit)}
+                {fmt(activePrediction.predicted_value)}
               </div>
               <div className={`delta ${pctClass(activePrediction.expected_change_pct)}`}>
                 {formatPct(activePrediction.expected_change_pct)} expected
@@ -321,8 +366,8 @@ export default function Forecast() {
                 <div className="kv">
                   <span className="muted">Interval</span>
                   <span className="mono">
-                    {formatToman(activePrediction.lower_bound, unit, false)} –{' '}
-                    {formatToman(activePrediction.upper_bound, unit)}
+                    {fmt(activePrediction.lower_bound)} –{' '}
+                    {fmt(activePrediction.upper_bound)}
                   </span>
                 </div>
                 <div className="kv">
@@ -369,7 +414,7 @@ export default function Forecast() {
           </div>
 
           <div className="card">
-            <div className="card-title">Recent actuals &amp; forecast band (IR_GOLD_18K)</div>
+            <div className="card-title">Recent actuals &amp; forecast band ({symbol})</div>
             {priceHistory.loading ? (
               <Loading label="Loading price history…" />
             ) : priceHistory.error ? (
@@ -423,9 +468,9 @@ export default function Forecast() {
                     <tr key={p.id}>
                       <td>{formatDateTime(p.created_at, calendar)}</td>
                       <td>{formatDateTime(p.target_time, calendar)}</td>
-                      <td className="num mono">{formatToman(p.predicted_value, unit, false)}</td>
+                      <td className="num mono">{fmt(p.predicted_value)}</td>
                       <td className="num mono">
-                        {p.actual_value !== null ? formatToman(p.actual_value, unit, false) : '—'}
+                        {p.actual_value !== null ? fmt(p.actual_value) : '—'}
                       </td>
                       <td className={`num mono ${errPct === null ? '' : Math.abs(errPct) > 2 ? 'neg' : ''}`}>
                         {errPct !== null ? formatPct(errPct) : '—'}

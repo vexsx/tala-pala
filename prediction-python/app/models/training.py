@@ -311,11 +311,29 @@ def _build_final_model(
     return model
 
 
+# Symbols trained by the scheduled pipeline (Addendum 8). The first entry is
+# the "primary" whose results also fill the legacy flat summary keys.
+FORECAST_SYMBOLS: tuple[str, ...] = ("IR_GOLD_18K", "XAUUSD")
+
+# Exogenous context per forecast symbol. Global gold gets none: its own
+# series carries the signal and the Iranian exog (USD/IRT, funds) is noise
+# for it; exog-aware models simply skip themselves via ModelUnavailable.
+SYMBOL_CONTEXTS: dict[str, dict[str, str]] = {
+    "IR_GOLD_18K": CONTEXT_SYMBOLS,
+    "XAUUSD": {},
+}
+
+
 def train_all(
-    engine: Engine, settings: Settings, horizons: Optional[Sequence[str]] = None
+    engine: Engine,
+    settings: Settings,
+    horizons: Optional[Sequence[str]] = None,
+    symbols: Optional[Sequence[str]] = None,
 ) -> dict:
-    """Full training pass: per-horizon evaluation, selection, persistence."""
+    """Full training pass: per-symbol, per-horizon evaluation + persistence."""
     requested = [h for h in (horizons or list(HORIZON_SPECS)) if h in HORIZON_SPECS]
+    req_symbols = [s for s in (symbols or FORECAST_SYMBOLS) if s in FORECAST_SYMBOLS]
+    primary = req_symbols[0] if req_symbols else "IR_GOLD_18K"
     started = utcnow()
     version = started.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -327,119 +345,135 @@ def train_all(
             )
         ).inserted_primary_key[0]
 
-    summary: dict = {"run_id": int(run_id), "horizons": {}, "selected": {}}
+    summary: dict = {"run_id": int(run_id), "horizons": {}, "selected": {}, "symbols": {}}
     models_evaluated: list[dict] = []
-    selected: dict[str, str] = {}
+    selected_by_symbol: dict[str, dict[str, str]] = {}
     notes: list[str] = []
-    series_cache: dict[str, pd.Series] = {}
-    context_cache: dict[str, dict] = {}
     any_trained = False
     error_msg: Optional[str] = None
 
     try:
-        for horizon in requested:
-            freq, steps = HORIZON_SPECS[horizon]
-            if freq not in series_cache:
-                series_cache[freq] = load_series(engine, "IR_GOLD_18K", freq)
-            series = series_cache[freq]
+        for sym in req_symbols:
+            sym_summary: dict = {"horizons": {}, "selected": {}}
+            summary["symbols"][sym] = sym_summary
+            selected_by_symbol[sym] = {}
+            series_cache: dict[str, pd.Series] = {}
+            context_cache: dict[str, dict] = {}
+            sym_context_map = SYMBOL_CONTEXTS.get(sym, {})
 
-            enabled, reason = horizon_enabled(freq, series)
-            if not enabled:
-                notes.append(f"{horizon}: disabled ({reason})")
-                summary["horizons"][horizon] = {"enabled": False, "reason": reason}
-                continue
+            for horizon in requested:
+                freq, steps = HORIZON_SPECS[horizon]
+                if freq not in series_cache:
+                    series_cache[freq] = load_series(engine, sym, freq)
+                series = series_cache[freq]
 
-            if freq not in context_cache:
-                context_cache[freq] = {
-                    key: load_series(engine, symbol, freq)
-                    for key, symbol in CONTEXT_SYMBOLS.items()
-                }
-            context = context_cache[freq]
+                enabled, reason = horizon_enabled(freq, series)
+                if not enabled:
+                    notes.append(f"{sym}/{horizon}: disabled ({reason})")
+                    sym_summary["horizons"][horizon] = {"enabled": False, "reason": reason}
+                    continue
 
-            results = evaluate_candidates(series, steps, context=context)
-            if not results:
-                notes.append(f"{horizon}: no candidate produced folds")
-                summary["horizons"][horizon] = {"enabled": False, "reason": "no folds"}
-                continue
+                if freq not in context_cache:
+                    context_cache[freq] = {
+                        key: load_series(engine, ctx_sym, freq)
+                        for key, ctx_sym in sym_context_map.items()
+                    }
+                context = context_cache[freq]
 
-            winner = select_winner(results)
-            selected[horizon] = winner
-            any_trained = True
-            baseline_metrics = results.get("naive", {}).get("metrics", {})
+                results = evaluate_candidates(series, steps, context=context)
+                if not results:
+                    notes.append(f"{sym}/{horizon}: no candidate produced folds")
+                    sym_summary["horizons"][horizon] = {"enabled": False, "reason": "no folds"}
+                    continue
 
-            final_model = _build_final_model(winner, results, series, steps, context)
-            winner_folds = results[winner]["folds"]
-            residuals = relative_residuals(
-                [f.pred for f in winner_folds], [f.actual for f in winner_folds]
-            )
-            artifact_dir = os.path.join(settings.models_dir, horizon)
-            os.makedirs(artifact_dir, exist_ok=True)
-            artifact_path = os.path.join(
-                artifact_dir, f"{winner}-{version.replace(':', '')}.joblib"
-            )
-            joblib.dump(
-                {
-                    "model": final_model,
-                    "model_name": winner,
-                    "horizon": horizon,
-                    "horizon_steps": steps,
-                    "freq": freq,
-                    "residual_pcts": residuals,
-                    "metrics": results[winner]["metrics"],
-                    "trained_at": version,
-                },
-                artifact_path,
-            )
+                winner = select_winner(results)
+                selected_by_symbol[sym][horizon] = winner
+                any_trained = True
+                baseline_metrics = results.get("naive", {}).get("metrics", {})
 
-            with engine.begin() as conn:
-                conn.execute(
-                    update(model_versions)
-                    .where(model_versions.c.horizon == horizon)
-                    .values(is_active=False)
+                final_model = _build_final_model(winner, results, series, steps, context)
+                winner_folds = results[winner]["folds"]
+                residuals = relative_residuals(
+                    [f.pred for f in winner_folds], [f.actual for f in winner_folds]
                 )
-                winner_id = None
-                for name, r in results.items():
-                    params: dict = {"horizon_steps": steps, "freq": freq}
-                    if name == "ensemble":
-                        params["weights"] = r["weights"]
-                    row_id = conn.execute(
-                        model_versions.insert().values(
-                            horizon=horizon,
-                            model_name=name,
-                            version=version,
-                            trained_at=started,
-                            training_start=series.index.min().to_pydatetime(),
-                            training_end=series.index.max().to_pydatetime(),
-                            n_observations=int(len(series)),
-                            metrics=r["metrics"],
-                            baseline_metrics=baseline_metrics,
-                            params=params,
-                            artifact_path=artifact_path if name == winner else None,
-                            is_active=False,
-                        )
-                    ).inserted_primary_key[0]
-                    if name == winner:
-                        winner_id = row_id
-                    MODEL_SMAPE.labels(horizon=horizon, model=name).set(
-                        r["metrics"]["smape"]
-                    )
-                    models_evaluated.append(
-                        {"horizon": horizon, "model": name, "smape": r["metrics"]["smape"]}
-                    )
-                if winner_id is not None:
+                artifact_dir = os.path.join(settings.models_dir, sym, horizon)
+                os.makedirs(artifact_dir, exist_ok=True)
+                artifact_path = os.path.join(
+                    artifact_dir, f"{winner}-{version.replace(':', '')}.joblib"
+                )
+                joblib.dump(
+                    {
+                        "model": final_model,
+                        "model_name": winner,
+                        "symbol": sym,
+                        "horizon": horizon,
+                        "horizon_steps": steps,
+                        "freq": freq,
+                        "residual_pcts": residuals,
+                        "metrics": results[winner]["metrics"],
+                        "trained_at": version,
+                    },
+                    artifact_path,
+                )
+
+                with engine.begin() as conn:
                     conn.execute(
                         update(model_versions)
-                        .where(model_versions.c.id == winner_id)
-                        .values(is_active=True)
+                        .where(
+                            model_versions.c.symbol == sym,
+                            model_versions.c.horizon == horizon,
+                        )
+                        .values(is_active=False)
                     )
+                    winner_id = None
+                    for name, r in results.items():
+                        params: dict = {"horizon_steps": steps, "freq": freq}
+                        if name == "ensemble":
+                            params["weights"] = r["weights"]
+                        row_id = conn.execute(
+                            model_versions.insert().values(
+                                symbol=sym,
+                                horizon=horizon,
+                                model_name=name,
+                                version=version,
+                                trained_at=started,
+                                training_start=series.index.min().to_pydatetime(),
+                                training_end=series.index.max().to_pydatetime(),
+                                n_observations=int(len(series)),
+                                metrics=r["metrics"],
+                                baseline_metrics=baseline_metrics,
+                                params=params,
+                                artifact_path=artifact_path if name == winner else None,
+                                is_active=False,
+                            )
+                        ).inserted_primary_key[0]
+                        if name == winner:
+                            winner_id = row_id
+                        if sym == primary:
+                            # metric labels predate multi-symbol; keep them
+                            # stable for the primary symbol only
+                            MODEL_SMAPE.labels(horizon=horizon, model=name).set(
+                                r["metrics"]["smape"]
+                            )
+                        models_evaluated.append(
+                            {"symbol": sym, "horizon": horizon, "model": name,
+                             "smape": r["metrics"]["smape"]}
+                        )
+                    if winner_id is not None:
+                        conn.execute(
+                            update(model_versions)
+                            .where(model_versions.c.id == winner_id)
+                            .values(is_active=True)
+                        )
 
-            summary["horizons"][horizon] = {
-                "enabled": True,
-                "winner": winner,
-                "beats_naive": winner != "naive",
-                "metrics": results[winner]["metrics"],
-                "baseline_metrics": baseline_metrics,
-            }
+                sym_summary["horizons"][horizon] = {
+                    "enabled": True,
+                    "winner": winner,
+                    "beats_naive": winner != "naive",
+                    "metrics": results[winner]["metrics"],
+                    "baseline_metrics": baseline_metrics,
+                }
+            sym_summary["selected"] = dict(selected_by_symbol[sym])
     except Exception as exc:  # record the failure in training_runs
         error_msg = f"{type(exc).__name__}: {exc}"
         log.exception("training failed")
@@ -453,12 +487,16 @@ def train_all(
                 finished_at=utcnow(),
                 status=status,
                 models_evaluated=models_evaluated,
-                selected=selected,
+                selected=selected_by_symbol,
                 error=error_msg,
                 notes="; ".join(notes) if notes else None,
             )
         )
-    summary["selected"] = selected
+    # legacy flat keys mirror the primary symbol (dashboards/tests predate
+    # multi-symbol training)
+    primary_summary = summary["symbols"].get(primary, {"horizons": {}, "selected": {}})
+    summary["horizons"] = primary_summary["horizons"]
+    summary["selected"] = primary_summary["selected"]
     summary["status"] = status
     if error_msg:
         summary["error"] = error_msg

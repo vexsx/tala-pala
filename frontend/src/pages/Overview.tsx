@@ -22,6 +22,7 @@ import StatCard from '../components/StatCard'
 import DataFreshness from '../components/DataFreshness'
 import ProviderStatus from '../components/ProviderStatus'
 import ProviderGapCard from '../components/ProviderGapCard'
+import GoldFundsPanel from '../components/GoldFundsPanel'
 import AdvisorPanel from '../components/AdvisorCard'
 import PriceChart, { type ChartPoint } from '../components/PriceChart'
 import Loading from '../components/Loading'
@@ -222,6 +223,13 @@ export default function Overview() {
             <span className="mono">{formatDateTime(s?.last_update, calendar)} (Tehran)</span>
           </div>
           <ProviderStatus providers={s?.providers ?? []} />
+        </div>
+      </div>
+
+      <div className="grid grid-wide">
+        <div className="card">
+          <div className="card-title">Gold funds — Tehran exchange (Ayar &amp; peers)</div>
+          <GoldFundsPanel />
         </div>
       </div>
 

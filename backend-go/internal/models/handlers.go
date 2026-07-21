@@ -22,6 +22,7 @@ type Handler struct {
 
 type modelVersion struct {
 	ID              int             `json:"id"`
+	Symbol          string          `json:"symbol"`
 	Horizon         string          `json:"horizon"`
 	ModelName       string          `json:"model_name"`
 	Version         string          `json:"version"`
@@ -35,12 +36,12 @@ type modelVersion struct {
 	IsActive        bool            `json:"is_active"`
 }
 
-const mvCols = `id, horizon, model_name, version, trained_at, training_start,
+const mvCols = `id, symbol, horizon, model_name, version, trained_at, training_start,
 	training_end, n_observations, metrics, baseline_metrics, params, is_active`
 
 func scanModelVersion(row pgx.Row) (modelVersion, error) {
 	var m modelVersion
-	err := row.Scan(&m.ID, &m.Horizon, &m.ModelName, &m.Version, &m.TrainedAt,
+	err := row.Scan(&m.ID, &m.Symbol, &m.Horizon, &m.ModelName, &m.Version, &m.TrainedAt,
 		&m.TrainingStart, &m.TrainingEnd, &m.NObservations, &m.Metrics,
 		&m.BaselineMetrics, &m.Params, &m.IsActive)
 	m.TrainedAt = m.TrainedAt.UTC()
