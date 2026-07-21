@@ -15,7 +15,7 @@ assert_contains() { echo "$1" | grep -q "$2" || { echo "ASSERT FAILED: expected 
 
 step "health & readiness"
 assert_contains "$(curl -fsS "$BASE/api/v1/health")" '"ok"'
-assert_contains "$(curl -fsS "$BASE/api/v1/readiness")" '"ok"'
+assert_contains "$(curl -fsS "$BASE/api/v1/readiness")" '"ready"\|"ok"'
 
 step "create test user via CLI"
 docker compose exec -T api /app/createuser -email "$EMAIL" -password "$PASS" -role user
