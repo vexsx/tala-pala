@@ -34,11 +34,11 @@ JOB_SYMBOLS: dict[str, set[str]] = {
     "fx": {"USD_IRT"},
     "global": {"XAUUSD", "XAGUSD"},
     "macro": {"BRENT_OIL", "DXY", "US10Y"},
-    # Tehran-exchange gold funds (Addendum 7): unit prices + retail net flow
-    "funds": {
-        "IR_GOLD_FUND_AYAR", "IR_GOLD_FUND_TALA", "IR_GOLD_FUND_KAHRABA",
-        "IR_GOLD_FUND_FLOW",
-    },
+    # Tehran-exchange gold funds (Addendum 7): unit prices + retail net flow.
+    # Mirrors the DEFAULT_FUNDS budget (2 funds; free-tier quota) — symbols
+    # added via TSETMC_FUNDS are stored anyway, this set only drives the
+    # "collected everything?" bookkeeping.
+    "funds": {"IR_GOLD_FUND_AYAR", "IR_GOLD_FUND_TALA", "IR_GOLD_FUND_FLOW"},
 }
 
 # provider-registry categories consulted per job.  Note: global_gold providers
