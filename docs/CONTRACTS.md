@@ -87,7 +87,7 @@ Calls the API at same-origin `/api/v1/...` (nginx in the frontend container prox
 
 ## Addendum 1 — market-hours awareness (2026-07-20)
 
-Iranian symbols (IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI) trade Sat–Thu, roughly `MARKET_TEHRAN_OPEN`(default 12:00)–`MARKET_TEHRAN_CLOSE`(default 20:00) Asia/Tehran; closed Friday. Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y) are closed from Fri 21:00 UTC to Sun 22:00 UTC. Both Go and Python implement the same rules from the same env vars.
+Iranian off-days are **Thursday and Friday** (Asia/Tehran days) — revised 2026-07-21. IR_GOLD_18K trades **24h/day** on Iranian trading days (Sat–Wed; primary source Milli Gold has no intraday session — the `MARKET_TEHRAN_*` window does not apply to it; closure during the Thu+Fri block starts Thursday 00:00 Tehran). USD_IRT and IR_COIN_EMAMI trade Sat–Wed within `MARKET_TEHRAN_OPEN`(default 12:00)–`MARKET_TEHRAN_CLOSE`(default 20:00), open-inclusive/close-exclusive. TSE fund symbols: Sat–Wed 12:00–17:00 Tehran. Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y) are closed from Fri 21:00 UTC (inclusive) to Sun 22:00 UTC (exclusive). Both Go and Python implement identical rules from the same env vars.
 
 - Every per-symbol price object (`/prices/current` entries, summary `current_18k`/`xau_usd`/`usd_irt`) gains `"market_state": "open"|"closed"`.
 - `stale` semantics: while the market is OPEN, stale = older than STALE_MINUTES (unchanged). While CLOSED, data observed within the last session (≤ closed-duration + STALE_MINUTES) is NOT stale; older is.

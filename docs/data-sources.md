@@ -23,8 +23,8 @@
 ### Alanchand (fallback; two modes)
 API mode: `https://api.alanchand.com?type=gold&symbols=18ayar,...` — Bearer token, 65 USDT/6mo (`ALANCHAND_TOKEN`). Keyless HTML mode (verified 2026-07-20): `https://alanchand.com/en/gold-price/18ayar` server-renders the 18k price in **rial** in plain HTML — parsed defensively as a fallback for `IR_GOLD_18K` only. No protections are circumvented; if the page ever adds them, the provider fails gracefully.
 
-### Milli Gold (fallback; keyless HTML)
-`https://milli.gold/` (verified 2026-07-20) server-renders "قیمت ۱ گرم طلای ۱۸ عیار" in **rial** (Persian digits handled). `IR_GOLD_18K` only, priority 35.
+### Milli Gold (PRIMARY for 18k since 2026-07-21; keyless HTML)
+`https://milli.gold/` (verified 2026-07-20) server-renders "قیمت ۱ گرم طلای ۱۸ عیار" in **rial** (Persian digits handled). `IR_GOLD_18K` only, priority 5 (migration 0011). Chosen as primary because it is a 24-hour online trading platform — its quote updates around the clock on Iranian trading days, where TGJU's bazaar ticker stops evenings. Iranian off-days (Thursday + Friday, Tehran) still apply as market closure. Note the quote reflects retail platform pricing (includes their margin); the cross-provider gap panel tracks its spread vs TGJU. TGJU remains the 18k fallback and the source for USD_IRT, the Emami coin, and history backfill.
 
 ### Evaluated and not used
 - **Bonbast** — paid only ($450+/yr), license forbids competing use, and its public page loads values through deliberately obfuscated rotating-token requests — an anti-scraping measure we do not bypass (unlike plain server-rendered pages, which we do parse). Its daily archive mirror (github.com/SamadiPour/rial-exchange-rates-archive, MIT) remains a legitimate free backfill source.

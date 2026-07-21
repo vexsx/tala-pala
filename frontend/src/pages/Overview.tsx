@@ -2,7 +2,9 @@ import { useMemo } from 'react'
 import { useApi } from '../hooks/useApi'
 import type {
   CurrentPricesResponse,
+  FundsResponse,
   MarketSummary,
+  PortfolioResponse,
   Prediction,
   PriceHistoryResponse
 } from '../api/types'
@@ -17,13 +19,14 @@ import {
   formatUsd,
   shortDate
 } from '../lib/format'
-import { buildForecastChartData } from '../lib/forecastChart'
+import { buildForecastChartData, normalizePrediction } from '../lib/forecastChart'
 import StatCard from '../components/StatCard'
 import DataFreshness from '../components/DataFreshness'
 import ProviderStatus from '../components/ProviderStatus'
 import ProviderGapCard from '../components/ProviderGapCard'
 import GoldFundsPanel from '../components/GoldFundsPanel'
 import AdvisorPanel from '../components/AdvisorCard'
+import ActionPlannerPanel from '../components/ActionPlanner'
 import PriceChart, { type ChartPoint } from '../components/PriceChart'
 import Loading from '../components/Loading'
 import ErrorMessage from '../components/ErrorMessage'
@@ -38,7 +41,7 @@ export default function Overview() {
   const current = useApi<CurrentPricesResponse>('/prices/current')
   const latest = useApi<unknown>('/predictions')
   const predictions = useMemo(
-    () => unwrapList<Prediction>(latest.data, 'items', 'predictions'),
+    () => unwrapList<Prediction>(latest.data, 'items', 'predictions').map(normalizePrediction),
     [latest.data]
   )
   const historyPath = useMemo(() => {
@@ -46,6 +49,9 @@ export default function Overview() {
     return `/prices/history?symbol=IR_GOLD_18K&interval=daily&page_size=500&from=${encodeURIComponent(from)}`
   }, [])
   const history = useApi<PriceHistoryResponse>(historyPath)
+  // Lifted fetches, shared by AdvisorPanel / ActionPlanner / GoldFundsPanel.
+  const portfolio = useApi<PortfolioResponse>('/portfolio')
+  const funds = useApi<FundsResponse>('/market/funds')
 
   const chartData: ChartPoint[] = useMemo(() => {
     const merged = buildForecastChartData(history.data?.items ?? [], predictions)
@@ -189,6 +195,18 @@ export default function Overview() {
         currentPrice={goldValue}
         premiumPct={s?.premium_pct ?? null}
         loading={summary.loading}
+        portfolio={portfolio.data}
+      />
+
+      <ActionPlannerPanel
+        predictions={predictions}
+        history={history.data?.items ?? []}
+        loading={latest.loading || history.loading}
+        currentPrice={goldValue}
+        premiumPct={s?.premium_pct ?? null}
+        premiumAvg30d={s?.premium_avg_30d ?? null}
+        fundsFlowPct={funds.data?.flow_pct ?? null}
+        portfolio={portfolio.data}
       />
 
       <div className="grid grid-wide">
@@ -229,7 +247,7 @@ export default function Overview() {
       <div className="grid grid-wide">
         <div className="card">
           <div className="card-title">Gold funds — Tehran exchange (Ayar &amp; peers)</div>
-          <GoldFundsPanel />
+          <GoldFundsPanel state={funds} />
         </div>
       </div>
 

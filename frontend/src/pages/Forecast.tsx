@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useApi } from '../hooks/useApi'
-import { api, errorMessage } from '../api/client'
+import { parseCustomDays, useCustomForecast } from '../hooks/useCustomForecast'
 import {
   HORIZONS,
   HORIZON_LABELS,
@@ -21,7 +21,12 @@ import {
   shortDate,
   formatTime
 } from '../lib/format'
-import { buildForecastChartData, type ForecastChartPoint } from '../lib/forecastChart'
+import {
+  buildForecastChartData,
+  normalizePrediction,
+  pointForecastOf,
+  type ForecastChartPoint
+} from '../lib/forecastChart'
 import PriceChart, { type ChartPoint } from '../components/PriceChart'
 import GaugeBar from '../components/GaugeBar'
 import Loading from '../components/Loading'
@@ -41,26 +46,18 @@ const LEAN_LABELS: Record<CustomForecast['decision_lean'], string> = {
 /** "How many days ahead should I decide for?" — on-demand forecast card. */
 function CustomHorizonCard({ fmt }: { fmt: (v: number) => string }) {
   const [days, setDays] = useState('7')
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<CustomForecast | null>(null)
+  const [inputError, setInputError] = useState<string | null>(null)
+  const { result, loading, error: fetchError, run: runFetch } = useCustomForecast()
+  const error = inputError ?? fetchError
 
-  const run = async () => {
-    const n = Number.parseInt(days, 10)
-    if (!Number.isInteger(n) || n < 1 || n > 90) {
-      setError('Enter a whole number of days between 1 and 90.')
+  const run = () => {
+    const n = parseCustomDays(days)
+    if (n === null) {
+      setInputError('Enter a whole number of days between 1 and 90.')
       return
     }
-    setLoading(true)
-    setError(null)
-    try {
-      setResult(await api<CustomForecast>(`/predictions/custom?days=${n}`))
-    } catch (err) {
-      setResult(null)
-      setError(errorMessage(err))
-    } finally {
-      setLoading(false)
-    }
+    setInputError(null)
+    runFetch(n)
   }
 
   const leanClass =
@@ -82,7 +79,7 @@ function CustomHorizonCard({ fmt }: { fmt: (v: number) => string }) {
           value={days}
           onChange={(e) => setDays(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !loading) void run()
+            if (e.key === 'Enter' && !loading) run()
           }}
           aria-label="Horizon in days"
           style={{ width: '6rem' }}
@@ -164,15 +161,6 @@ function CustomHorizonCard({ fmt }: { fmt: (v: number) => string }) {
       )}
     </div>
   )
-}
-
-/** The live API emits point_forecast/predicted_at; older payloads used predicted_value/created_at. */
-function normalizePrediction(p: Prediction): Prediction {
-  return {
-    ...p,
-    predicted_value: typeof p.point_forecast === 'number' ? p.point_forecast : p.predicted_value,
-    created_at: p.created_at ?? p.predicted_at ?? ''
-  }
 }
 
 function sortByHorizon(predictions: Prediction[]): Prediction[] {
@@ -357,7 +345,10 @@ export default function Forecast() {
                 <span className={`direction-arrow ${pctClass(activePrediction.expected_change_pct)}`}>
                   {DIRECTION_ARROWS[activePrediction.direction] ?? '•'}
                 </span>{' '}
-                {fmt(activePrediction.predicted_value)}
+                {(() => {
+                  const point = pointForecastOf(activePrediction)
+                  return point !== null ? fmt(point) : '—'
+                })()}
               </div>
               <div className={`delta ${pctClass(activePrediction.expected_change_pct)}`}>
                 {formatPct(activePrediction.expected_change_pct)} expected
@@ -451,15 +442,19 @@ export default function Forecast() {
               </thead>
               <tbody>
                 {historyItems.map((p) => {
+                  // normalizePrediction has filled predicted_value/base_value where
+                  // derivable; guard anyway — old rows may lack them entirely.
+                  const predicted = p.predicted_value
+                  const base = p.base_value
                   const errPct =
-                    p.actual_value !== null && p.actual_value !== 0
-                      ? ((p.predicted_value - p.actual_value) / p.actual_value) * 100
+                    predicted !== undefined && p.actual_value !== null && p.actual_value !== 0
+                      ? ((predicted - p.actual_value) / p.actual_value) * 100
                       : null
                   const actualDir =
-                    p.actual_value !== null
-                      ? p.actual_value > p.base_value
+                    p.actual_value !== null && base !== undefined
+                      ? p.actual_value > base
                         ? 'up'
-                        : p.actual_value < p.base_value
+                        : p.actual_value < base
                           ? 'down'
                           : 'flat'
                       : null
@@ -468,7 +463,7 @@ export default function Forecast() {
                     <tr key={p.id}>
                       <td>{formatDateTime(p.created_at, calendar)}</td>
                       <td>{formatDateTime(p.target_time, calendar)}</td>
-                      <td className="num mono">{fmt(p.predicted_value)}</td>
+                      <td className="num mono">{predicted !== undefined ? fmt(predicted) : '—'}</td>
                       <td className="num mono">
                         {p.actual_value !== null ? fmt(p.actual_value) : '—'}
                       </td>

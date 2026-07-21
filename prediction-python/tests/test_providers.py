@@ -285,23 +285,43 @@ def test_alanchand_legacy_parse_json_payload():
 # --- Milli Gold (milli.gold) --------------------------------------------------
 
 
-def test_milligold_parse_home_fixture():
+def test_milligold_parse_home_fixture_returns_current_not_day_high():
+    """Real page slice (2026-07-21): the day high 184,911,000 renders BEFORE
+    the current price in text order — the parser must return the CURRENT
+    price from the text-deepOcean-focus element (production bug regression)."""
     obs = milligold.parse_home(load_fixture_text("milligold_home.html"))
     assert obs is not None
     assert obs.symbol == "IR_GOLD_18K"
-    assert obs.raw_value == 182_050_000.0  # page quotes RIAL
+    assert obs.raw_value == 183_830_000.0  # current, NOT the 184,911,000 high
     assert obs.raw_currency == "IRR"
     assert obs.raw_unit == "IRR/gram (html)"
-    assert obs.value == pytest.approx(18_205_000.0)  # rial -> toman
+    assert obs.value == pytest.approx(18_383_000.0)  # rial -> toman
     assert obs.observed_at.tzinfo is not None
+
+
+def test_milligold_fallback_skips_high_low_when_class_anchor_gone():
+    # No deepOcean-focus class anywhere: the text fallback must skip amounts
+    # labeled as change %, day high (بالاترین, AFTER the number per RTL DOM
+    # order) and day low, and return the unlabeled current amount.
+    html = (
+        "<div>1,73 % تغییرات</div>"
+        "<div>184,911,000ریال بالاترین قیمت</div>"
+        "<div>181,500,000ریال پایین‌ترین قیمت</div>"
+        "<div>183,830,000ریال</div>"
+        "<div>قیمت ۱ گرم طلای ۱۸ عیار</div>"
+    )
+    obs = milligold.parse_home(html)
+    assert obs is not None
+    assert obs.raw_value == 183_830_000.0
 
 
 def test_milligold_parse_persian_digits_and_zero_width():
     # Persian/Arabic-Indic digits, Persian thousands separator and a
-    # zero-width non-joiner inside the label must all be handled
+    # zero-width non-joiner inside the label must all be handled, via the
+    # class-anchored path
     html = (
         "<div>قیمت ۱ گرم طلای‌ ۱۸ عیار</div>"
-        "<div>۱۸۲٬۰۵۰٬۰۰۰ ریال</div>"
+        '<p class="font-bold text-deepOcean-focus">۱۸۲٬۰۵۰٬۰۰۰ ریال</p>'
     )
     obs = milligold.parse_home(html)
     assert obs is not None
@@ -324,7 +344,7 @@ def test_milligold_fetch_round_trip(settings):
     )
     (obs,) = provider.fetch()
     assert obs.symbol == "IR_GOLD_18K"
-    assert obs.value == pytest.approx(18_205_000.0)
+    assert obs.value == pytest.approx(18_383_000.0)
 
 
 @respx.mock

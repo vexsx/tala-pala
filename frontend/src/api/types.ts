@@ -265,16 +265,23 @@ export interface PredictionDriver {
   description?: string
 }
 
+/**
+ * The live API emits {point_forecast, predicted_at} and omits
+ * {base_value, predicted_value, created_at}; older payloads had the reverse.
+ * Run rows through normalizePrediction (src/lib/forecastChart.ts) to fill the
+ * legacy fields before relying on them.
+ */
 export interface Prediction {
   id: number
   horizon: Horizon
-  created_at: string
-  /** The live API emits predicted_at; created_at kept for older payloads. */
+  /** Older payloads; the live API emits predicted_at instead. */
+  created_at?: string
   predicted_at?: string
   target_time: string
-  base_value: number
-  predicted_value: number
-  /** The live API name for the point estimate (mirrors predicted_value). */
+  /** Older payloads; derivable as point_forecast / (1 + expected_change_pct/100). */
+  base_value?: number
+  /** Older payloads; the live API emits point_forecast instead. */
+  predicted_value?: number
   point_forecast?: number
   lower_bound: number
   upper_bound: number
@@ -285,6 +292,8 @@ export interface Prediction {
   model_version?: string
   drivers?: PredictionDriver[]
   warnings?: string[]
+  /** False when the row was computed from stale inputs; absent means fresh. */
+  data_fresh?: boolean
   actual_value: number | null
 }
 
@@ -341,6 +350,8 @@ export interface CustomForecast {
   round_trip_cost_pct: number
   provider_gap_pct: number | null
   warnings: string[]
+  /** True — computed live, never stored. */
+  ephemeral?: boolean
 }
 
 // ---------- Models ----------

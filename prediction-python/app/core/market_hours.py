@@ -2,9 +2,13 @@
 
 Pure functions, no I/O.  Two calendars:
 
-* Iranian symbols (IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI): open Sat-Thu between
+* IR_GOLD_18K trades 24h/day on Iranian trading days: its primary source
+  (Milli Gold, milli.gold) is an online platform with no intraday session —
+  but the Iranian off-days still apply: closed all Thursday and Friday
+  (Tehran).  During open days a paused feed goes honestly stale.
+* Other Iranian symbols (USD_IRT, IR_COIN_EMAMI): open Sat-Wed between
   ``MARKET_TEHRAN_OPEN`` and ``MARKET_TEHRAN_CLOSE`` (Asia/Tehran local time,
-  a fixed UTC+03:30 since Iran abolished DST); closed all of Friday.
+  a fixed UTC+03:30 since Iran abolished DST); closed all Thursday and Friday.
 * Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y): closed from
   Friday 21:00 UTC to Sunday 22:00 UTC, open otherwise.
 
@@ -27,7 +31,10 @@ TEHRAN = ZoneInfo("Asia/Tehran")
 THURSDAY = 3  # Python weekday(): Monday=0 .. Sunday=6
 FRIDAY = 4
 
-IRANIAN_SYMBOLS = frozenset({"IR_GOLD_18K", "USD_IRT", "IR_COIN_EMAMI"})
+# 24h-traded on Iranian trading days (primary source: Milli Gold, no intraday
+# session window; Thursday+Friday off-days still apply).
+IRAN_24H_SYMBOLS = frozenset({"IR_GOLD_18K"})
+IRANIAN_SYMBOLS = frozenset({"USD_IRT", "IR_COIN_EMAMI"})
 GLOBAL_SYMBOLS = frozenset({"XAUUSD", "XAGUSD", "BRENT_OIL", "DXY", "US10Y"})
 # Tehran-exchange gold funds trade Sat-Wed between MARKET_TSE_OPEN and
 # MARKET_TSE_CLOSE (default 12:00-17:00 Tehran); closed Thursday AND Friday.
@@ -55,6 +62,8 @@ def _ensure_utc(dt: datetime) -> datetime:
 def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
     """True when ``symbol``'s market is open at ``at_utc`` (aware or naive-UTC)."""
     at_utc = _ensure_utc(at_utc)
+    if symbol in IRAN_24H_SYMBOLS:
+        return at_utc.astimezone(TEHRAN).weekday() not in (THURSDAY, FRIDAY)
     if symbol.startswith(TSE_FUND_PREFIX):
         local = at_utc.astimezone(TEHRAN)
         if local.weekday() in (THURSDAY, FRIDAY):
@@ -64,7 +73,7 @@ def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
         return open_t <= local.time() < close_t
     if symbol in IRANIAN_SYMBOLS:
         local = at_utc.astimezone(TEHRAN)
-        if local.weekday() == FRIDAY:
+        if local.weekday() in (THURSDAY, FRIDAY):
             return False
         open_t = _parse_hhmm(settings.market_tehran_open, time(12, 0))
         close_t = _parse_hhmm(settings.market_tehran_close, time(20, 0))
@@ -86,13 +95,22 @@ def closure_started_at(
 ) -> Optional[datetime]:
     """UTC start of the closure containing ``at_utc``; None while open.
 
-    For Iranian symbols that is the most recent trading-day close
-    (``MARKET_TEHRAN_CLOSE`` on the latest Sat-Thu day at or before now);
-    for global symbols the most recent Friday 21:00 UTC.
+    For 18k (24h symbol) that is Thursday 00:00 Tehran of the current
+    Thu+Fri block; for windowed Iranian symbols the most recent trading-day
+    close (``MARKET_TEHRAN_CLOSE`` on the latest Sat-Wed day at or before
+    now); for global symbols the most recent Friday 21:00 UTC.
     """
     at_utc = _ensure_utc(at_utc)
     if is_market_open(symbol, at_utc, settings):
         return None
+    if symbol in IRAN_24H_SYMBOLS:
+        # Closed only during the Thu+Fri block; closure began at
+        # Thursday 00:00 Tehran of the current block.
+        local = at_utc.astimezone(TEHRAN)
+        day = local.date()
+        if day.weekday() == FRIDAY:
+            day -= timedelta(days=1)
+        return datetime.combine(day, time(0, 0), tzinfo=TEHRAN).astimezone(timezone.utc)
     if symbol.startswith(TSE_FUND_PREFIX):
         close_t = _parse_hhmm(getattr(settings, "market_tse_close", "17:00"), time(17, 0))
         local = at_utc.astimezone(TEHRAN)
@@ -107,10 +125,10 @@ def closure_started_at(
     if symbol in IRANIAN_SYMBOLS:
         close_t = _parse_hhmm(settings.market_tehran_close, time(20, 0))
         local = at_utc.astimezone(TEHRAN)
-        for days_back in range(8):
+        for days_back in range(9):
             day = (local - timedelta(days=days_back)).date()
-            if day.weekday() == FRIDAY:
-                continue  # Friday never has a session, hence no close
+            if day.weekday() in (THURSDAY, FRIDAY):
+                continue  # off-days never have a session, hence no close
             candidate = datetime.combine(day, close_t, tzinfo=TEHRAN)
             if candidate <= local:
                 return candidate.astimezone(timezone.utc)

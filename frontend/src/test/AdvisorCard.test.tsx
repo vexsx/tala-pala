@@ -1,12 +1,29 @@
-import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { AdvisorCard } from '../components/AdvisorCard'
 import type {
+  CustomForecast,
   PortfolioSummary,
   Prediction,
   SignalLevel,
   SignalSummary
 } from '../api/types'
+
+// The custom-timeframe mode fetches /predictions/custom on demand; mock the
+// transport so chip tests stay hermetic. Standard-mode tests never call it.
+vi.mock('../api/client', () => ({
+  api: vi.fn(() => new Promise(() => undefined)),
+  errorMessage: (err: unknown) => (err instanceof Error ? err.message : 'Unexpected error')
+}))
+import { api } from '../api/client'
+
+const apiMock = api as unknown as Mock
+
+beforeEach(() => {
+  window.localStorage.clear()
+  apiMock.mockReset()
+  apiMock.mockImplementation(() => new Promise(() => undefined))
+})
 
 function sig(level: SignalLevel, extra: Partial<SignalSummary> = {}): SignalSummary {
   return {
@@ -186,6 +203,123 @@ describe('AdvisorCard', () => {
     renderCard()
     expect(screen.getByTestId('advisor-card')).not.toHaveTextContent(
       /assessment based on last session/i
+    )
+  })
+})
+
+describe('AdvisorCard timeframe selector', () => {
+  const customResult: CustomForecast = {
+    symbol: 'IR_GOLD_18K',
+    horizon_days: 14,
+    model_name: 'gbm-fast',
+    beats_naive: true,
+    point_forecast: 8_300_000,
+    lower_bound: 8_100_000,
+    upper_bound: 8_500_000,
+    last_price: 8_120_000,
+    expected_change_pct: 2.2,
+    direction: 'up',
+    confidence: 0.61,
+    regime: 'trending',
+    decision_lean: 'buy',
+    decision_note: 'Expected move clears assumed costs.',
+    monte_carlo: {
+      p_up: 0.64,
+      p_gain_over_cost: 0.41,
+      p_loss_over_cost: 0.18,
+      sim_p05_pct: -2.1,
+      sim_median_pct: 1.9,
+      sim_p95_pct: 6.2,
+      n_paths: 2000
+    },
+    round_trip_cost_pct: 1.5,
+    provider_gap_pct: 0.4,
+    warnings: [],
+    ephemeral: true
+  }
+
+  it('renders one chip per available horizon plus Custom', () => {
+    renderCard({
+      predictions: [
+        pred({ id: 1, horizon: '1h', target_time: '2026-07-20T11:00:00Z' }),
+        pred({ id: 2, horizon: '7d' })
+      ]
+    })
+    expect(screen.getByRole('button', { name: '1 hour' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '7 days' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Custom…' })).toBeInTheDocument()
+    // Horizons without a latest prediction get no chip.
+    expect(screen.queryByRole('button', { name: '30 days' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Tomorrow' })).not.toBeInTheDocument()
+  })
+
+  it('defaults to 7d and shows the selected-timeframe detail with a tilt sentence', () => {
+    renderCard({
+      predictions: [pred({ expected_change_pct: 1.8, confidence: 0.72 })]
+    })
+    expect(screen.getByRole('button', { name: '7 days' })).toHaveAttribute('aria-pressed', 'true')
+    const detail = screen.getByTestId('advisor-timeframe-detail')
+    expect(detail).toHaveTextContent(/selected timeframe · 7 days/i)
+    expect(detail).toHaveTextContent(/models project \+1\.80%/i)
+    expect(detail).toHaveTextContent(/conditions modestly favor buying/i)
+    expect(detail).toHaveTextContent('favors buying')
+  })
+
+  it('honors a persisted standard selection from localStorage', () => {
+    window.localStorage.setItem('igp_advisor_horizon', '3d')
+    renderCard({
+      predictions: [
+        pred({ id: 1, horizon: '3d', target_time: '2026-07-23T10:00:00Z' }),
+        pred({ id: 2, horizon: '7d' })
+      ]
+    })
+    expect(screen.getByRole('button', { name: '3 days' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('advisor-timeframe-detail')).toHaveTextContent(
+      /selected timeframe · 3 days/i
+    )
+  })
+
+  it('falls back to the default when the persisted horizon has no prediction', () => {
+    window.localStorage.setItem('igp_advisor_horizon', '30d')
+    renderCard({ predictions: [pred()] })
+    expect(screen.getByRole('button', { name: '7 days' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('persists a chip click to localStorage and activates the chip', () => {
+    renderCard({
+      predictions: [
+        pred({ id: 1, horizon: '3d', target_time: '2026-07-23T10:00:00Z' }),
+        pred({ id: 2, horizon: '7d' })
+      ]
+    })
+    fireEvent.click(screen.getByRole('button', { name: '3 days' }))
+    expect(window.localStorage.getItem('igp_advisor_horizon')).toBe('3d')
+    expect(screen.getByRole('button', { name: '3 days' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByTestId('advisor-timeframe-detail')).toHaveTextContent(
+      /selected timeframe · 3 days/i
+    )
+  })
+
+  it('renders the server decision engine output in custom mode', async () => {
+    window.localStorage.setItem('igp_advisor_horizon', 'custom:14')
+    apiMock.mockResolvedValue(customResult)
+    renderCard()
+    expect(await screen.findAllByText('Buy lean')).not.toHaveLength(0)
+    const detail = screen.getByTestId('advisor-timeframe-detail')
+    expect(detail).toHaveTextContent(/custom, 14 days ahead/i)
+    expect(detail).toHaveTextContent('Expected move clears assumed costs.')
+    expect(detail).toHaveTextContent(/model decision engine/i)
+    expect(detail).toHaveTextContent('64% up')
+    expect(detail).toHaveTextContent('41%')
+    expect(detail).toHaveTextContent(/1\.5% round-trip/i)
+    expect(apiMock).toHaveBeenCalledWith('/predictions/custom?days=14', expect.anything())
+  })
+
+  it('shows a loading state while the custom forecast computes', () => {
+    window.localStorage.setItem('igp_advisor_horizon', 'custom:30')
+    renderCard()
+    expect(screen.getByTestId('advisor-timeframe-detail')).toHaveTextContent(
+      /computing custom forecast/i
     )
   })
 })

@@ -1,7 +1,10 @@
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApi } from '../hooks/useApi'
+import { useCustomForecast, parseCustomDays } from '../hooks/useCustomForecast'
 import {
   HORIZONS,
   HORIZON_LABELS,
+  type CustomForecast,
   type PortfolioResponse,
   type PortfolioSummary,
   type Prediction,
@@ -12,16 +15,42 @@ import { useSettings } from '../lib/settings'
 import {
   confidencePct,
   formatDateTime,
+  formatGregorianDate,
   formatGrouped,
+  formatJalaliDate,
   formatPct,
   formatToman,
   pctClass
 } from '../lib/format'
+import {
+  ADVISOR_HORIZON_KEY,
+  ADVISOR_HORIZON_LABELS,
+  ROUND_TRIP_COST_PCT,
+  TILT_LABELS,
+  defaultAdvisorHorizon,
+  horizonTilt,
+  latestByHorizon,
+  parseAdvisorSelection,
+  serializeAdvisorSelection,
+  tiltBadgeClass,
+  tiltPhrase,
+  type AdvisorSelection
+} from '../lib/advice'
+import { pointForecastOf } from '../lib/forecastChart'
 import SignalBadge from './SignalBadge'
 import GaugeBar from './GaugeBar'
 import Loading from './Loading'
+import ErrorMessage from './ErrorMessage'
 
 const DISCLAIMER = 'Decision support only — not financial advice.'
+
+const DIRECTION_ARROWS: Record<string, string> = { up: '▲', down: '▼', flat: '▶' }
+
+const LEAN_LABELS: Record<CustomForecast['decision_lean'], string> = {
+  buy: 'Buy lean',
+  hold: 'Hold',
+  sell: 'Sell lean'
+}
 
 /** Detects the engine's "prices from last session (market closed)" note. */
 function hasClosedMarketNote(signal: SignalSummary): boolean {
@@ -85,6 +114,304 @@ function confidenceLabel(pct: number | null): string {
   return 'high (by historical hit-rate)'
 }
 
+function readStoredSelection(): AdvisorSelection | null {
+  try {
+    return parseAdvisorSelection(window.localStorage.getItem(ADVISOR_HORIZON_KEY))
+  } catch {
+    return null
+  }
+}
+
+function persistSelection(sel: AdvisorSelection): void {
+  try {
+    window.localStorage.setItem(ADVISOR_HORIZON_KEY, serializeAdvisorSelection(sel))
+  } catch {
+    // localStorage unavailable — selection just won't survive reloads
+  }
+}
+
+/** Target date in both calendars, e.g. "1405/04/30 · 2026-07-21". */
+function bothCalendars(input: string): string {
+  const d = new Date(input)
+  if (Number.isNaN(d.getTime())) return '—'
+  return `${formatJalaliDate(d)} · ${formatGregorianDate(d)}`
+}
+
+// ---------- Timeframe selector (chips + detail block) ----------
+
+function AdvisorTimeframe({ predictions }: { predictions: Prediction[] }) {
+  const { unit } = useSettings()
+  const available = useMemo(() => latestByHorizon(predictions), [predictions])
+  const availableHorizons = useMemo(() => available.map((p) => p.horizon), [available])
+
+  const [selection, setSelection] = useState<AdvisorSelection | null>(readStoredSelection)
+  const [daysInput, setDaysInput] = useState<string>(() => {
+    const stored = readStoredSelection()
+    return stored?.kind === 'custom' ? String(stored.days) : '14'
+  })
+
+  const effective: AdvisorSelection | null = useMemo(() => {
+    if (selection?.kind === 'custom') return selection
+    if (selection?.kind === 'std' && availableHorizons.includes(selection.horizon)) return selection
+    const def = defaultAdvisorHorizon(availableHorizons)
+    return def !== null ? { kind: 'std', horizon: def } : null
+  }, [selection, availableHorizons])
+
+  const select = (sel: AdvisorSelection) => {
+    setSelection(sel)
+    persistSelection(sel)
+  }
+
+  const custom = useCustomForecast()
+  const { run, runDebounced } = custom
+  const lastRunDays = useRef<number | null>(null)
+  useEffect(() => {
+    if (effective?.kind !== 'custom') return
+    const days = effective.days
+    if (lastRunDays.current === days) return
+    if (lastRunDays.current === null) run(days)
+    else runDebounced(days)
+    lastRunDays.current = days
+  }, [effective, run, runDebounced])
+
+  if (available.length === 0 && effective?.kind !== 'custom') return null
+
+  const fmt = (v: number) => formatToman(v, unit)
+  const activePrediction =
+    effective?.kind === 'std'
+      ? available.find((p) => p.horizon === effective.horizon) ?? null
+      : null
+
+  return (
+    <div className="advisor-timeframe" data-testid="advisor-timeframe">
+      <div className="chip-row" role="group" aria-label="Advisor timeframe">
+        {available.map((p) => (
+          <button
+            key={p.horizon}
+            type="button"
+            className={`chip ${
+              effective?.kind === 'std' && effective.horizon === p.horizon ? 'active' : ''
+            }`}
+            aria-pressed={effective?.kind === 'std' && effective.horizon === p.horizon}
+            onClick={() => select({ kind: 'std', horizon: p.horizon })}
+          >
+            {ADVISOR_HORIZON_LABELS[p.horizon] ?? p.horizon}
+          </button>
+        ))}
+        <button
+          type="button"
+          className={`chip ${effective?.kind === 'custom' ? 'active' : ''}`}
+          aria-pressed={effective?.kind === 'custom'}
+          onClick={() => {
+            const days = parseCustomDays(daysInput) ?? 14
+            setDaysInput(String(days))
+            select({ kind: 'custom', days })
+          }}
+        >
+          Custom…
+        </button>
+        {effective?.kind === 'custom' && (
+          <span className="chip-input">
+            <input
+              type="number"
+              min={1}
+              max={90}
+              step={1}
+              value={daysInput}
+              aria-label="Custom horizon in days"
+              onChange={(e) => {
+                setDaysInput(e.target.value)
+                const n = parseCustomDays(e.target.value)
+                if (n !== null) select({ kind: 'custom', days: n })
+              }}
+            />
+            <span className="muted small">days (1–90)</span>
+          </span>
+        )}
+      </div>
+
+      {effective?.kind === 'std' && activePrediction && (
+        <StandardTimeframeDetail prediction={activePrediction} fmt={fmt} />
+      )}
+
+      {effective?.kind === 'custom' && (
+        <CustomTimeframeDetail
+          days={effective.days}
+          daysValid={parseCustomDays(daysInput) !== null}
+          state={custom}
+          fmt={fmt}
+        />
+      )}
+    </div>
+  )
+}
+
+function StandardTimeframeDetail({
+  prediction: p,
+  fmt
+}: {
+  prediction: Prediction
+  fmt: (v: number) => string
+}) {
+  const point = pointForecastOf(p)
+  const tilt = horizonTilt(p, ROUND_TRIP_COST_PCT)
+  const label = ADVISOR_HORIZON_LABELS[p.horizon] ?? p.horizon
+  return (
+    <div className="advisor-detail" data-testid="advisor-timeframe-detail">
+      <div className="advisor-detail-head">
+        <span className="muted small">Selected timeframe · {label}</span>
+        <span className={`badge ${tiltBadgeClass(tilt)}`}>{TILT_LABELS[tilt]}</span>
+      </div>
+      <div className="advisor-detail-price">
+        <span className={`direction-arrow ${pctClass(p.expected_change_pct)}`}>
+          {DIRECTION_ARROWS[p.direction] ?? '•'}
+        </span>{' '}
+        <span className="mono">{point !== null ? fmt(point) : '—'}</span>{' '}
+        <span className={`delta ${pctClass(p.expected_change_pct)}`}>
+          {formatPct(p.expected_change_pct)}
+        </span>
+      </div>
+      <div className="stat-sub">
+        <div className="kv">
+          <span className="muted">Target date</span>
+          <span className="mono">{bothCalendars(p.target_time)}</span>
+        </div>
+        <div className="kv">
+          <span className="muted">90% interval</span>
+          <span className="mono">
+            {fmt(p.lower_bound)} – {fmt(p.upper_bound)}
+          </span>
+        </div>
+      </div>
+      <GaugeBar value={confidencePct(p.confidence)} label="Confidence" />
+      <p className="muted small advisor-tilt-sentence">
+        Models project {formatPct(p.expected_change_pct)} by {label.toLowerCase()}; net of ~
+        {ROUND_TRIP_COST_PCT}% round-trip costs, {tiltPhrase(tilt)}.
+      </p>
+    </div>
+  )
+}
+
+function CustomTimeframeDetail({
+  days,
+  daysValid,
+  state,
+  fmt
+}: {
+  days: number
+  daysValid: boolean
+  state: ReturnType<typeof useCustomForecast>
+  fmt: (v: number) => string
+}) {
+  const { result, loading, error, run } = state
+  if (!daysValid) {
+    return (
+      <div className="advisor-detail" data-testid="advisor-timeframe-detail">
+        <p className="muted small">Enter a whole number of days between 1 and 90.</p>
+      </div>
+    )
+  }
+  return (
+    <div className="advisor-detail" data-testid="advisor-timeframe-detail">
+      <div className="advisor-detail-head">
+        <span className="muted small">
+          Selected timeframe · custom, {days} day{days > 1 ? 's' : ''} ahead
+        </span>
+        {result && !loading && (
+          <span
+            className={`badge ${
+              result.decision_lean === 'buy'
+                ? 'badge-ok'
+                : result.decision_lean === 'sell'
+                  ? 'badge-bad'
+                  : 'badge-off'
+            }`}
+          >
+            {LEAN_LABELS[result.decision_lean]}
+          </span>
+        )}
+      </div>
+      {loading && <Loading label="Computing custom forecast — this can take a few seconds…" />}
+      {error && !loading && <ErrorMessage message={error} onRetry={() => run(days)} />}
+      {result && !loading && !error && (
+        <>
+          {result.warnings.map((w, i) => (
+            <div key={i} className="callout callout-warn">
+              {w}
+            </div>
+          ))}
+          <div className="advisor-detail-price">
+            <span className={`direction-arrow ${pctClass(result.expected_change_pct)}`}>
+              {DIRECTION_ARROWS[result.direction] ?? '•'}
+            </span>{' '}
+            <span className="mono">{fmt(result.point_forecast)}</span>{' '}
+            <span className={`delta ${pctClass(result.expected_change_pct)}`}>
+              {formatPct(result.expected_change_pct)}
+            </span>
+          </div>
+          <div className="stat-sub">
+            <div className="kv">
+              <span className="muted">90% interval</span>
+              <span className="mono">
+                {fmt(result.lower_bound)} – {fmt(result.upper_bound)}
+              </span>
+            </div>
+            <div className="kv">
+              <span className="muted">Model · regime</span>
+              <span className="mono">
+                {result.model_name}
+                {result.beats_naive ? '' : ' (naive baseline won)'} · {result.regime}
+              </span>
+            </div>
+          </div>
+          <GaugeBar value={confidencePct(result.confidence)} label="Confidence" />
+          {result.monte_carlo && (
+            <div className="stat-sub">
+              <div className="kv">
+                <span className="muted">
+                  Simulated odds ({result.monte_carlo.n_paths} paths)
+                </span>
+                <span className="mono">
+                  {Math.round(result.monte_carlo.p_up * 100)}% up ·{' '}
+                  <span className="pos">
+                    {Math.round(result.monte_carlo.p_gain_over_cost * 100)}%
+                  </span>{' '}
+                  beat costs ·{' '}
+                  <span className="neg">
+                    {Math.round(result.monte_carlo.p_loss_over_cost * 100)}%
+                  </span>{' '}
+                  lose more than costs
+                </span>
+              </div>
+              <div className="kv">
+                <span className="muted">Simulated cone (5% / median / 95%)</span>
+                <span className="mono">
+                  {formatPct(result.monte_carlo.sim_p05_pct)} /{' '}
+                  {formatPct(result.monte_carlo.sim_median_pct)} /{' '}
+                  {formatPct(result.monte_carlo.sim_p95_pct)}
+                </span>
+              </div>
+            </div>
+          )}
+          <div className={`callout ${result.decision_lean === 'hold' ? '' : 'callout-warn'}`}>
+            <strong
+              className={
+                result.decision_lean === 'buy' ? 'pos' : result.decision_lean === 'sell' ? 'neg' : ''
+              }
+            >
+              {LEAN_LABELS[result.decision_lean]}
+            </strong>{' '}
+            — {result.decision_note} (Model decision engine; assumed costs ≈
+            {result.round_trip_cost_pct}% round-trip.)
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------- Advisor card ----------
+
 export interface AdvisorCardProps {
   signal: SignalSummary | null
   /** Latest prediction per horizon (from /predictions). */
@@ -97,7 +424,7 @@ export interface AdvisorCardProps {
   premiumPct?: number | null
 }
 
-/** Presentational advisor panel — pure props, unit-testable without fetch mocks. */
+/** Advisor panel body — props-driven except the on-demand custom forecast. */
 export function AdvisorCard({
   signal,
   predictions,
@@ -158,6 +485,8 @@ export function AdvisorCard({
         <SignalBadge signal={signal.signal} size="lg" />
         <p className="advisor-sentence">{headlineSentence(bias, headlinePrediction)}</p>
       </div>
+
+      <AdvisorTimeframe predictions={predictions} />
 
       <div className="advisor-meters">
         <div className="advisor-meter">
@@ -255,20 +584,28 @@ export interface AdvisorPanelProps {
   premiumPct?: number | null
   /** True while the parent is still loading the market summary. */
   loading?: boolean
+  /**
+   * Portfolio lifted from the parent (pass null while unavailable). When the
+   * prop is omitted entirely the panel fetches /portfolio itself.
+   */
+  portfolio?: PortfolioSummary | null
 }
 
 /**
- * Thin container: fetches the portfolio (which may 401 or be empty — both
- * degrade to "no holdings") and delegates rendering to AdvisorCard.
+ * Thin container: resolves the portfolio (own fetch unless lifted by the
+ * parent; 401 / empty both degrade to "no holdings") and delegates rendering
+ * to AdvisorCard.
  */
 export default function AdvisorPanel({
   signal,
   predictions,
   currentPrice,
   premiumPct = null,
-  loading = false
+  loading = false,
+  portfolio
 }: AdvisorPanelProps) {
-  const portfolio = useApi<PortfolioResponse>('/portfolio')
+  const fetched = useApi<PortfolioResponse>(portfolio === undefined ? '/portfolio' : null)
+  const resolvedPortfolio = portfolio !== undefined ? portfolio : fetched.data
 
   if (loading && signal === null) {
     return (
@@ -283,7 +620,7 @@ export default function AdvisorPanel({
     <AdvisorCard
       signal={signal}
       predictions={predictions}
-      portfolio={portfolio.data}
+      portfolio={resolvedPortfolio}
       currentPrice={currentPrice}
       premiumPct={premiumPct}
     />

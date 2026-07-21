@@ -1036,6 +1036,10 @@ input[type='checkbox'] {
   box-shadow: 0 0 0 3px var(--band-fill);
 }
 
+.legend-xau {
+  border-top: 1px solid var(--muted);
+}
+
 /* ---------- Advisor panel ---------- */
 
 .advisor-card {
@@ -1125,6 +1129,149 @@ input[type='checkbox'] {
 .advisor-footer {
   border-top: 1px solid var(--border);
   padding-top: 8px;
+}
+
+/* ---------- Advisor timeframe chips & detail ---------- */
+
+.chip-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.chip {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.chip:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.chip.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.chip-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chip-input input {
+  width: 4.5rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.advisor-timeframe {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.advisor-detail {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.advisor-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.advisor-detail-price {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.advisor-tilt-sentence {
+  margin: 0;
+}
+
+/* ---------- Action planner ---------- */
+
+.action-planner {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.planner-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.planner-window {
+  margin: 0;
+  font-size: 13px;
+}
+
+.planner-table td {
+  vertical-align: top;
+}
+
+.planner-portfolio {
+  margin: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  font-size: 13px;
+}
+
+.context-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.context-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: baseline;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.context-arrow {
+  grid-row: span 3;
+  font-size: 14px;
+}
+
+.context-value {
+  font-size: 13px;
 }
 
 /* ---------- Responsive ---------- */

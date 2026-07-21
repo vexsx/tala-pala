@@ -1,9 +1,12 @@
 // Package markethours implements the Addendum 1 market-calendar rules,
 // mirrored between the Go and Python services from the same env vars:
 //
-//   - Iranian symbols (IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI) trade Sat-Thu
-//     between MARKET_TEHRAN_OPEN and MARKET_TEHRAN_CLOSE (Asia/Tehran local,
-//     open inclusive, close exclusive); closed all Friday.
+//   - IR_GOLD_18K trades 24h/day on Iranian trading days: its primary source
+//     (Milli Gold) is an online platform with no intraday session, but the
+//     Iranian off-days still apply — closed all Thursday and Friday (Tehran).
+//   - Other Iranian symbols (USD_IRT, IR_COIN_EMAMI) trade Sat-Wed between
+//     MARKET_TEHRAN_OPEN and MARKET_TEHRAN_CLOSE (Asia/Tehran local,
+//     open inclusive, close exclusive); closed all Thursday and Friday.
 //   - Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y, ...) are closed
 //     from Friday 21:00 UTC until Sunday 22:00 UTC.
 //
@@ -34,10 +37,17 @@ const (
 // tseFundPrefix marks Tehran-exchange gold-fund symbols.
 const tseFundPrefix = "IR_GOLD_FUND"
 
-// iranian is the set of symbols that follow the Tehran market calendar.
+// iran24h: symbols whose primary source trades around the clock on Iranian
+// trading days. IR_GOLD_18K's primary provider is Milli Gold (milli.gold),
+// a 24-hour online platform — no intraday session window, but the Iranian
+// off-days (Thursday + Friday, Tehran) still close the market.
+var iran24h = map[string]bool{
+	"IR_GOLD_18K": true,
+}
+
+// iranian is the set of symbols that follow the Tehran bazaar calendar.
 // Every other symbol follows the global (UTC weekend) calendar.
 var iranian = map[string]bool{
-	"IR_GOLD_18K":   true,
 	"USD_IRT":       true,
 	"IR_COIN_EMAMI": true,
 }
@@ -69,6 +79,10 @@ func parseHHMM(s, def string) int {
 // open/close are "HH:MM" Tehran-local session bounds (only used for Iranian
 // symbols); pass the configured MARKET_TEHRAN_OPEN / MARKET_TEHRAN_CLOSE.
 func IsOpen(symbol string, at time.Time, open, close string) bool {
+	if iran24h[symbol] {
+		wd := at.In(tehran).Weekday()
+		return wd != time.Thursday && wd != time.Friday
+	}
 	if strings.HasPrefix(symbol, tseFundPrefix) {
 		lt := at.In(tehran)
 		if lt.Weekday() == time.Thursday || lt.Weekday() == time.Friday {
@@ -79,7 +93,7 @@ func IsOpen(symbol string, at time.Time, open, close string) bool {
 	}
 	if iranian[symbol] {
 		lt := at.In(tehran)
-		if lt.Weekday() == time.Friday {
+		if lt.Weekday() == time.Thursday || lt.Weekday() == time.Friday {
 			return false
 		}
 		m := lt.Hour()*60 + lt.Minute()
@@ -105,6 +119,16 @@ func ClosureStartedAt(symbol string, at time.Time, open, close string) time.Time
 	if IsOpen(symbol, at, open, close) {
 		return at.UTC()
 	}
+	if iran24h[symbol] {
+		// Closed only during the Thu+Fri block; the closure began at
+		// Thursday 00:00 Tehran of the current block.
+		lt := at.In(tehran)
+		day := time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, tehran)
+		if lt.Weekday() == time.Friday {
+			day = day.AddDate(0, 0, -1)
+		}
+		return day.UTC()
+	}
 	if strings.HasPrefix(symbol, tseFundPrefix) {
 		closeM := parseHHMM(tseClose, tseClose)
 		lt := at.In(tehran)
@@ -126,10 +150,10 @@ func ClosureStartedAt(symbol string, at time.Time, open, close string) time.Time
 		lt := at.In(tehran)
 		day := time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, tehran)
 		// Walk back to the most recent trading-day close at or before `at`.
-		// Any 9-day span contains a non-Friday close in the past.
+		// Any 9-day span contains a non-Thu/Fri close in the past.
 		for i := 0; i < 9; i++ {
 			d := day.AddDate(0, 0, -i)
-			if d.Weekday() == time.Friday {
+			if d.Weekday() == time.Thursday || d.Weekday() == time.Friday {
 				continue
 			}
 			closeT := d.Add(time.Duration(closeM) * time.Minute)

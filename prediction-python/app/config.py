@@ -74,8 +74,9 @@ class Settings:
         default_factory=lambda: _env("TSETMC_FETCH_TIMES", "12:00,15:00,18:00")
     )
     alanchand_token: str = field(default_factory=lambda: _env("ALANCHAND_TOKEN", ""))
-    # Tehran market hours (Addendum 1): Sat-Thu open window, Asia/Tehran local,
-    # "HH:MM" strings; Friday is always closed for Iranian symbols.
+    # Tehran market hours (Addendum 1): Sat-Wed open window, Asia/Tehran local,
+    # "HH:MM" strings; Thursday and Friday are always closed for Iranian
+    # symbols. IR_GOLD_18K trades 24h on trading days and ignores this window.
     market_tehran_open: str = field(default_factory=lambda: _env("MARKET_TEHRAN_OPEN", "12:00"))
     market_tehran_close: str = field(default_factory=lambda: _env("MARKET_TEHRAN_CLOSE", "20:00"))
     # TSE gold-fund session (Addendum 7): Sat-Wed, Asia/Tehran local.

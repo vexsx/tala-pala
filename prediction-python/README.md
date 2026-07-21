@@ -35,9 +35,11 @@ and `brsapi` (`BRSAPI_KEY`; BrsApi.ir quotes Iranian items in **toman**, so no
 
 ## Market-hours awareness (Addendum 1)
 
-`app/core/market_hours.py`: Iranian symbols trade Sat–Thu between
-`MARKET_TEHRAN_OPEN`/`MARKET_TEHRAN_CLOSE` (Asia/Tehran; open inclusive,
-close exclusive; all Friday closed); global symbols are closed Fri 21:00 UTC
+`app/core/market_hours.py`: IR_GOLD_18K trades 24h/day on Iranian trading
+days (Sat–Wed; no intraday window); other Iranian symbols trade Sat–Wed
+between `MARKET_TEHRAN_OPEN`/`MARKET_TEHRAN_CLOSE` (Asia/Tehran; open
+inclusive, close exclusive). All Iranian symbols are closed all Thursday
+and Friday; global symbols are closed Fri 21:00 UTC
 → Sun 22:00 UTC. While a market is OPEN staleness is the plain
 `STALE_MINUTES` age rule; while CLOSED, data from the last session (observed
 no earlier than closure start − `STALE_MINUTES`) still counts as fresh. The

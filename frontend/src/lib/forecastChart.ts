@@ -14,9 +14,39 @@ export interface ForecastChartPoint {
 }
 
 /** The live API calls the point estimate point_forecast; older payloads used predicted_value. */
-function pointForecastOf(p: Prediction): number | null {
+export function pointForecastOf(p: Prediction): number | null {
   const v = typeof p.point_forecast === 'number' ? p.point_forecast : p.predicted_value
   return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * Fill the legacy Prediction fields from their live-API counterparts:
+ * - predicted_value ← point_forecast;
+ * - created_at ← predicted_at;
+ * - base_value ← point_forecast / (1 + expected_change_pct/100) when missing
+ *   (skipped at expected_change_pct === -100 to avoid dividing by zero).
+ * Existing values always win; the input row is not mutated.
+ */
+export function normalizePrediction(p: Prediction): Prediction {
+  const point = pointForecastOf(p)
+  const out: Prediction = {
+    ...p,
+    predicted_value:
+      typeof p.predicted_value === 'number' && Number.isFinite(p.predicted_value)
+        ? p.predicted_value
+        : point ?? undefined,
+    created_at: p.created_at ?? p.predicted_at
+  }
+  const hasBase = typeof p.base_value === 'number' && Number.isFinite(p.base_value)
+  if (
+    !hasBase &&
+    point !== null &&
+    Number.isFinite(p.expected_change_pct) &&
+    p.expected_change_pct !== -100
+  ) {
+    out.base_value = point / (1 + p.expected_change_pct / 100)
+  }
+  return out
 }
 
 /**

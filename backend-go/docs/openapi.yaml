@@ -874,9 +874,11 @@ components:
       type: string
       enum: [open, closed]
       description: >
-        Iranian symbols (IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI) trade Sat-Thu
-        between MARKET_TEHRAN_OPEN and MARKET_TEHRAN_CLOSE (Asia/Tehran);
-        closed Friday. Global symbols are closed Fri 21:00 UTC - Sun 22:00 UTC.
+        IR_GOLD_18K trades 24h/day on Iranian trading days (Sat-Wed);
+        USD_IRT and IR_COIN_EMAMI trade Sat-Wed between MARKET_TEHRAN_OPEN
+        and MARKET_TEHRAN_CLOSE (Asia/Tehran). All Iranian symbols are closed
+        all Thursday and Friday. Global symbols are closed
+        Fri 21:00 UTC - Sun 22:00 UTC.
     ProviderHealth:
       type: object
       properties:

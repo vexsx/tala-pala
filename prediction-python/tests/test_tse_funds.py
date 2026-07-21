@@ -132,9 +132,10 @@ def test_tse_fund_calendar():
     assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 13, 30), s)
     # Tue 11:59 Tehran: not yet open
     assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 8, 29), s)
-    # Thursday 2026-07-23 13:00 Tehran: closed (unlike the physical market)
+    # Thursday 2026-07-23 13:00 Tehran: closed — funds and the physical
+    # market alike (Thursday is an Iranian off-day for both)
     assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 23, 9, 30), s)
-    assert is_market_open("IR_GOLD_18K", utc(2026, 7, 23, 9, 30), s)  # physical open Thu
+    assert not is_market_open("IR_GOLD_18K", utc(2026, 7, 23, 9, 30), s)  # physical closed Thu
     # Friday: closed; Saturday 13:00 Tehran: open again
     assert not is_market_open("IR_GOLD_FUND_FLOW", utc(2026, 7, 24, 9, 30), s)
     assert is_market_open("IR_GOLD_FUND_FLOW", utc(2026, 7, 25, 9, 30), s)

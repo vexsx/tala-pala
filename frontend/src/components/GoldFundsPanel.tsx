@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts'
-import { useApi } from '../hooks/useApi'
+import { useApi, type ApiState } from '../hooks/useApi'
 import type { FundsResponse } from '../api/types'
 import { SYMBOL_LABELS, type Symbol_ } from '../api/types'
 import { useSettings } from '../lib/settings'
@@ -24,10 +24,14 @@ import EmptyState from './EmptyState'
  * (حقیقی) buyer/seller composition per fund — plus the composite retail
  * net-flow history. Data lands once per hour during the TSE session
  * (12:00–17:00 Tehran, Sat–Wed) to respect the source's request budget.
+ *
+ * Pass `state` when the parent already fetches /market/funds (e.g. Overview
+ * shares one request with the Action planner); otherwise the panel fetches.
  */
-export default function GoldFundsPanel() {
+export default function GoldFundsPanel({ state }: { state?: ApiState<FundsResponse> }) {
   const { unit, calendar } = useSettings()
-  const res = useApi<FundsResponse>('/market/funds')
+  const own = useApi<FundsResponse>(state ? null : '/market/funds')
+  const res = state ?? own
 
   const flowChart = useMemo(
     () =>

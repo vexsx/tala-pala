@@ -138,23 +138,24 @@ func TestStaleData(t *testing.T) {
 }
 
 func TestStaleData_MarketClosed(t *testing.T) {
-	// Monday 2026-07-20 18:00 UTC = 21:30 Tehran: market closed since
-	// 20:00 Tehran (16:30 UTC). `now` above (12:00 UTC = 15:30 Tehran) is open.
-	closedNow := time.Date(2026, 7, 20, 18, 0, 0, 0, time.UTC)
+	// IR_GOLD_18K trades 24h on trading days, so evening instants are open;
+	// Thursday 2026-07-16 08:30 UTC (12:00 Tehran) is inside the Thu+Fri
+	// off-day block, closed since Thursday 00:00 Tehran = Wed 20:30 UTC.
+	closedNow := time.Date(2026, 7, 16, 8, 30, 0, 0, time.UTC)
 	s := baseSnapshot()
 	s.Now = closedNow
 
-	// Last-session data (16:20 UTC, 100 minutes old) must NOT trigger:
-	// no nightly false alarms while the market is closed.
+	// Last-session data (Wed 20:20 UTC, ~12 hours old) must NOT trigger:
+	// no Thursday false alarms while the market is closed.
 	s.Gold = &PricePoint{Value: 5_000_000,
-		ObservedAt: time.Date(2026, 7, 20, 16, 20, 0, 0, time.UTC)}
+		ObservedAt: time.Date(2026, 7, 15, 20, 20, 0, 0, time.UTC)}
 	if Evaluate(alertOf("stale_data", nil), s).Triggered {
 		t.Fatal("last-session data must not trigger stale_data while closed")
 	}
 
-	// Data from before (closure start - 30m) = 16:00 UTC still triggers.
+	// Data from before (closure start - 30m) = Wed 20:00 UTC still triggers.
 	s.Gold = &PricePoint{Value: 5_000_000,
-		ObservedAt: time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)}
+		ObservedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)}
 	res := Evaluate(alertOf("stale_data", nil), s)
 	if !res.Triggered {
 		t.Fatal("pre-session data should trigger stale_data even while closed")
