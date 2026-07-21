@@ -34,7 +34,8 @@ from ..db import app_settings, ensure_utc, model_versions, predictions, prices, 
 from ..metrics import PREDICTION_DURATION
 from .base import ForecastModel
 from .ensemble import EnsembleModel, inverse_smape_weights, live_member_smapes
-from .intervals import empirical_interval
+from .intervals import DEFAULT_ALPHA, adaptive_alpha, empirical_interval
+from .metagate import META_GATE_KEY, apply_meta_gate
 from .training import CONTEXT_SYMBOLS, HORIZON_SPECS, detect_regime, load_series
 
 log = logging.getLogger(__name__)
@@ -132,25 +133,48 @@ def load_live_calibration(engine: Engine) -> dict:
     return dict(row[0]) if row is not None and isinstance(row[0], dict) else {}
 
 
-def blended_confidence(validation_confidence: float, live: Optional[dict]) -> float:
-    """Calibrate confidence against live outcomes.
+MIN_REGIME_N = 10  # matured predictions in a regime before its stats are used
+
+
+def blended_confidence(
+    validation_confidence: float, live: Optional[dict], regime: Optional[str] = None
+) -> float:
+    """Calibrate confidence against live outcomes, preferring same-regime stats.
 
     ``final = w * validation_confidence + (1 - w) * live_dir_hit_rate`` with
     ``w = max(0.3, 1 - n/60)`` where ``n`` is the number of matured live
     predictions behind ``live_dir_hit_rate``.  With ``n = 0`` (or no live
     stats) ``w = 1`` and the result equals today's validation-only
     confidence; as evidence accumulates the weight shifts toward reality,
-    floored at ``w = 0.3`` so validation always keeps a vote.  The result is
-    clamped to ``[0.05, 0.95]`` — never claim more than 95% confidence.
+    floored at ``w = 0.3`` so validation always keeps a vote.
+
+    When per-regime stats exist for the CURRENT regime with at least
+    ``MIN_REGIME_N`` matured predictions they replace the overall hit rate —
+    the market's behaviour (and the models' skill) differ by regime, so the
+    system leans on what it has learned about conditions like today's.
+    The result is clamped to ``[0.05, 0.95]``.
     """
     blended = float(validation_confidence)
     if live:
         n = int(live.get("n") or 0)
         hit_rate = live.get("dir_hit_rate")
+        regime_stats = (live.get("by_regime") or {}).get(regime) if regime else None
+        if regime_stats and int(regime_stats.get("n") or 0) >= MIN_REGIME_N:
+            n = int(regime_stats["n"])
+            hit_rate = regime_stats.get("dir_hit_rate")
         if n > 0 and hit_rate is not None:
             w = max(0.3, 1.0 - n / LIVE_CAL_WINDOW)
             blended = w * blended + (1.0 - w) * float(hit_rate)
     return float(np.clip(blended, 0.05, 0.95))
+
+
+def load_meta_gate(engine: Engine) -> Optional[dict]:
+    """Read ``app_settings['meta_gate']`` (written by jobs/evaluate.py)."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(app_settings.c.value).where(app_settings.c.key == META_GATE_KEY)
+        ).first()
+    return dict(row[0]) if row is not None and isinstance(row[0], dict) else None
 
 
 def coverage_widening(live: Optional[dict]) -> float:
@@ -309,6 +333,8 @@ def _predict_one(
     point = float(model.predict_point())
     last_price = float(series.iloc[-1])
 
+    live_cal = load_live_calibration(engine).get(horizon)
+
     # a model exposing its own interval (e.g. quantile_gbr) takes precedence
     # over the empirical residual-quantile interval
     native = model.predict_interval()
@@ -317,17 +343,23 @@ def _predict_one(
         if lower > upper:
             lower, upper = upper, lower
         lower, upper = min(lower, point), max(upper, point)
+        # native intervals have no residual quantiles to re-level, so live
+        # under-coverage is corrected multiplicatively
+        widen = coverage_widening(live_cal)
+        if widen > 1.0:
+            lower = point - (point - lower) * widen
+            upper = point + (upper - point) * widen
+            warnings.append(UNDER_COVERAGE_WARNING)
     else:
-        lower, upper = empirical_interval(point, residuals)
-
-    # live calibration: widen recently under-covering intervals, then blend
-    # confidence toward the observed directional hit rate (docstrings above)
-    live_cal = load_live_calibration(engine).get(horizon)
-    widen = coverage_widening(live_cal)
-    if widen > 1.0:
-        lower = point - (point - lower) * widen
-        upper = point + (upper - point) * widen
-        warnings.append(UNDER_COVERAGE_WARNING)
+        # adaptive conformal (ACI-style): live coverage feedback re-levels the
+        # residual quantiles instead of scaling widths — self-correcting and
+        # better calibrated than a fixed multiplier
+        alpha_eff = adaptive_alpha(
+            (live_cal or {}).get("coverage"), int((live_cal or {}).get("n") or 0)
+        )
+        lower, upper = empirical_interval(point, residuals, alpha_eff)
+        if alpha_eff < DEFAULT_ALPHA:
+            warnings.append(UNDER_COVERAGE_WARNING)
 
     # provider gap: when Iranian sources disagree materially on the current
     # price, that quote uncertainty is added to the interval half-width
@@ -343,11 +375,11 @@ def _predict_one(
 
     expected_change_pct = (point / last_price - 1.0) * 100.0
     direction = _direction(expected_change_pct)
+    regime = detect_regime(series)
     metrics = active.get("metrics") or {}
     dir_acc = float(metrics.get("directional_accuracy", 0.5))
     rel_width = (upper - lower) / point if point else 1.0
-    confidence = blended_confidence(_confidence(dir_acc, rel_width), live_cal)
-    regime = detect_regime(series)
+    confidence = blended_confidence(_confidence(dir_acc, rel_width), live_cal, regime)
     n_folds = int(metrics.get("n_folds", 0))
     if n_folds and n_folds < 20:
         warnings.append(f"Model validated on only {n_folds} walk-forward folds.")
@@ -355,6 +387,30 @@ def _predict_one(
     predicted_at = now
     target_time = _target_time(horizon, now)
     drivers = _drivers(model, series, regime)
+
+    # meta-gate (meta-labeling): the system's learned self-assessment — a
+    # secondary model trained on this app's own matured predictions estimates
+    # P(this direction call is right) and pulls confidence toward it
+    gate = load_meta_gate(engine)
+    if gate and direction != "flat":
+        p_hit = apply_meta_gate(
+            gate, point, lower, upper, expected_change_pct,
+            confidence, horizon, regime, data_fresh,
+        )
+        if p_hit is not None:
+            confidence = float(np.clip(0.5 * confidence + 0.5 * p_hit, 0.05, 0.95))
+            drivers.append({
+                "factor": "self_assessment",
+                "note": (
+                    f"learned P(direction hit)={p_hit:.2f} from "
+                    f"{int(gate.get('n', 0))} of this system's own past predictions"
+                ),
+            })
+            if p_hit < 0.45:
+                warnings.append(
+                    "The system's self-assessment (learned from its own past "
+                    "predictions) rates this call below coin-flip reliability."
+                )
 
     with engine.begin() as conn:
         row_id = conn.execute(

@@ -397,6 +397,55 @@ export interface PortfolioResponse extends PortfolioSummary {
   holdings: Transaction[]
 }
 
+// ---------- Candles (trading panel) ----------
+
+export interface Candle {
+  /** Unix seconds, bucket start (UTC). */
+  t: number
+  open: number
+  high: number
+  low: number
+  close: number
+}
+
+/** Index-aligned overlay arrays (null during indicator warm-up). */
+export interface CandleOverlays {
+  sma_20: Array<number | null>
+  sma_50: Array<number | null>
+  bollinger_upper: Array<number | null>
+  bollinger_mid: Array<number | null>
+  bollinger_lower: Array<number | null>
+  supertrend: Array<number | null>
+  supertrend_dir: number[]
+  psar: Array<number | null>
+  ichimoku_tenkan: Array<number | null>
+  ichimoku_kijun: Array<number | null>
+  ichimoku_senkou_a: Array<number | null>
+  ichimoku_senkou_b: Array<number | null>
+}
+
+export interface PivotLevels {
+  p: number
+  r1: number
+  r2: number
+  r3: number
+  s1: number
+  s2: number
+  s3: number
+}
+
+/** GET /market/candles — OHLC + chart-ready overlays for the trading panel. */
+export interface CandlesResponse {
+  symbol: string
+  interval: 'daily' | 'hourly'
+  candles: Candle[]
+  overlays: CandleOverlays
+  pivots?: PivotLevels
+  support: number | null
+  resistance: number | null
+  as_of: string
+}
+
 // ---------- Provider gap ----------
 
 export interface ProviderGapQuote {

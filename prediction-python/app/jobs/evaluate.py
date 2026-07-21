@@ -106,6 +106,7 @@ def compute_live_calibration(engine: Engine, window: int = LIVE_CAL_WINDOW) -> d
                     predictions.c.upper_bound,
                     predictions.c.expected_change_pct,
                     predictions.c.actual_value,
+                    predictions.c.regime,
                 )
                 .where(
                     predictions.c.horizon == horizon,
@@ -118,18 +119,31 @@ def compute_live_calibration(engine: Engine, window: int = LIVE_CAL_WINDOW) -> d
                 continue
             dir_hits: list[bool] = []
             covered: list[bool] = []
-            for point, lower, upper, expected_pct, actual in rows:
+            regime_hits: dict[str, list[bool]] = {}
+            for point, lower, upper, expected_pct, actual, regime in rows:
                 point, actual = float(point), float(actual)
                 covered.append(float(lower) <= actual <= float(upper))
                 base = _recover_base(point, float(expected_pct))
                 if base:
-                    dir_hits.append(
-                        bool(np.sign(point - base) == np.sign(actual - base))
-                    )
+                    hit = bool(np.sign(point - base) == np.sign(actual - base))
+                    dir_hits.append(hit)
+                    regime_hits.setdefault(str(regime), []).append(hit)
+            # per-regime hit rates: the market behaves differently by regime,
+            # so new predictions prefer the stats of THEIR regime when enough
+            # evidence exists (see predicting.blended_confidence)
+            by_regime = {
+                regime: {
+                    "n": len(hits),
+                    "dir_hit_rate": round(float(np.mean(hits)), 4),
+                }
+                for regime, hits in regime_hits.items()
+                if hits
+            }
             out[horizon] = {
                 "n": len(rows),
                 "dir_hit_rate": round(float(np.mean(dir_hits)), 4) if dir_hits else None,
                 "coverage": round(float(np.mean(covered)), 4),
+                "by_regime": by_regime,
                 "updated_at": now_iso,
             }
     return out
@@ -195,6 +209,16 @@ def run_evaluate(engine: Engine, settings: Settings) -> dict:
     if calibration:
         upsert_setting(engine, LIVE_CAL_KEY, calibration)
 
+    # refit the meta-gate (the system's learned self-assessment) whenever
+    # enough matured outcomes exist; stored as plain coefficients
+    from ..models.metagate import META_GATE_KEY, fit_meta_gate
+
+    gate = fit_meta_gate(engine)
+    if gate:
+        upsert_setting(engine, META_GATE_KEY, gate)
+        log.info("meta_gate refit on %d matured predictions (base rate %.2f)",
+                 gate["n"], gate["base_rate"])
+
     summary = {
         "evaluated": evaluated,
         "unmatched": unmatched,
@@ -204,6 +228,7 @@ def run_evaluate(engine: Engine, settings: Settings) -> dict:
             round(float(np.mean(direction_hits)), 4) if direction_hits else None
         ),
         "live_calibration": calibration,
+        "meta_gate": {"n": gate["n"], "base_rate": gate["base_rate"]} if gate else None,
     }
     JOB_LAST_SUCCESS.labels(job="evaluate").set(time.time())
     return summary

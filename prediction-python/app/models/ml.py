@@ -18,13 +18,32 @@ from ..features.engineering import compute_feature_frame
 from .base import ForecastModel, register
 
 # calendar features stay; raw price-level columns are dropped so the model
-# learns from scale-free inputs
+# learns from scale-free inputs (exog levels included — their returns,
+# premium and z-scores survive)
 _DROP_COLS = ("close", "lag_1", "lag_2", "lag_3", "lag_5", "lag_10", "lag_20",
-              "roll_mean_5", "roll_mean_10", "roll_mean_20")
+              "roll_mean_5", "roll_mean_10", "roll_mean_20",
+              "usd_irt", "xau_usd", "theoretical_18k")
 
 
-def _feature_matrix(series: pd.Series) -> pd.DataFrame:
-    frame = compute_feature_frame(series)
+def _feature_matrix(series: pd.Series, context: Optional[dict] = None) -> pd.DataFrame:
+    """Full causal feature frame; exogenous series (USD/IRT, XAU) and the
+    derived premium features are included whenever the caller supplies them
+    via ``set_context`` — they materially widen the signal surface.
+
+    Point-in-time guard: walk-forward folds pass a truncated gold series but
+    the FULL exog series via context, so each exog series is cut at the last
+    gold timestamp before use (same leakage policy as sarimax_exog).
+    """
+    cutoff = series.index[-1] if len(series) else None
+
+    def _pit(name: str) -> Optional[pd.Series]:
+        aux = (context or {}).get(name)
+        if aux is None or len(aux) == 0 or cutoff is None:
+            return None
+        aux = aux[aux.index <= cutoff]
+        return aux if not aux.empty else None
+
+    frame = compute_feature_frame(series, usd_irt=_pit("usd_irt"), xau_usd=_pit("xau_usd"))
     return frame.drop(columns=[c for c in _DROP_COLS if c in frame.columns])
 
 
@@ -46,11 +65,22 @@ class TabularModel(ForecastModel):
         self.feature_names: list[str] = []
         self._last_close: Optional[float] = None
         self._pred_logret: Optional[float] = None
+        self._context: Optional[dict] = None
+
+    def set_context(self, context: Optional[dict]) -> "TabularModel":
+        self._context = context
+        return self
+
+    def __getstate__(self) -> dict:
+        # context series are transient inputs, not part of the artifact
+        state = self.__dict__.copy()
+        state["_context"] = None
+        return state
 
     def fit(self, series: pd.Series, horizon: int) -> "TabularModel":
         series = series.astype(float)
         self._last_close = float(series.iloc[-1])
-        features = _feature_matrix(series)
+        features = _feature_matrix(series, self._context)
         close = series
         target = np.log(close.shift(-horizon) / close)
 
@@ -181,6 +211,17 @@ class QuantileGBRModel(ForecastModel):
         self.feature_names: list[str] = []
         self._last_close: Optional[float] = None
         self._logrets: Optional[tuple[float, float, float]] = None  # lo, mid, hi
+        self._context: Optional[dict] = None
+
+    def set_context(self, context: Optional[dict]) -> "QuantileGBRModel":
+        self._context = context
+        return self
+
+    def __getstate__(self) -> dict:
+        # context series are transient inputs, not part of the artifact
+        state = self.__dict__.copy()
+        state["_context"] = None
+        return state
 
     def fit(self, series: pd.Series, horizon: int) -> "QuantileGBRModel":
         from sklearn.ensemble import GradientBoostingRegressor
@@ -190,7 +231,7 @@ class QuantileGBRModel(ForecastModel):
         self._logrets = None
         self.estimators = {}
 
-        features = _feature_matrix(series)
+        features = _feature_matrix(series, self._context)
         target = np.log(series.shift(-horizon) / series)
         train = features.copy()
         train["__target__"] = target

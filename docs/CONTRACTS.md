@@ -114,3 +114,17 @@ Both support `*_FILE` variants for Docker secrets (e.g. `POSTGRES_PASSWORD_FILE`
 **Tehran session default.** `MARKET_TEHRAN_OPEN` default changed 09:00 → 12:00 (observed market practice); `.env` on deployments should be updated to match.
 
 **Train timeout.** The Go internal-client timeout for `/internal/train` rose from 120s to 30m — full walk-forward over all candidate families takes minutes on small hosts, and the old budget aborted training mid-run.
+
+## Addendum 4 — self-learning core, trading indicators, candles (2026-07-21)
+
+**Wider ML feature surface.** Tabular models (`linear`, `rf`, `gbr`, `hist_gb`, `quantile_gbr`) now receive the exogenous context (`usd_irt`, `xau_usd`) via `set_context` and train on the full causal feature frame — USD/XAU returns, premium level/z-score/momentum, and the Addendum-2 indicator features. Exog series are truncated at the fold's last gold timestamp (same point-in-time policy as `sarimax_exog`); contexts are stripped from pickled artifacts.
+
+**Adaptive conformal intervals.** Empirical residual intervals now use an ACI-style effective miscoverage level: `alpha_eff = 0.1 + 0.5*(live_coverage − 0.9)`, clamped to [0.02, 0.30], driven by the live coverage stats in `app_settings['live_calibration']` (`models/intervals.adaptive_alpha`). Models with native intervals (quantile_gbr) keep the multiplicative widening.
+
+**Meta-labeling gate** (`models/metagate.py`). The evaluate job refits a logistic model on the system's own matured predictions (features stored at prediction time; label = direction hit) and persists it to `app_settings['meta_gate']`. The prediction pass blends confidence 50/50 with the gate's P(hit), records a `self_assessment` driver, and warns when the gate rates a call below coin-flip. Requires ≥40 matured non-flat predictions.
+
+**Per-regime live calibration.** `app_settings['live_calibration']` entries gain `by_regime: {regime: {n, dir_hit_rate}}`; `blended_confidence` prefers the current regime's hit rate when that regime has ≥10 matured predictions.
+
+**New indicators (Go).** `internal/indicators`: Ichimoku (9/26/52, undisplaced), SuperTrend(10,3) with direction, Parabolic SAR (0.02/0.02/0.2), classic pivot points. `GET /api/v1/market/indicators` gains latest-value fields `ichimoku`, `supertrend`, `psar`, `pivots`; the per-point series now serializes under `items` with **nested** `macd`/`bollinger` objects plus `momentum_10`/`roc_10`/`volatility_20` (matching frontend/src/api/types.ts, which was always the published contract).
+
+**Candles feed.** `GET /api/v1/market/candles?symbol&interval=daily|hourly&days` → true OHLC buckets (first/max/min/last per bucket) + index-aligned overlay arrays (sma 20/50, bollinger, supertrend + dir, psar, four ichimoku lines) + classic pivots from the last completed bar + support/resistance. Feeds the dashboard's Trade panel (lightweight-charts).

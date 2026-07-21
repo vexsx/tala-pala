@@ -21,6 +21,7 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `GET /market/premium?days` | Theoretical vs observed premium history |
 | `GET /market/indicators?days` | SMA/EMA/RSI/MACD/Bollinger/ATR/momentum/ROC/volatility/support/resistance |
 | `GET /market/provider-gap?symbol&window_minutes&history_days` | Dispersion between providers quoting the same symbol (current per-provider quotes, gap %, daily gap history) |
+| `GET /market/candles?symbol&interval&days` | OHLC candles + chart-ready overlays (SMA/Bollinger/Ichimoku/SuperTrend/PSAR) + pivot levels for the Trade panel |
 | `GET /predictions` · `GET /predictions/{horizon}` | Latest per horizon · per-horizon history incl. realized actuals |
 | `GET /predictions/custom?days=N` | On-demand forecast + buy/hold/sell lean for an arbitrary 1–90 day horizon (computed live, not persisted) |
 | `GET /issues?limit&level&service&since_hours` · `POST /issues` · `GET /issues/report` | Aggregated warnings/errors from all services · frontend error reporting · Markdown debug digest |

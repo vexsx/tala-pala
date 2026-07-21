@@ -51,24 +51,25 @@ type DayBar struct {
 }
 
 // IndicatorPoint is one day of the indicator series returned to clients.
+// MACD and Bollinger are nested objects (null during warm-up) per the
+// dashboard's IndicatorPoint contract in frontend/src/api/types.ts.
 type IndicatorPoint struct {
-	Date       string   `json:"date"`
-	Close      float64  `json:"close"`
-	SMA20      *float64 `json:"sma_20"`
-	SMA50      *float64 `json:"sma_50"`
-	EMA12      *float64 `json:"ema_12"`
-	EMA26      *float64 `json:"ema_26"`
-	RSI14      *float64 `json:"rsi_14"`
-	MACD       *float64 `json:"macd"`
-	MACDSignal *float64 `json:"macd_signal"`
-	MACDHist   *float64 `json:"macd_hist"`
-	BollUpper  *float64 `json:"bollinger_upper"`
-	BollMid    *float64 `json:"bollinger_mid"`
-	BollLower  *float64 `json:"bollinger_lower"`
-	ATR14      *float64 `json:"atr_14"`
-	ADX14      *float64 `json:"adx_14"`
-	StochK     *float64 `json:"stoch_k"`
-	StochD     *float64 `json:"stoch_d"`
+	Date       string        `json:"date"`
+	Close      float64       `json:"close"`
+	SMA20      *float64      `json:"sma_20"`
+	SMA50      *float64      `json:"sma_50"`
+	EMA12      *float64      `json:"ema_12"`
+	EMA26      *float64      `json:"ema_26"`
+	RSI14      *float64      `json:"rsi_14"`
+	MACD       *macdOut      `json:"macd"`
+	Bollinger  *bollingerOut `json:"bollinger"`
+	ATR14      *float64      `json:"atr_14"`
+	Momentum10 *float64      `json:"momentum_10"`
+	ROC10      *float64      `json:"roc_10"`
+	Volatility *float64      `json:"volatility_20"`
+	ADX14      *float64      `json:"adx_14"`
+	StochK     *float64      `json:"stoch_k"`
+	StochD     *float64      `json:"stoch_d"`
 }
 
 // IndicatorsResult is the response of GET /api/v1/market/indicators.
@@ -98,7 +99,25 @@ type IndicatorsResult struct {
 	Keltner    keltnerOut       `json:"keltner"`
 	CorrXAU20  *float64         `json:"corr_xau_20"`
 	Drawdown   *float64         `json:"drawdown_pct"`
-	Series     []IndicatorPoint `json:"series"`
+	// Addendum 4 trading-desk indicators (latest values).
+	Ichimoku   *ichimokuOut            `json:"ichimoku"`
+	SuperTrend *supertrendOut          `json:"supertrend"`
+	PSAR       *float64                `json:"psar"`
+	Pivots     *indicators.PivotPoints `json:"pivots"`
+	// Serialized as "items" — the dashboard's IndicatorsResponse contract.
+	Series []IndicatorPoint `json:"items"`
+}
+
+type ichimokuOut struct {
+	Tenkan  *float64 `json:"tenkan"`
+	Kijun   *float64 `json:"kijun"`
+	SenkouA *float64 `json:"senkou_a"`
+	SenkouB *float64 `json:"senkou_b"`
+}
+
+type supertrendOut struct {
+	Value     *float64 `json:"value"`
+	Direction int      `json:"direction"` // +1 bullish, -1 bearish
 }
 
 type macdOut struct {
@@ -198,6 +217,26 @@ func ComputeIndicators(bars []DayBar, xau []dailyPoint, days int) IndicatorsResu
 	res.Keltner = keltnerOut{Upper: fp(kelU[last]), Mid: fp(kelM[last]), Lower: fp(kelL[last])}
 	res.Drawdown = fp(indicators.DrawdownPct(closes, 90))
 
+	// Addendum 4: Ichimoku, SuperTrend(10,3), Parabolic SAR, classic pivots
+	tenkan, kijun, senkouA, senkouB := indicators.Ichimoku(highs, lows)
+	if v := fp(kijun[last]); v != nil {
+		res.Ichimoku = &ichimokuOut{
+			Tenkan: fp(tenkan[last]), Kijun: v,
+			SenkouA: fp(senkouA[last]), SenkouB: fp(senkouB[last]),
+		}
+	}
+	stLine, stDir := indicators.SuperTrend(highs, lows, closes, 10, 3)
+	if v := fp(stLine[last]); v != nil {
+		res.SuperTrend = &supertrendOut{Value: v, Direction: stDir[last]}
+	}
+	res.PSAR = fp(indicators.ParabolicSAR(highs, lows, 0.02, 0.02, 0.2)[last])
+	if n >= 2 {
+		// pivots come from the last COMPLETED bar (yesterday's H/L/C)
+		prev := bars[n-2]
+		piv := indicators.Pivots(prev.High, prev.Low, prev.Close)
+		res.Pivots = &piv
+	}
+
 	// corr_xau_20: pair the two daily series by date, then take the latest
 	// rolling correlation of log returns over 20 return observations.
 	xauBy := map[string]float64{}
@@ -220,6 +259,14 @@ func ComputeIndicators(bars []DayBar, xau []dailyPoint, days int) IndicatorsResu
 		start = 0
 	}
 	for i := start; i < n; i++ {
+		var macd *macdOut
+		if line := fp(macdLine[i]); line != nil {
+			macd = &macdOut{Line: line, Signal: fp(macdSig[i]), Hist: fp(macdHist[i])}
+		}
+		var boll *bollingerOut
+		if mid := fp(bbM[i]); mid != nil {
+			boll = &bollingerOut{Upper: fp(bbU[i]), Mid: mid, Lower: fp(bbL[i])}
+		}
 		res.Series = append(res.Series, IndicatorPoint{
 			Date:       bars[i].Date.UTC().Format("2006-01-02"),
 			Close:      closes[i],
@@ -228,13 +275,12 @@ func ComputeIndicators(bars []DayBar, xau []dailyPoint, days int) IndicatorsResu
 			EMA12:      fp(ema12[i]),
 			EMA26:      fp(ema26[i]),
 			RSI14:      fp(rsi14[i]),
-			MACD:       fp(macdLine[i]),
-			MACDSignal: fp(macdSig[i]),
-			MACDHist:   fp(macdHist[i]),
-			BollUpper:  fp(bbU[i]),
-			BollMid:    fp(bbM[i]),
-			BollLower:  fp(bbL[i]),
+			MACD:       macd,
+			Bollinger:  boll,
 			ATR14:      fp(atr14[i]),
+			Momentum10: fp(mom10[i]),
+			ROC10:      fp(roc10[i]),
+			Volatility: fp(vol20[i]),
 			ADX14:      fp(adx14[i]),
 			StochK:     fp(stochK[i]),
 			StochD:     fp(stochD[i]),

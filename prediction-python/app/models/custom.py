@@ -127,6 +127,21 @@ def predict_custom(
     dir_acc = float(metrics.get("directional_accuracy", 0.5))
     confidence = _confidence(dir_acc, rel_width)
     regime = detect_regime(series)
+
+    # apply the learned self-assessment gate (see models/metagate.py)
+    from .metagate import apply_meta_gate
+    from .predicting import load_meta_gate
+
+    gate = load_meta_gate(engine)
+    if gate and direction != "flat":
+        p_hit = apply_meta_gate(
+            gate, point, lower, upper, expected_change_pct,
+            confidence, f"{days}d", regime, True,
+        )
+        if p_hit is not None:
+            import numpy as np
+
+            confidence = float(np.clip(0.5 * confidence + 0.5 * p_hit, 0.05, 0.95))
     n_folds = int(metrics.get("n_folds", 0))
     if n_folds and n_folds < 20:
         warnings.append(f"Model validated on only {n_folds} walk-forward folds.")

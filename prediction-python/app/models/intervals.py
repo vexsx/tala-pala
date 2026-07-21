@@ -42,6 +42,40 @@ def empirical_interval(
     return lower, upper
 
 
+# --- adaptive conformal (ACI-style, batch form) ------------------------------
+# Adaptive Conformal Inference (Gibbs & Candès 2021; arXiv:2202.07282) adjusts
+# the miscoverage level alpha online: intervals that under-cover get a smaller
+# effective alpha (wider quantiles), over-covering ones a larger alpha
+# (tighter quantiles).  We run the batch analogue driven by the live coverage
+# statistics the evaluate job already maintains.
+ACI_GAIN = 0.5          # step size on the coverage error
+ACI_MIN_ALPHA = 0.02    # never tighter than the 98% band quantiles
+ACI_MAX_ALPHA = 0.30    # never looser than the 70% band quantiles
+ACI_MIN_N = 20          # matured predictions before live coverage is trusted
+
+
+def adaptive_alpha(
+    live_coverage: float | None,
+    n: int,
+    alpha: float = DEFAULT_ALPHA,
+    target: float = 1.0 - DEFAULT_ALPHA,
+) -> float:
+    """Effective miscoverage level from live interval performance.
+
+    ``alpha_eff = alpha + ACI_GAIN * (live_coverage - target)``, clamped to
+    [ACI_MIN_ALPHA, ACI_MAX_ALPHA]; with fewer than ``ACI_MIN_N`` matured
+    predictions (or no stats) the nominal ``alpha`` is returned unchanged.
+
+    Example: live coverage 0.75 against a 0.90 target gives
+    ``0.1 + 0.5*(-0.15) = 0.025`` -> the 1.25%/98.75% residual quantiles,
+    i.e. a substantially wider, self-correcting interval.
+    """
+    if live_coverage is None or n < ACI_MIN_N:
+        return alpha
+    return float(np.clip(alpha + ACI_GAIN * (float(live_coverage) - target),
+                         ACI_MIN_ALPHA, ACI_MAX_ALPHA))
+
+
 def coverage(
     actuals: Sequence[float], intervals: Sequence[tuple[float, float]]
 ) -> float:
