@@ -24,10 +24,14 @@ from zoneinfo import ZoneInfo
 from ..config import Settings
 
 TEHRAN = ZoneInfo("Asia/Tehran")
-FRIDAY = 4  # Python weekday(): Monday=0 .. Sunday=6
+THURSDAY = 3  # Python weekday(): Monday=0 .. Sunday=6
+FRIDAY = 4
 
 IRANIAN_SYMBOLS = frozenset({"IR_GOLD_18K", "USD_IRT", "IR_COIN_EMAMI"})
 GLOBAL_SYMBOLS = frozenset({"XAUUSD", "XAGUSD", "BRENT_OIL", "DXY", "US10Y"})
+# Tehran-exchange gold funds trade Sat-Wed between MARKET_TSE_OPEN and
+# MARKET_TSE_CLOSE (default 12:00-17:00 Tehran); closed Thursday AND Friday.
+TSE_FUND_PREFIX = "IR_GOLD_FUND"
 
 GLOBAL_CLOSE_UTC = time(21, 0)  # Friday
 GLOBAL_OPEN_UTC = time(22, 0)   # Sunday
@@ -51,6 +55,13 @@ def _ensure_utc(dt: datetime) -> datetime:
 def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
     """True when ``symbol``'s market is open at ``at_utc`` (aware or naive-UTC)."""
     at_utc = _ensure_utc(at_utc)
+    if symbol.startswith(TSE_FUND_PREFIX):
+        local = at_utc.astimezone(TEHRAN)
+        if local.weekday() in (THURSDAY, FRIDAY):
+            return False
+        open_t = _parse_hhmm(getattr(settings, "market_tse_open", "12:00"), time(12, 0))
+        close_t = _parse_hhmm(getattr(settings, "market_tse_close", "17:00"), time(17, 0))
+        return open_t <= local.time() < close_t
     if symbol in IRANIAN_SYMBOLS:
         local = at_utc.astimezone(TEHRAN)
         if local.weekday() == FRIDAY:
@@ -82,6 +93,17 @@ def closure_started_at(
     at_utc = _ensure_utc(at_utc)
     if is_market_open(symbol, at_utc, settings):
         return None
+    if symbol.startswith(TSE_FUND_PREFIX):
+        close_t = _parse_hhmm(getattr(settings, "market_tse_close", "17:00"), time(17, 0))
+        local = at_utc.astimezone(TEHRAN)
+        for days_back in range(9):
+            day = (local - timedelta(days=days_back)).date()
+            if day.weekday() in (THURSDAY, FRIDAY):
+                continue  # no session, hence no close
+            candidate = datetime.combine(day, close_t, tzinfo=TEHRAN)
+            if candidate <= local:
+                return candidate.astimezone(timezone.utc)
+        return at_utc  # unreachable with a sane open<close configuration
     if symbol in IRANIAN_SYMBOLS:
         close_t = _parse_hhmm(settings.market_tehran_close, time(20, 0))
         local = at_utc.astimezone(TEHRAN)

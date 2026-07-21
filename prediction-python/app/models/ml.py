@@ -43,7 +43,13 @@ def _feature_matrix(series: pd.Series, context: Optional[dict] = None) -> pd.Dat
         aux = aux[aux.index <= cutoff]
         return aux if not aux.empty else None
 
-    frame = compute_feature_frame(series, usd_irt=_pit("usd_irt"), xau_usd=_pit("xau_usd"))
+    frame = compute_feature_frame(
+        series,
+        usd_irt=_pit("usd_irt"),
+        xau_usd=_pit("xau_usd"),
+        gold_fund=_pit("gold_fund"),
+        fund_flow=_pit("fund_flow"),
+    )
     return frame.drop(columns=[c for c in _DROP_COLS if c in frame.columns])
 
 

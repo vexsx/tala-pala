@@ -22,6 +22,9 @@ import (
 var KnownSymbols = map[string]bool{
 	"IR_GOLD_18K": true, "XAUUSD": true, "XAGUSD": true, "USD_IRT": true,
 	"IR_COIN_EMAMI": true, "BRENT_OIL": true, "DXY": true, "US10Y": true,
+	// Tehran-exchange gold funds (Addendum 7).
+	"IR_GOLD_FUND_AYAR": true, "IR_GOLD_FUND_TALA": true,
+	"IR_GOLD_FUND_KAHRABA": true, "IR_GOLD_FUND_FLOW": true,
 }
 
 // Handler serves the market-data endpoints.

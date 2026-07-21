@@ -17,7 +17,7 @@ import type {
   ProviderGapResponse,
   SignalSummary
 } from '../api/types'
-import { HORIZON_LABELS, type Horizon } from '../api/types'
+import { GOLD_FUND_SYMBOLS, HORIZON_LABELS, SYMBOL_LABELS, type Horizon } from '../api/types'
 import { unwrapList } from '../lib/unwrap'
 import { useSettings } from '../lib/settings'
 import { formatPct, formatToman, pctClass } from '../lib/format'
@@ -411,6 +411,39 @@ export default function TradePanel() {
               <span className="muted small">No predictions yet</span>
             )}
           </div>
+
+          {GOLD_FUND_SYMBOLS.some((s) => current.data?.prices?.[s]) && (
+            <div className="card">
+              <div className="card-title">Gold funds (TSE, 12:00–17:00)</div>
+              <ul className="driver-list">
+                {GOLD_FUND_SYMBOLS.map((sym) => {
+                  const q = current.data?.prices?.[sym]
+                  if (!q) return null
+                  return (
+                    <li key={sym} className="driver-row">
+                      <span className="driver-name">{SYMBOL_LABELS[sym]}</span>
+                      <span className={`mono ${pctClass(q.change_24h_pct)}`}>
+                        {formatToman(q.value, unit, false)}{' '}
+                        {q.change_24h_pct !== null ? formatPct(q.change_24h_pct) : ''}
+                      </span>
+                    </li>
+                  )
+                })}
+              </ul>
+              {current.data?.prices?.IR_GOLD_FUND_FLOW && (
+                <div className="kv">
+                  <span className="muted">Retail net flow</span>
+                  <span
+                    className={`mono ${
+                      current.data.prices.IR_GOLD_FUND_FLOW.value > 0 ? 'pos' : 'neg'
+                    }`}
+                  >
+                    {formatPct(current.data.prices.IR_GOLD_FUND_FLOW.value)} of volume
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="card">
             <div className="card-title">Provider quotes</div>

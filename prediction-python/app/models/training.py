@@ -64,7 +64,13 @@ CANDIDATES = (
 )
 
 # auxiliary symbols made available to exog-aware models via set_context
-CONTEXT_SYMBOLS: dict[str, str] = {"usd_irt": "USD_IRT", "xau_usd": "XAUUSD"}
+CONTEXT_SYMBOLS: dict[str, str] = {
+    "usd_irt": "USD_IRT",
+    "xau_usd": "XAUUSD",
+    # Tehran-exchange gold funds (Addendum 7): exchange price + retail flow
+    "gold_fund": "IR_GOLD_FUND_AYAR",
+    "fund_flow": "IR_GOLD_FUND_FLOW",
+}
 
 
 @dataclass(frozen=True)

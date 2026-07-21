@@ -142,3 +142,28 @@ func TestTehranOffset(t *testing.T) {
 		t.Fatalf("Asia/Tehran offset = %d seconds, want +03:30", offset)
 	}
 }
+
+func TestTSEFundCalendar(t *testing.T) {
+	// Tue 2026-07-21 13:00 Tehran (09:30 UTC): open
+	if !IsOpen("IR_GOLD_FUND_AYAR", time.Date(2026, 7, 21, 9, 30, 0, 0, time.UTC), DefaultOpen, DefaultClose) {
+		t.Fatal("Tuesday 13:00 Tehran must be open for TSE funds")
+	}
+	// Tue 17:00 Tehran boundary (13:30 UTC): closed (exclusive)
+	if IsOpen("IR_GOLD_FUND_AYAR", time.Date(2026, 7, 21, 13, 30, 0, 0, time.UTC), DefaultOpen, DefaultClose) {
+		t.Fatal("17:00 Tehran must be closed for TSE funds")
+	}
+	// Thursday: funds closed even though the physical market trades
+	thu := time.Date(2026, 7, 23, 9, 30, 0, 0, time.UTC)
+	if IsOpen("IR_GOLD_FUND_FLOW", thu, DefaultOpen, DefaultClose) {
+		t.Fatal("Thursday must be closed for TSE funds")
+	}
+	if !IsOpen("IR_GOLD_18K", thu, DefaultOpen, DefaultClose) {
+		t.Fatal("Thursday must stay open for the physical market")
+	}
+	// Friday noon: last close was Wednesday 17:00 Tehran = 13:30 UTC
+	got := ClosureStartedAt("IR_GOLD_FUND_AYAR", time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC), DefaultOpen, DefaultClose)
+	want := time.Date(2026, 7, 22, 13, 30, 0, 0, time.UTC)
+	if !got.Equal(want) {
+		t.Fatalf("closure start = %s, want %s", got, want)
+	}
+}

@@ -25,6 +25,10 @@ export type Symbol_ =
   | 'BRENT_OIL'
   | 'DXY'
   | 'US10Y'
+  | 'IR_GOLD_FUND_AYAR'
+  | 'IR_GOLD_FUND_TALA'
+  | 'IR_GOLD_FUND_KAHRABA'
+  | 'IR_GOLD_FUND_FLOW'
 
 export const SYMBOLS: Symbol_[] = [
   'IR_GOLD_18K',
@@ -34,7 +38,11 @@ export const SYMBOLS: Symbol_[] = [
   'IR_COIN_EMAMI',
   'BRENT_OIL',
   'DXY',
-  'US10Y'
+  'US10Y',
+  'IR_GOLD_FUND_AYAR',
+  'IR_GOLD_FUND_TALA',
+  'IR_GOLD_FUND_KAHRABA',
+  'IR_GOLD_FUND_FLOW'
 ]
 
 export const SYMBOL_LABELS: Record<Symbol_, string> = {
@@ -45,8 +53,19 @@ export const SYMBOL_LABELS: Record<Symbol_, string> = {
   IR_COIN_EMAMI: 'Emami coin',
   BRENT_OIL: 'Brent oil',
   DXY: 'Dollar index',
-  US10Y: 'US 10Y yield'
+  US10Y: 'US 10Y yield',
+  IR_GOLD_FUND_AYAR: 'Ayar fund (عیار)',
+  IR_GOLD_FUND_TALA: 'Tala fund (طلا)',
+  IR_GOLD_FUND_KAHRABA: 'Kahroba fund (کهربا)',
+  IR_GOLD_FUND_FLOW: 'Funds retail net flow'
 }
+
+/** TSE gold-fund price symbols shown in the Trade panel funds card. */
+export const GOLD_FUND_SYMBOLS: Symbol_[] = [
+  'IR_GOLD_FUND_AYAR',
+  'IR_GOLD_FUND_TALA',
+  'IR_GOLD_FUND_KAHRABA'
+]
 
 export interface ApiErrorEnvelope {
   error: {

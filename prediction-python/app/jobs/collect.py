@@ -31,6 +31,11 @@ JOB_SYMBOLS: dict[str, set[str]] = {
     "fx": {"USD_IRT"},
     "global": {"XAUUSD", "XAGUSD"},
     "macro": {"BRENT_OIL", "DXY", "US10Y"},
+    # Tehran-exchange gold funds (Addendum 7): unit prices + retail net flow
+    "funds": {
+        "IR_GOLD_FUND_AYAR", "IR_GOLD_FUND_TALA", "IR_GOLD_FUND_KAHRABA",
+        "IR_GOLD_FUND_FLOW",
+    },
 }
 
 # provider-registry categories consulted per job.  Note: global_gold providers
@@ -42,6 +47,7 @@ JOB_PROVIDER_CATEGORIES: dict[str, list[str]] = {
     "fx": ["fx", "iran_gold"],
     "global": ["global_gold", "iran_gold"],
     "macro": ["global_gold", "macro"],
+    "funds": ["iran_fund"],
 }
 
 RECENT_WINDOW = 30  # good values used for the MAD outlier test
@@ -130,6 +136,15 @@ def run_collect(
         provider_rows = registry.load_provider_rows(
             engine, JOB_PROVIDER_CATEGORIES[job]
         )
+        # a job whose every provider is dormant (keyed but unconfigured, e.g.
+        # tse_funds without BRSAPI_KEY) is silently skipped instead of
+        # reporting "no good value" every cycle
+        buildable = [
+            row for row in provider_rows
+            if registry.build_provider(str(row["code"]), settings) is not None
+        ]
+        if provider_rows and not buildable:
+            continue
         # pending suspects awaiting confirmation by a second source
         suspects: dict[str, list[Observation]] = {}
 

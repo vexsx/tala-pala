@@ -12,13 +12,27 @@
 // (observed_at >= closure start - STALE_MINUTES) is still acceptably fresh.
 package markethours
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Contract defaults for the Tehran session (Asia/Tehran local, HH:MM).
 const (
 	DefaultOpen  = "12:00"
 	DefaultClose = "20:00"
 )
+
+// TSE gold-fund session (Addendum 7): Sat-Wed 12:00-17:00 Asia/Tehran,
+// closed Thursday AND Friday. Fixed here (display freshness only); the
+// Python service reads MARKET_TSE_OPEN/CLOSE for prediction-side rules.
+const (
+	tseOpen  = "12:00"
+	tseClose = "17:00"
+)
+
+// tseFundPrefix marks Tehran-exchange gold-fund symbols.
+const tseFundPrefix = "IR_GOLD_FUND"
 
 // iranian is the set of symbols that follow the Tehran market calendar.
 // Every other symbol follows the global (UTC weekend) calendar.
@@ -55,6 +69,14 @@ func parseHHMM(s, def string) int {
 // open/close are "HH:MM" Tehran-local session bounds (only used for Iranian
 // symbols); pass the configured MARKET_TEHRAN_OPEN / MARKET_TEHRAN_CLOSE.
 func IsOpen(symbol string, at time.Time, open, close string) bool {
+	if strings.HasPrefix(symbol, tseFundPrefix) {
+		lt := at.In(tehran)
+		if lt.Weekday() == time.Thursday || lt.Weekday() == time.Friday {
+			return false
+		}
+		m := lt.Hour()*60 + lt.Minute()
+		return m >= parseHHMM(tseOpen, tseOpen) && m < parseHHMM(tseClose, tseClose)
+	}
 	if iranian[symbol] {
 		lt := at.In(tehran)
 		if lt.Weekday() == time.Friday {
@@ -82,6 +104,22 @@ func IsOpen(symbol string, at time.Time, open, close string) bool {
 func ClosureStartedAt(symbol string, at time.Time, open, close string) time.Time {
 	if IsOpen(symbol, at, open, close) {
 		return at.UTC()
+	}
+	if strings.HasPrefix(symbol, tseFundPrefix) {
+		closeM := parseHHMM(tseClose, tseClose)
+		lt := at.In(tehran)
+		day := time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, tehran)
+		for i := 0; i < 9; i++ {
+			d := day.AddDate(0, 0, -i)
+			if d.Weekday() == time.Thursday || d.Weekday() == time.Friday {
+				continue
+			}
+			closeT := d.Add(time.Duration(closeM) * time.Minute)
+			if !closeT.After(lt) {
+				return closeT.UTC()
+			}
+		}
+		return at.UTC() // unreachable
 	}
 	if iranian[symbol] {
 		closeM := parseHHMM(close, DefaultClose)

@@ -65,11 +65,16 @@ class Settings:
     navasan_api_key: str = field(default_factory=lambda: _env("NAVASAN_API_KEY", ""))
     metals_dev_api_key: str = field(default_factory=lambda: _env("METALS_DEV_API_KEY", ""))
     brsapi_api_key: str = field(default_factory=lambda: _env("BRSAPI_KEY", ""))
+    # Tehran-exchange gold funds: "ticker:SYMBOL,..." (empty -> provider defaults)
+    tsetmc_funds: str = field(default_factory=lambda: _env("TSETMC_FUNDS", ""))
     alanchand_token: str = field(default_factory=lambda: _env("ALANCHAND_TOKEN", ""))
     # Tehran market hours (Addendum 1): Sat-Thu open window, Asia/Tehran local,
     # "HH:MM" strings; Friday is always closed for Iranian symbols.
     market_tehran_open: str = field(default_factory=lambda: _env("MARKET_TEHRAN_OPEN", "12:00"))
     market_tehran_close: str = field(default_factory=lambda: _env("MARKET_TEHRAN_CLOSE", "20:00"))
+    # TSE gold-fund session (Addendum 7): Sat-Wed, Asia/Tehran local.
+    market_tse_open: str = field(default_factory=lambda: _env("MARKET_TSE_OPEN", "12:00"))
+    market_tse_close: str = field(default_factory=lambda: _env("MARKET_TSE_CLOSE", "17:00"))
     # Courtesy delay between outbound provider requests (seconds); 0 in tests.
     provider_courtesy_delay: float = field(
         default_factory=lambda: float(_env("PROVIDER_COURTESY_DELAY", "1.0"))

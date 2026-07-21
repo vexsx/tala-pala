@@ -137,3 +137,15 @@ Techniques reimplemented from published descriptions of popular TradingView pred
 - `lorentzian_knn` — kNN over indicator feature vectors (RSI, stoch %K, momentum, SMA z-score, volatility) with Lorentzian distance `Σ ln(1+|xᵢ−yᵢ|)` and chronologically-spaced neighbor selection (inspired by "Machine Learning: Lorentzian Classification"). In `CANDIDATES` and custom-horizon `FAST_CANDIDATES`.
 - `kalman_llt` — Kalman local-linear-trend state-space forecaster on log prices (statsmodels UnobservedComponents), the engine behind the various "Kalman predictor" scripts. In `CANDIDATES`.
 - Monte Carlo odds — `models/tvinspired.mc_probabilities`: moving-block bootstrap (block 5, 2000 paths, fixed seed) over historical log returns; the custom-horizon response gains `monte_carlo: {p_up, p_gain_over_cost, p_loss_over_cost, sim_p05_pct, sim_median_pct, sim_p95_pct, n_paths}` and the decision note cites the cost-clearing odds. Bootstrap (not GBM) keeps fat tails and volatility clustering.
+
+## Addendum 7 — Tehran-exchange gold funds (2026-07-21)
+
+**Source.** Gold investment funds ("boxes": عیار/Ayar — instInfo 34144395039913458 —, طلا/Lotus, کهربا/Kian) quoted on TSETMC. Direct tsetmc.com access is geo-blocked outside Iran, so the `tse_funds` provider (migration 0009, category `iran_fund`, dormant without `BRSAPI_KEY`) reads BrsApi's TSETMC mirror `Api.BrsApi.ir/Tsetmc/Symbol.php?key&l18=<ticker>`. Configured via `TSETMC_FUNDS` (`ticker:SYMBOL,...`).
+
+**Symbols.** `IR_GOLD_FUND_AYAR` / `_TALA` / `_KAHRABA` (unit price, rial→toman, unit `unit`) and the composite `IR_GOLD_FUND_FLOW` (currency `PCT`): volume-weighted retail net flow `(ΣBuy_I_Volume − ΣSell_I_Volume)/Σtvol × 100` across configured funds — positive = individuals net-buying from institutions. `observed_at` derives from the API's Jalali date + Tehran time (converted; dedupes naturally after close). FLOW is exempt from jump/MAD suspect tests (`OSCILLATING_SYMBOLS`) — sign flips are normal and a single-source symbol can never be second-source confirmed; sanity bounds ±100 still apply.
+
+**Calendar.** New TSE class in both market-hours implementations (prefix `IR_GOLD_FUND`): Sat–Wed `MARKET_TSE_OPEN`–`MARKET_TSE_CLOSE` (default 12:00–17:00 Asia/Tehran), closed Thursday AND Friday (unlike the physical market, which trades Thursday). Collect job `funds`; freshness follows the standard closure rules.
+
+**Features.** `compute_feature_frame` gains `gold_fund`/`fund_flow` inputs → `fund_ret_1`, `fund_ret_5`, `fund_ratio_z_30` (fund/physical relative-valuation z-score), `fund_flow`, `fund_flow_ma5`, `fund_flow_chg_5`. Wired into tabular models via `CONTEXT_SYMBOLS` (point-in-time truncated per fold) and into `feature_snapshots`.
+
+**Serving.** Go `KnownSymbols` includes the fund symbols (prices/history/current endpoints serve them); the Trade panel shows a "Gold funds" card (prices + 24h change + retail net flow).

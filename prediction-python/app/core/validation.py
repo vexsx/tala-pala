@@ -33,7 +33,15 @@ SANITY_RANGES: dict[str, tuple[float, float]] = {
     "BRENT_OIL": (10.0, 500.0),     # USD per bbl
     "DXY": (50.0, 200.0),
     "US10Y": (0.0, 25.0),           # percent
+    # TSE gold fund units (IRT/unit): wide bounds — funds split units and NAVs vary
+    "IR_GOLD_FUND_AYAR": (1e2, 1e8),
+    "IR_GOLD_FUND_TALA": (1e2, 1e8),
+    "IR_GOLD_FUND_KAHRABA": (1e2, 1e8),
+    "IR_GOLD_FUND_FLOW": (-100.0, 100.0),  # retail net flow, % of volume
 }
+
+# Oscillating series where sign flips between sessions are normal behaviour.
+OSCILLATING_SYMBOLS = frozenset({"IR_GOLD_FUND_FLOW"})
 
 
 def build_dedupe_key(provider: str, symbol: str, observed_at: datetime, value: float) -> str:
@@ -116,6 +124,11 @@ def classify_observation(
     """
     if not sanity_ok(symbol, value):
         return "outlier", f"value {value} outside plausible range for {symbol}"
+    if symbol in OSCILLATING_SYMBOLS:
+        # sign-flipping percent series: relative-jump and MAD tests assume a
+        # slowly drifting level and would strand every swing as a suspect
+        # that a single-source symbol can never confirm
+        return "ok", None
     if last_good is not None and jump_pct(value, last_good) > MAX_JUMP_PCT:
         return (
             "suspect",

@@ -125,6 +125,8 @@ def compute_feature_frame(
     gold: pd.Series,
     usd_irt: Optional[pd.Series] = None,
     xau_usd: Optional[pd.Series] = None,
+    gold_fund: Optional[pd.Series] = None,
+    fund_flow: Optional[pd.Series] = None,
 ) -> pd.DataFrame:
     """Causal feature matrix indexed like ``gold`` (a DatetimeIndex series).
 
@@ -244,6 +246,25 @@ def compute_feature_frame(
         # premium momentum: 5-day change of premium_pct
         df["premium_mom_5"] = premium.diff(PREMIUM_MOM_LAG)
 
+    # Tehran-exchange gold funds (Addendum 7): exchange-traded price discovery
+    # (continuous 12:00-17:00 auction with real volume) plus retail sentiment.
+    fund = _align(gold_fund) if gold_fund is not None and not gold_fund.empty else None
+    flow = _align(fund_flow) if fund_flow is not None and not fund_flow.empty else None
+    if fund is not None:
+        df["fund_ret_1"] = fund.pct_change()
+        df["fund_ret_5"] = fund.pct_change(5)
+        # fund/physical ratio z-score: relative valuation of the exchange
+        # units vs the physical gram (unit scales differ; z-score removes it)
+        ratio = fund / close
+        ratio_mean = ratio.rolling(PREMIUM_Z_WINDOW).mean()
+        ratio_std = ratio.rolling(PREMIUM_Z_WINDOW).std()
+        df["fund_ratio_z_30"] = (ratio - ratio_mean) / ratio_std.replace(0.0, np.nan)
+    if flow is not None:
+        # retail net buying, % of volume (positive = individuals net buyers)
+        df["fund_flow"] = flow
+        df["fund_flow_ma5"] = flow.rolling(5).mean()
+        df["fund_flow_chg_5"] = flow.diff(5)
+
     return df
 
 
@@ -270,8 +291,14 @@ def build_snapshot(
         return None
     usd = daily_close(df, "USD_IRT")
     xau = daily_close(df, "XAUUSD")
+    fund = daily_close(df, "IR_GOLD_FUND_AYAR")
+    flow = daily_close(df, "IR_GOLD_FUND_FLOW")
     frame = compute_feature_frame(
-        gold, usd if not usd.empty else None, xau if not xau.empty else None
+        gold,
+        usd if not usd.empty else None,
+        xau if not xau.empty else None,
+        gold_fund=fund if not fund.empty else None,
+        fund_flow=flow if not flow.empty else None,
     )
     last = frame.iloc[-1]
     features = {

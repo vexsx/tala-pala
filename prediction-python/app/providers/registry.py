@@ -64,6 +64,18 @@ def build_provider(code: str, settings: Settings) -> Optional[Provider]:
         if not settings.brsapi_api_key:
             return None
         return BrsApiProvider(api_key=settings.brsapi_api_key, **kwargs)
+    if code == "tse_funds":
+        # shares BRSAPI_KEY (BrsApi's TSETMC mirror; tsetmc.com itself is
+        # geo-blocked outside Iran) — dormant until the key is configured
+        if not settings.brsapi_api_key:
+            return None
+        from .tse_funds import TSEFundsProvider, parse_funds_config
+
+        return TSEFundsProvider(
+            api_key=settings.brsapi_api_key,
+            funds=parse_funds_config(settings.tsetmc_funds),
+            **kwargs,
+        )
     if code == "navasan":
         if not settings.navasan_api_key:
             return None
