@@ -30,11 +30,18 @@ log = logging.getLogger(__name__)
 
 SYMBOL_URL = "https://Api.BrsApi.ir/Tsetmc/Symbol.php"
 
-# ticker (TSETMC l18) -> canonical symbol; overridable via TSETMC_FUNDS
+# BrsApi's terms require a real browser User-Agent (default library UAs are
+# blocked); see the key-request policy page.
+BRSAPI_BROWSER_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
+)
+
+# ticker (TSETMC l18) -> canonical symbol; overridable via TSETMC_FUNDS.
+# Two funds by design: the free tier budgets the TSETMC_Symbol endpoint at
+# 10 requests/day, and the collect throttle spends ~2 calls per round.
 DEFAULT_FUNDS: dict[str, str] = {
-    "عیار": "IR_GOLD_FUND_AYAR",     # Mofid — the fund the user asked for
-    "طلا": "IR_GOLD_FUND_TALA",      # Lotus Parsian, the oldest gold fund
-    "کهربا": "IR_GOLD_FUND_KAHRABA", # Kian
+    "عیار": "IR_GOLD_FUND_AYAR",  # Mofid — the fund the user asked for
+    "طلا": "IR_GOLD_FUND_TALA",   # Lotus Parsian, the oldest gold fund
 }
 
 FLOW_SYMBOL = "IR_GOLD_FUND_FLOW"
@@ -160,6 +167,7 @@ class TSEFundsProvider(Provider):
 
     code = "tse_funds"
     category = "iran_fund"
+    user_agent = BRSAPI_BROWSER_UA  # per BrsApi's documented UA policy
 
     def __init__(self, api_key: str, funds: Optional[dict[str, str]] = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)

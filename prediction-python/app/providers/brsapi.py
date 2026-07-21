@@ -28,6 +28,7 @@ from typing import Any, Optional
 from ..core.normalize import rial_to_toman
 from ..db import utcnow
 from .base import Observation, Provider, ProviderError
+from .tse_funds import BRSAPI_BROWSER_UA
 
 GOLD_CURRENCY_URL = "https://api.brsapi.ir/Market/Gold_Currency.php"
 
@@ -104,6 +105,9 @@ def parse_gold_currency(payload: Any) -> list[Observation]:
 class BrsApiProvider(Provider):
     code = "brsapi"
     category = "iran_gold"
+    # BrsApi's policy blocks default programming-language UAs (2h+ IP ban);
+    # their docs require a browser-style string (same policy as tse_funds).
+    user_agent = BRSAPI_BROWSER_UA
 
     def __init__(self, api_key: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)

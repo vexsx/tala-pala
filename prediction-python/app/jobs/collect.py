@@ -13,13 +13,16 @@ import logging
 import time
 from typing import Optional, Sequence
 
-from sqlalchemy import select
+from datetime import timedelta
+from typing import Optional as _Optional
+
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 
 from ..config import Settings
 from ..core import validation
-from ..core.market_hours import is_acceptably_fresh
-from ..db import insert_ignore, prices, raw_observations, utcnow
+from ..core.market_hours import is_acceptably_fresh, is_market_open
+from ..db import ensure_utc, insert_ignore, prices, raw_observations, utcnow
 from ..metrics import COLLECT_FAILURE, COLLECT_SUCCESS, JOB_LAST_SUCCESS, LAST_PRICE_TS
 from ..providers import registry
 from ..providers.base import Observation, ProviderError
@@ -51,6 +54,38 @@ JOB_PROVIDER_CATEGORIES: dict[str, list[str]] = {
 }
 
 RECENT_WINDOW = 30  # good values used for the MAD outlier test
+
+# TSE funds quota guard: BrsApi's free tier budgets the TSETMC_Symbol
+# endpoint at ~10 requests/day and each funds round costs one call per fund,
+# so the job only runs during the session (plus a short post-close grace to
+# capture the closing auction) and at most every TSETMC_MIN_INTERVAL_MINUTES.
+FUNDS_JOB = "funds"
+FUNDS_POST_CLOSE_GRACE_MIN = 45
+
+
+def funds_job_due(
+    engine: Engine, settings: Settings, now: _Optional[object] = None
+) -> bool:
+    """True when the TSE funds job should spend its request budget now."""
+    at = now or utcnow()
+    in_session = is_market_open("IR_GOLD_FUND_AYAR", at, settings)
+    in_grace = is_market_open(
+        "IR_GOLD_FUND_AYAR",
+        at - timedelta(minutes=FUNDS_POST_CLOSE_GRACE_MIN),
+        settings,
+    )
+    if not (in_session or in_grace):
+        return False
+    with engine.connect() as conn:
+        last = conn.execute(
+            select(func.max(raw_observations.c.collected_at)).where(
+                raw_observations.c.provider_code == "tse_funds"
+            )
+        ).scalar()
+    if last is None:
+        return True
+    interval = timedelta(minutes=settings.tsetmc_min_interval_minutes)
+    return (utcnow() - ensure_utc(last)) >= interval
 
 
 def _recent_values(engine: Engine, symbol: str, limit: int = RECENT_WINDOW) -> list[float]:
@@ -131,6 +166,8 @@ def run_collect(
     # every Iranian evening/Friday and global weekend.
 
     for job in requested:
+        if job == FUNDS_JOB and not funds_job_due(engine, settings):
+            continue  # market closed or request budget spent too recently
         symbols_needed = set(JOB_SYMBOLS[job])
         stale_only: set[str] = set()
         provider_rows = registry.load_provider_rows(

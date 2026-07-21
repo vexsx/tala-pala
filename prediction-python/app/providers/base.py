@@ -74,10 +74,16 @@ class Provider(abc.ABC):
 
     # -- HTTP helpers --------------------------------------------------------
 
+    # Per-provider User-Agent override. Default is the honest project UA; a
+    # provider may set this when the SOURCE'S OWN policy requires a browser
+    # UA (e.g. BrsApi documents that default programming-language UAs are
+    # blocked and asks clients to send a real browser string).
+    user_agent: str = USER_AGENT
+
     def _client(self) -> httpx.Client:
         return httpx.Client(
             timeout=self.timeout,
-            headers={"User-Agent": USER_AGENT, "Accept": "*/*"},
+            headers={"User-Agent": self.user_agent, "Accept": "*/*"},
             follow_redirects=True,
         )
 
