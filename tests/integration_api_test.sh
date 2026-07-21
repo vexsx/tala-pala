@@ -49,7 +49,8 @@ assert_contains "$PF" '"invested"'
 step "portfolio CSV import/export"
 CODE=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" -X POST "$BASE/api/v1/portfolio/import" \
   -F "file=@data/samples/portfolio_example.csv")
-[ "$CODE" = "200" ] || { echo "ASSERT FAILED: import returned $CODE"; FAIL=1; }
+# the import handler returns 201 Created (200 kept for older builds)
+[ "$CODE" = "200" ] || [ "$CODE" = "201" ] || { echo "ASSERT FAILED: import returned $CODE"; FAIL=1; }
 EXPORT=$(curl -fsS "${AUTH[@]}" "$BASE/api/v1/portfolio/export")
 assert_contains "$EXPORT" 'tx_type,grams'
 
