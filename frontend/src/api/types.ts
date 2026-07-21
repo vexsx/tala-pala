@@ -289,6 +289,17 @@ export interface Signal {
   data_fresh?: boolean
 }
 
+/** Bootstrap Monte Carlo outcome odds attached to a custom forecast. */
+export interface MonteCarloOdds {
+  p_up: number
+  p_gain_over_cost: number
+  p_loss_over_cost: number
+  sim_p05_pct: number
+  sim_median_pct: number
+  sim_p95_pct: number
+  n_paths: number
+}
+
 /** On-demand forecast for an arbitrary N-day horizon (GET /predictions/custom?days=N). */
 export interface CustomForecast {
   symbol: string
@@ -307,6 +318,7 @@ export interface CustomForecast {
   drivers?: PredictionDriver[]
   decision_lean: 'buy' | 'hold' | 'sell'
   decision_note: string
+  monte_carlo?: MonteCarloOdds | null
   round_trip_cost_pct: number
   provider_gap_pct: number | null
   warnings: string[]

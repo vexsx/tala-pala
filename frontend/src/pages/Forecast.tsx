@@ -135,6 +135,25 @@ function CustomHorizonCard({ fmt }: { fmt: (v: number) => string }) {
             )}
           </div>
           <GaugeBar value={confidencePct(result.confidence)} label="Confidence" />
+          {result.monte_carlo && (
+            <div className="stat-sub">
+              <div className="kv">
+                <span className="muted">Simulated odds (bootstrap, {result.monte_carlo.n_paths} paths)</span>
+                <span className="mono">
+                  <span className="pos">{Math.round(result.monte_carlo.p_gain_over_cost * 100)}%</span>
+                  {' beats costs · '}
+                  <span className="neg">{Math.round(result.monte_carlo.p_loss_over_cost * 100)}%</span>
+                  {' loses more than costs'}
+                </span>
+              </div>
+              <div className="kv">
+                <span className="muted">Simulated range (5–95%)</span>
+                <span className="mono">
+                  {formatPct(result.monte_carlo.sim_p05_pct)} … {formatPct(result.monte_carlo.sim_p95_pct)}
+                </span>
+              </div>
+            </div>
+          )}
           <div className={`callout ${result.decision_lean === 'hold' ? '' : 'callout-warn'}`}>
             <strong className={leanClass}>{LEAN_LABELS[result.decision_lean]}</strong> —{' '}
             {result.decision_note} Costs assumed ≈{result.round_trip_cost_pct}% round-trip. Not

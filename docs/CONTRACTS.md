@@ -129,3 +129,11 @@ Both support `*_FILE` variants for Docker secrets (e.g. `POSTGRES_PASSWORD_FILE`
 **New indicators (Go).** `internal/indicators`: Ichimoku (9/26/52, undisplaced), SuperTrend(10,3) with direction, Parabolic SAR (0.02/0.02/0.2), classic pivot points. `GET /api/v1/market/indicators` gains latest-value fields `ichimoku`, `supertrend`, `psar`, `pivots`; the per-point series now serializes under `items` with **nested** `macd`/`bollinger` objects plus `momentum_10`/`roc_10`/`volatility_20` (matching frontend/src/api/types.ts, which was always the published contract).
 
 **Candles feed.** `GET /api/v1/market/candles?symbol&interval=daily|hourly&days` → true OHLC buckets (first/max/min/last per bucket) + index-aligned overlay arrays (sma 20/50, bollinger, supertrend + dir, psar, four ichimoku lines) + classic pivots from the last completed bar + support/resistance. Feeds the dashboard's Trade panel (lightweight-charts).
+
+## Addendum 6 — TradingView-community-inspired candidates (2026-07-21)
+
+Techniques reimplemented from published descriptions of popular TradingView prediction scripts (no Pine code copied; script licenses vary). All enter the standard walk-forward tournament and activate only when beating naive.
+
+- `lorentzian_knn` — kNN over indicator feature vectors (RSI, stoch %K, momentum, SMA z-score, volatility) with Lorentzian distance `Σ ln(1+|xᵢ−yᵢ|)` and chronologically-spaced neighbor selection (inspired by "Machine Learning: Lorentzian Classification"). In `CANDIDATES` and custom-horizon `FAST_CANDIDATES`.
+- `kalman_llt` — Kalman local-linear-trend state-space forecaster on log prices (statsmodels UnobservedComponents), the engine behind the various "Kalman predictor" scripts. In `CANDIDATES`.
+- Monte Carlo odds — `models/tvinspired.mc_probabilities`: moving-block bootstrap (block 5, 2000 paths, fixed seed) over historical log returns; the custom-horizon response gains `monte_carlo: {p_up, p_gain_over_cost, p_loss_over_cost, sim_p05_pct, sim_median_pct, sim_p95_pct, n_paths}` and the decision note cites the cost-clearing odds. Bootstrap (not GBM) keeps fat tails and volatility clustering.

@@ -47,7 +47,10 @@ CUSTOM_MAX_FOLDS = 25  # cheaper than the nightly 40 — this runs interactively
 
 # Fast families only: interactive latency matters and the heavyweight members
 # (rf/gbr/quantile_gbr/arima/sarimax) rarely beat these on this data scale.
-FAST_CANDIDATES = ("naive", "sma", "ses", "theta", "holt_damped", "linear", "hist_gb")
+FAST_CANDIDATES = (
+    "naive", "sma", "ses", "theta", "holt_damped", "linear", "hist_gb",
+    "lorentzian_knn",
+)
 
 # Round-trip trading cost defaults, mirroring app/backtest defaults.
 DEFAULT_FEE_PCT = 0.5
@@ -146,6 +149,12 @@ def predict_custom(
     if n_folds and n_folds < 20:
         warnings.append(f"Model validated on only {n_folds} walk-forward folds.")
 
+    # Monte Carlo outcome probabilities (bootstrap over historical returns):
+    # the honest answer to "how often would a move like this clear costs?"
+    from .tvinspired import mc_probabilities
+
+    monte_carlo = mc_probabilities(series, days, round_trip_cost_pct)
+
     # Decision lean vs round-trip costs. Conservative: a "buy" lean requires
     # the expected move to clear costs, a "confident buy" additionally needs
     # the LOWER bound to clear entry costs.
@@ -171,6 +180,12 @@ def predict_custom(
             f"costs (~{round_trip_cost_pct:.2f}%) — trading this view would likely "
             "cost more than it gains."
         )
+    if monte_carlo is not None:
+        lean_note += (
+            f" Historically-bootstrapped odds over {days} day(s): "
+            f"{monte_carlo['p_gain_over_cost']:.0%} of simulated paths gain more "
+            f"than the {round_trip_cost_pct:.1f}% cost."
+        )
 
     return {
         "symbol": "IR_GOLD_18K",
@@ -189,6 +204,7 @@ def predict_custom(
         "drivers": _drivers(model, series, regime),
         "decision_lean": lean,
         "decision_note": lean_note,
+        "monte_carlo": monte_carlo,
         "round_trip_cost_pct": round(round_trip_cost_pct, 3),
         "provider_gap_pct": round(gap_pct, 3) if gap_pct is not None else None,
         "warnings": warnings,

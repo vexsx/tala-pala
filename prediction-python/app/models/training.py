@@ -37,6 +37,7 @@ from .ensemble import EnsembleModel, combine, inverse_smape_weights
 from .intervals import relative_residuals, walk_forward_coverage
 from .ml import TabularModel  # noqa: F401  (registers ml models)
 from .sarimax_exog import SarimaxExogModel  # noqa: F401  (registers 'sarimax_exog')
+from .tvinspired import LorentzianKNNModel  # noqa: F401  (registers 'lorentzian_knn', 'kalman_llt')
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ HORIZON_SPECS: dict[str, tuple[str, int]] = {
 CANDIDATES = (
     "naive", "sma", "ses", "arima", "theta", "holt_damped", "sarimax_exog",
     "linear", "rf", "gbr", "quantile_gbr", "hist_gb", "knn_analogue",
+    "lorentzian_knn", "kalman_llt",
 )
 
 # auxiliary symbols made available to exog-aware models via set_context
