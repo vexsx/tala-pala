@@ -64,13 +64,14 @@ func tehranMidnightUTC(now time.Time) time.Time {
 
 func (h *Handler) fundSnapshots(ctx context.Context, now time.Time) ([]fundSnapshot, error) {
 	dayStart := tehranMidnightUTC(now)
+	since := dayStart.AddDate(0, 0, -7) // lead-in for the previous-close change
 	rows, err := h.Pool.Query(ctx, `
 		SELECT symbol, raw_value::float8, observed_at, raw_payload
 		FROM raw_observations
 		WHERE provider_code = 'tse_funds'
 		  AND symbol LIKE 'IR_GOLD_FUND%' AND symbol <> 'IR_GOLD_FUND_FLOW'
-		  AND observed_at >= $1 - interval '7 days'
-		ORDER BY symbol, observed_at ASC`, dayStart)
+		  AND observed_at >= $1
+		ORDER BY symbol, observed_at ASC`, since)
 	if err != nil {
 		return nil, err
 	}
