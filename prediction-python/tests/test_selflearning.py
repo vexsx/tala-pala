@@ -203,3 +203,56 @@ def test_short_horizon_features_present_and_causal():
     up = _series(n=40, seed=6)
     up.iloc[-4:] = [100.0, 101.0, 102.0, 103.0]
     assert compute_feature_frame(up)["streak"].iloc[-1] >= 3
+
+
+# --- Addendum 9 (papers): GARCH-lite features & EvoLearn-tuned HistGB ---------
+
+def test_garch_lite_and_denoised_features():
+    from app.features.engineering import compute_feature_frame
+
+    s = _series(n=120, seed=8)
+    frame = compute_feature_frame(s)
+    for col in ("garch_vol", "garch_vol_ratio_60", "ret_med_5"):
+        assert col in frame.columns, col
+    # conditional vol is non-negative and finite after warm-up
+    tail = frame["garch_vol"].dropna()
+    assert (tail >= 0).all() and np.isfinite(tail).all()
+    # a volatility spike must raise the ratio above 1
+    spiky = s.copy()
+    spiky.iloc[-5:] = spiky.iloc[-5:] * np.array([1.0, 1.06, 0.95, 1.07, 0.94])
+    ratio = compute_feature_frame(spiky)["garch_vol_ratio_60"].iloc[-1]
+    assert ratio > 1.0
+
+
+def test_tuned_hist_gb_selects_once_and_reuses():
+    from app.models.base import make
+    from app.models.ml import TunedHistGBModel
+
+    model = make("hist_gb_tuned")
+    assert isinstance(model, TunedHistGBModel)
+    assert model.reuse_across_folds is True
+
+    s = _series(n=160, seed=9)
+    model.fit(s, 3)
+    first_params = dict(model._tuned_params or {})
+    assert first_params  # selection happened
+    assert np.isfinite(model.predict_point())
+
+    # refit on a longer window (walk-forward reuse): params must NOT change
+    s2 = _series(n=200, seed=9)
+    model.fit(s2, 3)
+    assert model._tuned_params == first_params
+
+
+def test_tuned_hist_gb_artifact_roundtrip(tmp_path):
+    import joblib
+
+    from app.models.base import make
+
+    model = make("hist_gb_tuned")
+    s = _series(n=160, seed=10)
+    model.fit(s, 3)
+    path = tmp_path / "tuned.joblib"
+    joblib.dump(model, path)
+    loaded = joblib.load(path)
+    assert np.isfinite(loaded.predict_point())

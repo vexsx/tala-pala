@@ -1349,3 +1349,17 @@ input[type='checkbox'] {
   letter-spacing: 0.04em;
   margin-bottom: 8px;
 }
+
+/* --- Bidi isolation ---------------------------------------------------------
+   Numbers and percents often sit right next to the RTL word تومان; without
+   isolation the Unicode bidi algorithm visually reorders them (e.g.
+   "+0.67%" rendering as "0.67+ ... %"). Isolating each numeric span makes
+   it an independent directional run inside the LTR page. */
+.mono,
+.delta,
+.stat-value,
+.ticker-value,
+.big-price,
+.num {
+  unicode-bidi: isolate;
+}

@@ -155,3 +155,14 @@ Techniques reimplemented from published descriptions of popular TradingView pred
 **Multi-symbol core.** Migration `0010` adds `model_versions.symbol` (default `IR_GOLD_18K`; unique key now symbol+horizon+model+version). `FORECAST_SYMBOLS = (IR_GOLD_18K, XAUUSD)`: train/predict loop over both (bodies accept optional `"symbols": [...]`), artifacts under `MODELS_DIR/<symbol>/<horizon>/`, XAUUSD gets no Iranian exog context. `app_settings['live_calibration']` is now nested `{symbol: {horizon: stats}}`; ensemble live re-weighting filters by symbol; the meta-gate pools all symbols. Legacy flat summary keys mirror the primary symbol. Go: `GET /api/v1/predictions[?symbol=]` and `/predictions/{horizon}[?symbol=]` (default `IR_GOLD_18K`); `model_versions` responses include `symbol`. Signals, provider-gap widening, and custom horizons stay Tehran-18k-only by design.
 
 **Funds panel.** `GET /api/v1/market/funds` aggregates the stored TSETMC payloads: per fund the latest price (rial→toman), Δ vs previous session close, volume/value, retail buy/sell % of volume, today's session averages of both, snapshot count, and buyer power (per-capita retail buy ÷ per-capita retail sell volume — قدرت خریدار حقیقی); plus current composite retail net flow and its 30-day daily history, and the TSE market state. Rendered as the "Gold funds" panel on Overview; the Forecast page gains a Tehran-18k ⇄ Global-XAU toggle (USD formatting for XAU).
+
+## Addendum 9 — literature-driven upgrades (2026-07-22)
+
+From the Array 2025 DL-for-trading systematic review (S2590005625000177) and Nature s41598-024-69325-3 (EvoLearn), transplanted to the deliberate sklearn/statsmodels stack:
+
+- **GARCH-lite conditional volatility features** (after the review's hybrid LSTM-GARCH finding): RiskMetrics EWMA variance (`garch_vol`, alpha 0.06 ≈ λ0.94) and `garch_vol_ratio_60` (vol vs its 60-step norm) give every tabular model an explicit volatility state.
+- **Denoised momentum** (`ret_med_5`, after wavelet-denoising stages à la Bao et al., dependency-free): rolling median of returns strips one-day spikes.
+- **`hist_gb_tuned` candidate** (EvoLearn's core idea, sklearn form): randomized search over 6 HistGB configs, run ONCE on the earliest walk-forward window (train-only information, `reuse_across_folds` like ARIMA order selection), fitness = 1/(MSE_train + MSE_val) so the winner generalizes; params frozen across folds. Roster now 18 candidates.
+- Deliberately not ported: RL agents, GNNs, sentiment feeds, deep architectures — the review's own flagged failure modes (overfitting, interpretability, compute) are what the naive-gated tournament exists to avoid.
+
+**UI**: numeric spans (`.mono/.delta/.stat-value/.ticker-value/.big-price/.num`) get `unicode-bidi: isolate` — the RTL word تومان adjacent to LTR percents was visually reordering them (e.g. "+0.67%" → "0.67+ %").

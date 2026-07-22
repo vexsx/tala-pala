@@ -159,6 +159,19 @@ def compute_feature_frame(
     df["streak"] = np.clip(streak, -10, 10)
     # rolling skewness of daily returns: crash/melt-up asymmetry
     df["ret_skew_20"] = close.pct_change().rolling(20).skew()
+    # GARCH-lite conditional volatility (Addendum 9, after Xu et al.'s
+    # LSTM-GARCH finding): RiskMetrics EWMA variance (lambda ~ 0.94) gives
+    # the models an explicit volatility STATE, plus its ratio to the 60-step
+    # norm (>1 = volatility elevated vs recent history)
+    ret = close.pct_change()
+    ewma_var = ret.pow(2).ewm(alpha=0.06, adjust=False).mean()
+    df["garch_vol"] = np.sqrt(ewma_var)
+    df["garch_vol_ratio_60"] = df["garch_vol"] / (
+        df["garch_vol"].rolling(60, min_periods=20).mean().replace(0.0, np.nan)
+    )
+    # denoised momentum (Bao et al.'s wavelet stage, dependency-free form):
+    # rolling median of returns strips one-day spikes that whipsaw raw returns
+    df["ret_med_5"] = ret.rolling(5).median()
 
     # --- OHLC-style indicators (Addendum 2) ----------------------------------
     # The daily series is synthesized from ticks (last good observation per

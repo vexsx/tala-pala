@@ -331,3 +331,88 @@ register("rf", _make_rf)
 register("gbr", _make_gbr)
 register("hist_gb", _make_hist_gb)
 register("quantile_gbr", QuantileGBRModel)
+
+
+# --- EvoLearn-inspired tuned HistGB (Addendum 9) -----------------------------
+# Nature s41598-024-69325-3 (EvoLearn) alternates evolutionary search with
+# gradient training, scoring candidates on COMBINED train+validation error so
+# the winner generalizes instead of memorizing. The sklearn transplant: a
+# small randomized search over HistGB hyperparameters, run ONCE on the
+# earliest walk-forward window (train-only information, like ARIMA order
+# selection), fitness = 1/(MSE_train + MSE_val), params frozen thereafter.
+
+TUNE_CONFIGS: tuple[dict, ...] = (
+    {"max_iter": 150, "learning_rate": 0.06, "max_leaf_nodes": 15, "min_samples_leaf": 5},
+    {"max_iter": 250, "learning_rate": 0.03, "max_leaf_nodes": 15, "min_samples_leaf": 5},
+    {"max_iter": 150, "learning_rate": 0.10, "max_leaf_nodes": 7, "min_samples_leaf": 8},
+    {"max_iter": 300, "learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 3},
+    {"max_iter": 100, "learning_rate": 0.08, "max_leaf_nodes": 10, "min_samples_leaf": 10},
+    {"max_iter": 200, "learning_rate": 0.04, "max_leaf_nodes": 20, "min_samples_leaf": 6},
+)
+TUNE_VAL_FRACTION = 0.25
+TUNE_MIN_ROWS = 60
+
+
+def _hist_gb_with(params: dict) -> object:
+    from sklearn.ensemble import HistGradientBoostingRegressor
+
+    return HistGradientBoostingRegressor(
+        l2_regularization=1e-3, early_stopping=False, random_state=42, **params
+    )
+
+
+class TunedHistGBModel(TabularModel):
+    """HistGB whose hyperparameters are selected once (earliest window) by
+    EvoLearn-style combined train+validation fitness, then reused across
+    walk-forward folds."""
+
+    name = "hist_gb_tuned"
+    reuse_across_folds = True  # selection happens once, on train-only data
+
+    def __init__(self) -> None:
+        super().__init__("hist_gb_tuned", _hist_gb_estimator)
+        self._tuned_params: Optional[dict] = None
+
+    def _factory_tuned(self) -> object:
+        assert self._tuned_params is not None
+        return _hist_gb_with(self._tuned_params)
+
+    def _select_params(self, series: pd.Series, horizon: int) -> dict:
+        features = _feature_matrix(series, self._context)
+        target = np.log(series.astype(float).shift(-horizon) / series.astype(float))
+        train = features.copy()
+        train["__target__"] = target
+        train = train.dropna()
+        if len(train) < TUNE_MIN_ROWS:
+            return dict(TUNE_CONFIGS[0])
+        X = train.drop(columns="__target__").to_numpy()
+        y = train["__target__"].to_numpy()
+        split = max(int(len(y) * (1 - TUNE_VAL_FRACTION)), TUNE_MIN_ROWS // 2)
+        best, best_fit = dict(TUNE_CONFIGS[0]), -np.inf
+        for cfg in TUNE_CONFIGS:
+            try:
+                est = _hist_gb_with(cfg)
+                est.fit(X[:split], y[:split])
+                mse_train = float(np.mean((est.predict(X[:split]) - y[:split]) ** 2))
+                mse_val = float(np.mean((est.predict(X[split:]) - y[split:]) ** 2))
+                fitness = 1.0 / (mse_train + mse_val + 1e-12)
+            except Exception:
+                continue
+            if np.isfinite(fitness) and fitness > best_fit:
+                best, best_fit = dict(cfg), fitness
+        return best
+
+    def fit(self, series: pd.Series, horizon: int) -> "TunedHistGBModel":
+        if self._tuned_params is None:
+            self._tuned_params = self._select_params(series, horizon)
+            self._factory = self._factory_tuned
+        return super().fit(series, horizon)  # type: ignore[return-value]
+
+    def __getstate__(self) -> dict:
+        state = super().__getstate__()
+        # bound method is unpicklable; restore from _tuned_params on load
+        state["_factory"] = _hist_gb_estimator
+        return state
+
+
+register("hist_gb_tuned", TunedHistGBModel)
