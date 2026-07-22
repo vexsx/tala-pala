@@ -26,12 +26,12 @@ const (
 	DefaultClose = "20:00"
 )
 
-// TSE gold-fund session (Addendum 7): Sat-Wed 12:00-17:00 Asia/Tehran,
+// TSE gold-fund session (Addendum 7): Sat-Wed 12:00-18:00 Asia/Tehran,
 // closed Thursday AND Friday. Fixed here (display freshness only); the
 // Python service reads MARKET_TSE_OPEN/CLOSE for prediction-side rules.
 const (
 	tseOpen  = "12:00"
-	tseClose = "17:00"
+	tseClose = "18:00"
 )
 
 // usdOpen: the free-market USD session opens earlier than the gold bazaar

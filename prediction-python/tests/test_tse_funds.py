@@ -110,13 +110,13 @@ def test_provider_requires_key_and_raises_when_empty(monkeypatch):
         provider.fetch()
 
 
-# --- market hours (TSE: Sat-Wed 12:00-17:00 Tehran) --------------------------
+# --- market hours (TSE: Sat-Wed 12:00-18:00 Tehran) --------------------------
 
 def _mh_settings():
     return Settings(
         database_url="sqlite://", market_tehran_open="12:00",
         market_tehran_close="20:00", market_tse_open="12:00",
-        market_tse_close="17:00", stale_minutes=30,
+        market_tse_close="18:00", stale_minutes=30,
     )
 
 
@@ -128,8 +128,10 @@ def test_tse_fund_calendar():
     s = _mh_settings()
     # Tue 2026-07-21 13:00 Tehran (09:30 UTC): open
     assert is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 9, 30), s)
-    # Tue 17:00 Tehran boundary (13:30 UTC): closed (exclusive)
-    assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 13, 30), s)
+    # Tue 17:00 Tehran (13:30 UTC): still open with the 18:00 close
+    assert is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 13, 30), s)
+    # Tue 18:00 Tehran boundary (14:30 UTC): closed (exclusive)
+    assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 14, 30), s)
     # Tue 11:59 Tehran: not yet open
     assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 8, 29), s)
     # Thursday 2026-07-23 13:00 Tehran: closed — funds and the physical
@@ -143,9 +145,9 @@ def test_tse_fund_calendar():
 
 def test_tse_fund_closure_spans_thu_and_fri():
     s = _mh_settings()
-    # Friday noon: the last session closed WEDNESDAY 17:00 Tehran (13:30 UTC)
+    # Friday noon: the last session closed WEDNESDAY 18:00 Tehran (14:30 UTC)
     start = closure_started_at("IR_GOLD_FUND_AYAR", utc(2026, 7, 24, 9, 0), s)
-    assert start == utc(2026, 7, 22, 13, 30)
+    assert start == utc(2026, 7, 22, 14, 30)
 
 
 # --- validation --------------------------------------------------------------
@@ -219,7 +221,7 @@ def test_funds_job_slots(engine):
     assert not funds_job_due(engine, s, now=utc(2026, 7, 21, 9, 30))   # 13:00 Tehran
     # 15:05 Tehran (11:35 UTC): the 15:00 slot is unconsumed -> due
     assert funds_job_due(engine, s, now=utc(2026, 7, 21, 11, 35))
-    # 18:05 Tehran (14:35 UTC): 18:00 slot (post-close by design) -> due
+    # 18:05 Tehran (14:35 UTC): 18:00 slot (at the close) -> due
     assert funds_job_due(engine, s, now=utc(2026, 7, 21, 14, 35))
 
 

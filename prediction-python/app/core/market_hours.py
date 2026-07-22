@@ -37,7 +37,7 @@ IRAN_24H_SYMBOLS = frozenset({"IR_GOLD_18K"})
 IRANIAN_SYMBOLS = frozenset({"USD_IRT", "IR_COIN_EMAMI"})
 GLOBAL_SYMBOLS = frozenset({"XAUUSD", "XAGUSD", "BRENT_OIL", "DXY", "US10Y"})
 # Tehran-exchange gold funds trade Sat-Wed between MARKET_TSE_OPEN and
-# MARKET_TSE_CLOSE (default 12:00-17:00 Tehran); closed Thursday AND Friday.
+# MARKET_TSE_CLOSE (default 12:00-18:00 Tehran); closed Thursday AND Friday.
 TSE_FUND_PREFIX = "IR_GOLD_FUND"
 
 GLOBAL_CLOSE_UTC = time(21, 0)  # Friday
@@ -69,7 +69,7 @@ def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
         if local.weekday() in (THURSDAY, FRIDAY):
             return False
         open_t = _parse_hhmm(getattr(settings, "market_tse_open", "12:00"), time(12, 0))
-        close_t = _parse_hhmm(getattr(settings, "market_tse_close", "17:00"), time(17, 0))
+        close_t = _parse_hhmm(getattr(settings, "market_tse_close", "18:00"), time(18, 0))
         return open_t <= local.time() < close_t
     if symbol in IRANIAN_SYMBOLS:
         local = at_utc.astimezone(TEHRAN)
@@ -117,7 +117,7 @@ def closure_started_at(
             day -= timedelta(days=1)
         return datetime.combine(day, time(0, 0), tzinfo=TEHRAN).astimezone(timezone.utc)
     if symbol.startswith(TSE_FUND_PREFIX):
-        close_t = _parse_hhmm(getattr(settings, "market_tse_close", "17:00"), time(17, 0))
+        close_t = _parse_hhmm(getattr(settings, "market_tse_close", "18:00"), time(18, 0))
         local = at_utc.astimezone(TEHRAN)
         for days_back in range(9):
             day = (local - timedelta(days=days_back)).date()

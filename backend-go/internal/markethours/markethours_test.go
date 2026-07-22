@@ -32,8 +32,8 @@ func TestIsOpen(t *testing.T) {
 
 		// Windowed Iranian symbols: Sat-Wed 12:00-20:00 Asia/Tehran (UTC+03:30);
 		// closed all Thursday and Friday.
-		{"tehran open boundary 12:00", "USD_IRT", utc(15, 8, 30), true},      // 12:00 Tehran inclusive
-		{"tehran before open 11:59", "USD_IRT", utc(15, 8, 29), false},       // 11:59 Tehran
+		{"tehran open boundary 12:00", "IR_COIN_EMAMI", utc(15, 8, 30), true}, // 12:00 Tehran inclusive
+		{"tehran before open 11:59", "IR_COIN_EMAMI", utc(15, 8, 29), false},  // 11:59 Tehran (USD has its own 10:00 open)
 		{"tehran last minute 19:59", "IR_COIN_EMAMI", utc(15, 16, 29), true}, // 19:59 Tehran
 		{"tehran close boundary 20:00", "IR_COIN_EMAMI", utc(15, 16, 30), false}, // 20:00 Tehran exclusive
 		{"tehran thursday closed", "USD_IRT", utc(16, 8, 30), false},         // Thursday noon Tehran
@@ -191,9 +191,13 @@ func TestTSEFundCalendar(t *testing.T) {
 	if !IsOpen("IR_GOLD_FUND_AYAR", time.Date(2026, 7, 21, 9, 30, 0, 0, time.UTC), DefaultOpen, DefaultClose) {
 		t.Fatal("Tuesday 13:00 Tehran must be open for TSE funds")
 	}
-	// Tue 17:00 Tehran boundary (13:30 UTC): closed (exclusive)
-	if IsOpen("IR_GOLD_FUND_AYAR", time.Date(2026, 7, 21, 13, 30, 0, 0, time.UTC), DefaultOpen, DefaultClose) {
-		t.Fatal("17:00 Tehran must be closed for TSE funds")
+	// Tue 17:00 Tehran (13:30 UTC): still open with the 18:00 close
+	if !IsOpen("IR_GOLD_FUND_AYAR", time.Date(2026, 7, 21, 13, 30, 0, 0, time.UTC), DefaultOpen, DefaultClose) {
+		t.Fatal("17:00 Tehran must be open for TSE funds")
+	}
+	// Tue 18:00 Tehran boundary (14:30 UTC): closed (exclusive)
+	if IsOpen("IR_GOLD_FUND_AYAR", time.Date(2026, 7, 21, 14, 30, 0, 0, time.UTC), DefaultOpen, DefaultClose) {
+		t.Fatal("18:00 Tehran must be closed for TSE funds")
 	}
 	// Thursday: closed for funds and for the physical market alike
 	thu := time.Date(2026, 7, 23, 9, 30, 0, 0, time.UTC)
@@ -203,9 +207,9 @@ func TestTSEFundCalendar(t *testing.T) {
 	if IsOpen("IR_GOLD_18K", thu, DefaultOpen, DefaultClose) {
 		t.Fatal("Thursday must be closed for the physical market too")
 	}
-	// Friday noon: last close was Wednesday 17:00 Tehran = 13:30 UTC
+	// Friday noon: last close was Wednesday 18:00 Tehran = 14:30 UTC
 	got := ClosureStartedAt("IR_GOLD_FUND_AYAR", time.Date(2026, 7, 24, 9, 0, 0, 0, time.UTC), DefaultOpen, DefaultClose)
-	want := time.Date(2026, 7, 22, 13, 30, 0, 0, time.UTC)
+	want := time.Date(2026, 7, 22, 14, 30, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("closure start = %s, want %s", got, want)
 	}

@@ -14,7 +14,7 @@ as the market provider). Per configured fund the provider emits:
   classic Iranian-market sentiment gauge. Stored with currency 'PCT'
   (may legitimately be negative).
 
-Funds trade Sat-Wed 12:00-17:00 Tehran (see core/market_hours TSE calendar).
+Funds trade Sat-Wed 12:00-18:00 Tehran (see core/market_hours TSE calendar).
 ``observed_at`` comes from the API's own Jalali date + Tehran time so closed
 -market polls dedupe naturally instead of re-inserting stale rows.
 """

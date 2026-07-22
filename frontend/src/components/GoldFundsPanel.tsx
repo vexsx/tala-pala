@@ -23,7 +23,7 @@ import EmptyState from './EmptyState'
  * Tehran-exchange gold funds ("boxes"): prices, volume, and the retail
  * (حقیقی) buyer/seller composition per fund — plus the composite retail
  * net-flow history. Data lands once per hour during the TSE session
- * (12:00–17:00 Tehran, Sat–Wed) to respect the source's request budget.
+ * (12:00–18:00 Tehran, Sat–Wed) to respect the source's request budget.
  *
  * Pass `state` when the parent already fetches /market/funds (e.g. Overview
  * shares one request with the Action planner); otherwise the panel fetches.
@@ -49,7 +49,7 @@ export default function GoldFundsPanel({ state }: { state?: ApiState<FundsRespon
     return (
       <EmptyState
         title="No fund data yet"
-        hint="TSE gold-fund quotes arrive hourly during the trading session (12:00–17:00 Tehran, Sat–Wed)."
+        hint="TSE gold-fund quotes arrive during the trading session (12:00–18:00 Tehran, Sat–Wed)."
       />
     )
   }
@@ -59,7 +59,7 @@ export default function GoldFundsPanel({ state }: { state?: ApiState<FundsRespon
       <div className="kv">
         <span className="muted">Market</span>
         <span className={res.data?.market_state === 'open' ? 'pos' : 'muted'}>
-          {res.data?.market_state === 'open' ? '● open (12:00–17:00 Tehran)' : '○ closed'}
+          {res.data?.market_state === 'open' ? '● open (12:00–18:00 Tehran)' : '○ closed'}
         </span>
       </div>
       <div className="table-wrap">

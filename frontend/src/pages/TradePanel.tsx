@@ -414,7 +414,7 @@ export default function TradePanel() {
 
           {GOLD_FUND_SYMBOLS.some((s) => current.data?.prices?.[s]) && (
             <div className="card">
-              <div className="card-title">Gold funds (TSE, 12:00–17:00)</div>
+              <div className="card-title">Gold funds (TSE, 12:00–18:00)</div>
               <ul className="driver-list">
                 {GOLD_FUND_SYMBOLS.map((sym) => {
                   const q = current.data?.prices?.[sym]

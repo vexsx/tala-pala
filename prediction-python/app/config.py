@@ -83,7 +83,7 @@ class Settings:
     market_tehran_close: str = field(default_factory=lambda: _env("MARKET_TEHRAN_CLOSE", "20:00"))
     # TSE gold-fund session (Addendum 7): Sat-Wed, Asia/Tehran local.
     market_tse_open: str = field(default_factory=lambda: _env("MARKET_TSE_OPEN", "12:00"))
-    market_tse_close: str = field(default_factory=lambda: _env("MARKET_TSE_CLOSE", "17:00"))
+    market_tse_close: str = field(default_factory=lambda: _env("MARKET_TSE_CLOSE", "18:00"))
     # Courtesy delay between outbound provider requests (seconds); 0 in tests.
     provider_courtesy_delay: float = field(
         default_factory=lambda: float(_env("PROVIDER_COURTESY_DELAY", "1.0"))

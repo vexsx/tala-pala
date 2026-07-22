@@ -273,7 +273,7 @@ def compute_feature_frame(
         df["premium_mom_5"] = premium.diff(PREMIUM_MOM_LAG)
 
     # Tehran-exchange gold funds (Addendum 7): exchange-traded price discovery
-    # (continuous 12:00-17:00 auction with real volume) plus retail sentiment.
+    # (continuous 12:00-18:00 auction with real volume) plus retail sentiment.
     fund = _align(gold_fund) if gold_fund is not None and not gold_fund.empty else None
     flow = _align(fund_flow) if fund_flow is not None and not fund_flow.empty else None
     if fund is not None:
