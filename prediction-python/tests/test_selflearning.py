@@ -175,3 +175,31 @@ def test_feature_matrix_truncates_future_exog():
     truncated = long_usd[long_usd.index <= gold.index[-1]]
     expected = truncated.pct_change().iloc[-1]
     assert frame["usd_ret_1"].iloc[-1] == pytest.approx(expected)
+
+
+# --- Addendum 9: new candidates & short-horizon features ----------------------
+
+def test_new_candidates_registered_and_forecast():
+    from app.models.base import make
+
+    s = _series(n=150, seed=4)
+    for name in ("extra_trees", "huber"):
+        model = make(name)
+        model.fit(s, 3)
+        assert np.isfinite(model.predict_point()), name
+
+
+def test_short_horizon_features_present_and_causal():
+    from app.features.engineering import compute_feature_frame
+
+    s = _series(n=80, seed=5)
+    frame = compute_feature_frame(s)
+    for col in ("rsi_7", "streak", "ret_skew_20"):
+        assert col in frame.columns, col
+    # streak is a signed integer run capped at +-10
+    streaks = frame["streak"].dropna()
+    assert streaks.abs().max() <= 10
+    # rising 3 days in a row must show streak >= 3 at the end
+    up = _series(n=40, seed=6)
+    up.iloc[-4:] = [100.0, 101.0, 102.0, 103.0]
+    assert compute_feature_frame(up)["streak"].iloc[-1] >= 3

@@ -94,7 +94,7 @@ export default function Overview() {
           label={`18k gold — ${currencyCode(unit)} per gram`}
           value={
             goldValue !== null ? (
-              <span className="big-price">{formatToman(goldValue, unit)}</span>
+              <span className="big-price">{formatToman(goldValue, unit, false)}</span>
             ) : (
               '—'
             )

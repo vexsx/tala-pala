@@ -60,7 +60,7 @@ HORIZON_SPECS: dict[str, tuple[str, int]] = {
 CANDIDATES = (
     "naive", "sma", "ses", "arima", "theta", "holt_damped", "sarimax_exog",
     "linear", "rf", "gbr", "quantile_gbr", "hist_gb", "knn_analogue",
-    "lorentzian_knn", "kalman_llt",
+    "lorentzian_knn", "kalman_llt", "extra_trees", "huber",
 )
 
 # auxiliary symbols made available to exog-aware models via set_context

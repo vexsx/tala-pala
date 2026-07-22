@@ -55,7 +55,7 @@ export const SYMBOL_LABELS: Record<Symbol_, string> = {
   DXY: 'Dollar index',
   US10Y: 'US 10Y yield',
   IR_GOLD_FUND_AYAR: 'Ayar fund (عیار)',
-  IR_GOLD_FUND_TALA: 'Tala fund (طلا)',
+  IR_GOLD_FUND_TALA: 'Lotus gold fund (طلا)',
   IR_GOLD_FUND_KAHRABA: 'Kahroba fund (کهربا)',
   IR_GOLD_FUND_FLOW: 'Funds retail net flow'
 }

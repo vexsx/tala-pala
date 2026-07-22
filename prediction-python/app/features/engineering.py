@@ -145,7 +145,20 @@ def compute_feature_frame(
         df[f"close_vs_mean_{w}"] = close / df[f"roll_mean_{w}"] - 1.0
     df["momentum_10"] = close / close.shift(10) - 1.0
     df[f"rsi_{RSI_PERIOD}"] = rsi(close)
+    df["rsi_7"] = rsi(close, 7)  # faster oscillator for the 1h-3d horizons
     df["vol_20"] = close.pct_change().rolling(20).std()
+    # signed run length of consecutive same-direction closes (capped +-10):
+    # short-horizon momentum microstructure that plain returns miss
+    ret_sign = np.sign(close.diff()).fillna(0.0)
+    streak = np.zeros(len(ret_sign))
+    for i in range(1, len(ret_sign)):
+        s_i = ret_sign.iloc[i]
+        streak[i] = 0.0 if s_i == 0 else (
+            streak[i - 1] + s_i if streak[i - 1] * s_i > 0 else s_i
+        )
+    df["streak"] = np.clip(streak, -10, 10)
+    # rolling skewness of daily returns: crash/melt-up asymmetry
+    df["ret_skew_20"] = close.pct_change().rolling(20).skew()
 
     # --- OHLC-style indicators (Addendum 2) ----------------------------------
     # The daily series is synthesized from ticks (last good observation per

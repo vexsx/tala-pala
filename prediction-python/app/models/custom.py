@@ -49,7 +49,7 @@ CUSTOM_MAX_FOLDS = 25  # cheaper than the nightly 40 — this runs interactively
 # (rf/gbr/quantile_gbr/arima/sarimax) rarely beat these on this data scale.
 FAST_CANDIDATES = (
     "naive", "sma", "ses", "theta", "holt_damped", "linear", "hist_gb",
-    "lorentzian_knn",
+    "lorentzian_knn", "huber",
 )
 
 # Round-trip trading cost defaults, mirroring app/backtest defaults.

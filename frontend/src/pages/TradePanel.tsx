@@ -350,7 +350,7 @@ export default function TradePanel() {
             <div className="card-title">IR_GOLD_18K</div>
             {gold ? (
               <>
-                <div className="stat-value big-price">{formatToman(gold.value, unit)}</div>
+                <div className="stat-value big-price">{formatToman(gold.value, unit, false)}</div>
                 <div className={`delta ${pctClass(gold.change_24h_pct)}`}>
                   {formatPct(gold.change_24h_pct)} · 24h
                 </div>

@@ -184,8 +184,37 @@ def _hist_gb_estimator() -> object:
     )
 
 
+def _extra_trees_estimator() -> object:
+    from sklearn.ensemble import ExtraTreesRegressor
+
+    # extremely-randomized trees: decorrelated splits reduce variance on
+    # noisy, small samples where plain RF overfits recent regimes
+    return ExtraTreesRegressor(
+        n_estimators=150, max_depth=7, min_samples_leaf=4,
+        random_state=42, n_jobs=-1,
+    )
+
+
+def _huber_estimator() -> object:
+    from sklearn.linear_model import HuberRegressor
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    # robust linear: Huber loss shrugs off the outlier bars common in
+    # Iranian quotes (unit mixups, gap opens) that wreck OLS/Ridge fits
+    return make_pipeline(StandardScaler(), HuberRegressor(epsilon=1.35, alpha=1e-3, max_iter=300))
+
+
 def _make_linear() -> TabularModel:
     return TabularModel("linear", _linear_estimator)
+
+
+def _make_extra_trees() -> TabularModel:
+    return TabularModel("extra_trees", _extra_trees_estimator)
+
+
+def _make_huber() -> TabularModel:
+    return TabularModel("huber", _huber_estimator)
 
 
 def _make_rf() -> TabularModel:
@@ -296,6 +325,8 @@ class QuantileGBRModel(ForecastModel):
 
 
 register("linear", _make_linear)
+register("extra_trees", _make_extra_trees)
+register("huber", _make_huber)
 register("rf", _make_rf)
 register("gbr", _make_gbr)
 register("hist_gb", _make_hist_gb)

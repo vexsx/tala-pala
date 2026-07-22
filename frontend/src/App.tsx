@@ -88,7 +88,7 @@ function TopBar() {
         {gold ? (
           <>
             <span className="ticker-label">18k</span>
-            <span className="ticker-value mono">{formatToman(gold.value, unit)}</span>
+            <span className="ticker-value mono">{formatToman(gold.value, unit, false)}</span>
             <span className={`delta ${pctClass(gold.change_24h_pct)}`}>
               {formatPct(gold.change_24h_pct)}
             </span>
