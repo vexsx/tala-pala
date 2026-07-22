@@ -68,11 +68,10 @@ class Settings:
     # Tehran-exchange gold funds: "ticker:SYMBOL,..." (empty -> provider defaults)
     tsetmc_funds: str = field(default_factory=lambda: _env("TSETMC_FUNDS", ""))
     # Fixed Tehran-local fetch slots for the TSE funds job ("HH:MM,HH:MM,...").
-    # 12:30 (not the 12:00 bell) lets the opening auction settle first.
     # 3 slots x 2 funds = 6 requests/day against the ~10/day free-tier quota;
     # 18:00 is deliberately post-close to capture the settled closing data.
     tsetmc_fetch_times: str = field(
-        default_factory=lambda: _env("TSETMC_FETCH_TIMES", "12:30,15:00,18:00")
+        default_factory=lambda: _env("TSETMC_FETCH_TIMES", "12:00,15:00,18:00")
     )
     alanchand_token: str = field(default_factory=lambda: _env("ALANCHAND_TOKEN", ""))
     # Tehran market hours (Addendum 1): Sat-Wed open window, Asia/Tehran local,
