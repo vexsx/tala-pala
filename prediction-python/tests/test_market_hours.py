@@ -81,7 +81,9 @@ def test_18k_closure_starts_thursday_midnight_tehran(mh_settings):
 
 
 def test_tehran_open_hours_monday(mh_settings):
-    # Monday 2026-07-20; boundaries: open inclusive, close exclusive
+    # Monday 2026-07-20; boundaries: open inclusive, close exclusive.
+    # USD follows MARKET_USD_OPEN — pin it to the fixture's 09:00 window.
+    mh_settings.market_usd_open = "09:00"
     assert not is_market_open("USD_IRT", utc(2026, 7, 20, 5, 29), mh_settings)  # 08:59
     assert is_market_open("USD_IRT", utc(2026, 7, 20, 5, 30), mh_settings)      # 09:00
     assert is_market_open("USD_IRT", utc(2026, 7, 20, 12, 0), mh_settings)      # 15:30
@@ -103,11 +105,15 @@ def test_tehran_saturday_is_a_trading_day(mh_settings):
 
 
 def test_tehran_configurable_hours(mh_settings):
-    mh_settings.market_tehran_open = "10:30"
+    # USD follows its own MARKET_USD_OPEN; the bazaar window drives the rest
+    mh_settings.market_usd_open = "10:30"
+    mh_settings.market_tehran_open = "11:30"
     mh_settings.market_tehran_close = "18:00"
     assert not is_market_open("USD_IRT", utc(2026, 7, 20, 6, 30), mh_settings)  # 10:00
     assert is_market_open("USD_IRT", utc(2026, 7, 20, 7, 0), mh_settings)       # 10:30
     assert not is_market_open("USD_IRT", utc(2026, 7, 20, 14, 30), mh_settings)  # 18:00
+    assert not is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 7, 30), mh_settings)  # 11:00
+    assert is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 8, 0), mh_settings)       # 11:30
 
 
 def test_iranian_closure_start_overnight(mh_settings):

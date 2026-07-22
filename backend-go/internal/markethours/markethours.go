@@ -34,6 +34,11 @@ const (
 	tseClose = "17:00"
 )
 
+// usdOpen: the free-market USD session opens earlier than the gold bazaar
+// (close is shared). Fixed here for display freshness; the Python service
+// reads MARKET_USD_OPEN for prediction-side rules.
+const usdOpen = "10:00"
+
 // tseFundPrefix marks Tehran-exchange gold-fund symbols.
 const tseFundPrefix = "IR_GOLD_FUND"
 
@@ -97,7 +102,11 @@ func IsOpen(symbol string, at time.Time, open, close string) bool {
 			return false
 		}
 		m := lt.Hour()*60 + lt.Minute()
-		return m >= parseHHMM(open, DefaultOpen) && m < parseHHMM(close, DefaultClose)
+		openM := parseHHMM(open, DefaultOpen)
+		if symbol == "USD_IRT" {
+			openM = parseHHMM(usdOpen, usdOpen)
+		}
+		return m >= openM && m < parseHHMM(close, DefaultClose)
 	}
 	u := at.UTC()
 	switch u.Weekday() {

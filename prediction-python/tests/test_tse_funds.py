@@ -233,3 +233,14 @@ def test_funds_job_skips_thu_fri_and_never_repays(engine):
     # Saturday after ALL slots passed with no fetches: due exactly once
     # (max(passed) = 18:00 slot; one round covers it, quota is not repaid)
     assert funds_job_due(engine, s, now=utc(2026, 7, 25, 15, 0))  # 18:30 Tehran
+
+
+def test_usd_market_opens_at_10_tehran():
+    s = _mh_settings()
+    # Tue 10:30 Tehran (07:00 UTC): USD open, coin market still closed
+    assert is_market_open("USD_IRT", utc(2026, 7, 21, 7, 0), s)
+    assert not is_market_open("IR_COIN_EMAMI", utc(2026, 7, 21, 7, 0), s)
+    # Tue 09:59 Tehran (06:29 UTC): USD not yet open
+    assert not is_market_open("USD_IRT", utc(2026, 7, 21, 6, 29), s)
+    # Thursday: closed regardless
+    assert not is_market_open("USD_IRT", utc(2026, 7, 23, 7, 0), s)

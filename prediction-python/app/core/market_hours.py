@@ -75,7 +75,12 @@ def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
         local = at_utc.astimezone(TEHRAN)
         if local.weekday() in (THURSDAY, FRIDAY):
             return False
-        open_t = _parse_hhmm(settings.market_tehran_open, time(12, 0))
+        # the free-market USD opens earlier than the gold bazaar (MARKET_USD_OPEN,
+        # default 10:00 Tehran); the close is shared
+        if symbol == "USD_IRT":
+            open_t = _parse_hhmm(getattr(settings, "market_usd_open", "10:00"), time(10, 0))
+        else:
+            open_t = _parse_hhmm(settings.market_tehran_open, time(12, 0))
         close_t = _parse_hhmm(settings.market_tehran_close, time(20, 0))
         return open_t <= local.time() < close_t
     if symbol in GLOBAL_SYMBOLS:

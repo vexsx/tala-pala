@@ -78,6 +78,8 @@ class Settings:
     # "HH:MM" strings; Thursday and Friday are always closed for Iranian
     # symbols. IR_GOLD_18K trades 24h on trading days and ignores this window.
     market_tehran_open: str = field(default_factory=lambda: _env("MARKET_TEHRAN_OPEN", "12:00"))
+    # Free-market USD opens earlier than the gold bazaar (close is shared).
+    market_usd_open: str = field(default_factory=lambda: _env("MARKET_USD_OPEN", "10:00"))
     market_tehran_close: str = field(default_factory=lambda: _env("MARKET_TEHRAN_CLOSE", "20:00"))
     # TSE gold-fund session (Addendum 7): Sat-Wed, Asia/Tehran local.
     market_tse_open: str = field(default_factory=lambda: _env("MARKET_TSE_OPEN", "12:00"))

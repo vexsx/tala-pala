@@ -210,3 +210,18 @@ func TestTSEFundCalendar(t *testing.T) {
 		t.Fatalf("closure start = %s, want %s", got, want)
 	}
 }
+
+func TestUSDOpensAt10Tehran(t *testing.T) {
+	// Wed 10:30 Tehran (07:00 UTC): USD open, coin market still closed
+	at := time.Date(2026, 7, 15, 7, 0, 0, 0, time.UTC)
+	if !IsOpen("USD_IRT", at, DefaultOpen, DefaultClose) {
+		t.Fatal("USD_IRT must be open at 10:30 Tehran")
+	}
+	if IsOpen("IR_COIN_EMAMI", at, DefaultOpen, DefaultClose) {
+		t.Fatal("IR_COIN_EMAMI must still be closed before 12:00 Tehran")
+	}
+	// 09:59 Tehran (06:29 UTC): not yet open
+	if IsOpen("USD_IRT", time.Date(2026, 7, 15, 6, 29, 0, 0, time.UTC), DefaultOpen, DefaultClose) {
+		t.Fatal("USD_IRT must be closed at 09:59 Tehran")
+	}
+}
