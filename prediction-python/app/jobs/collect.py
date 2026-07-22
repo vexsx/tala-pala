@@ -63,7 +63,8 @@ RECENT_WINDOW = 30  # good values used for the MAD outlier test
 # TSE funds quota guard: BrsApi's free tier budgets the TSETMC_Symbol
 # endpoint at ~10 requests/day and each funds round costs one call per fund.
 # The job fires at FIXED Tehran-local slots (TSETMC_FETCH_TIMES, default
-# 12:00 / 15:00 / 18:00 -> 3 rounds x 2 funds = 6 requests/day): one round
+# 12:30 / 15:00 / 18:00 -> 3 rounds x 2 funds = 6 requests/day; 12:30 lets
+# the opening auction settle): one round
 # per slot, at the first collect tick at/after the slot time. 18:00 runs
 # after the 17:00 close on purpose - it captures the settled closing data.
 # Thursdays and Fridays (no TSE session) spend nothing.
@@ -82,7 +83,7 @@ def _parse_fetch_times(raw: str) -> list[dt_time]:
             out.append(dt_time(int(hh), int(mm)))
         except (TypeError, ValueError):
             continue
-    return sorted(out) or [dt_time(12, 0), dt_time(15, 0), dt_time(18, 0)]
+    return sorted(out) or [dt_time(12, 30), dt_time(15, 0), dt_time(18, 0)]
 
 
 def funds_job_due(
