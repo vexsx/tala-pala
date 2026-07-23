@@ -8,7 +8,8 @@ Run `make ps` first — every service has a healthcheck, and most problems show 
 - Port conflict on 8088 → change `FRONTEND_PORT` in `.env`.
 
 ## "api unhealthy" / migration errors
-- `docker compose logs api | grep -i migrat` — a dirty migration state after a crash can be inspected with `docker compose exec postgres psql -U goldpred -c 'select * from schema_migrations;'`. Fix per golang-migrate docs (`force` to the last known-good version), then restart.
+- `docker compose logs api | grep -i migrat` — a dirty migration state after a crash can be inspected with `docker compose exec postgres psql -U goldpred -c 'select * from schema_migrations;'`.
+- **Recovery**: `make migrate-force VERSION=n` where *n* is the last known-GOOD version (if `schema_migrations` shows `version=15, dirty=t`, migration 15 failed midway — inspect/undo its partial effects, then `make migrate-force VERSION=14`). Then `make migrate` (restart api) re-applies forward. The dirty flag exists because a half-applied migration needs a human decision; force only after checking what was actually applied.
 
 ## No prices / stale banner in the UI
 1. `docker compose logs prediction-service --tail=100 | grep -i collect`

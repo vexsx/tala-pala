@@ -30,6 +30,8 @@ type Handler struct {
 	Audit                 *audit.Logger
 	Log                   *slog.Logger
 	AllowOpenRegistration bool
+
+	lockout loginLockout // per-account brute-force guard (see lockout.go)
 }
 
 type credentialsReq struct {
@@ -187,6 +189,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
 
+	now := time.Now()
+	if h.lockout.locked(req.Email, now) {
+		httpserver.Error(w, http.StatusTooManyRequests, "account_locked",
+			"too many failed attempts; try again later", nil)
+		return
+	}
+
 	ctx := r.Context()
 	var (
 		id, hash, role string
@@ -198,6 +207,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		// Constant-ish time: still burn a bcrypt compare on unknown users.
 		_ = bcrypt.CompareHashAndPassword(
 			[]byte("$2a$12$C6UzMDM.H6dfI/f/IKcEeO5C1shTf1e6EnFizJEyRkS3jJZDgIS9G"), []byte(req.Password))
+		h.lockout.fail(req.Email, now)
 		httpserver.Unauthorized(w, "invalid email or password")
 		return
 	}
@@ -207,9 +217,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(req.Password)) != nil {
+		if h.lockout.fail(req.Email, now) {
+			h.Log.Warn("account_locked", "email", req.Email)
+		}
 		httpserver.Unauthorized(w, "invalid email or password")
 		return
 	}
+	h.lockout.success(req.Email)
 
 	token, exp, err := h.Tokens.Create(id, req.Email, role)
 	if err != nil {

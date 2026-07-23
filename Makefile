@@ -29,6 +29,13 @@ ps: ## Show service status + health
 migrate: ## Run DB migrations (they run automatically at every api startup)
 	$(COMPOSE) restart api
 
+migrate-force: ## Recover a dirty migration state: make migrate-force VERSION=n
+	@test -n "$(VERSION)" || { echo "usage: make migrate-force VERSION=<last known-good version>"; exit 1; }
+	$(COMPOSE) run --rm --no-deps api -force-migration-version $(VERSION)
+
+backup: ## Dump the database to ./backups (see scripts/backup.sh for cron setup)
+	sh scripts/backup.sh
+
 create-user: ## Create a user: make create-user EMAIL=a@b.c PASSWORD=pw ROLE=user
 	$(COMPOSE) exec api /app/createuser -email $(EMAIL) -password $(PASSWORD) -role $(or $(ROLE),user)
 

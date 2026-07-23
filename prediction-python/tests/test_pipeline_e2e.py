@@ -118,3 +118,36 @@ def test_full_pipeline(client, seeded, engine, monkeypatch):
     resp = client.post("/internal/maintenance/cleanup", headers=AUTH)
     assert resp.status_code == 200
     assert "deleted_raw_observations" in resp.json()
+
+
+def test_artifact_pruning_keeps_active_and_recent(engine, settings, tmp_path):
+    """Old unreferenced .joblib files are removed; active-referenced and
+    recent files survive."""
+    import os
+    import time as _time
+
+    from app.db import model_versions, utcnow
+    from app.jobs.cleanup import prune_model_artifacts
+
+    root = tmp_path / "models" / "IR_GOLD_18K" / "1d"
+    root.mkdir(parents=True)
+    active = root / "winner-active.joblib"
+    stale = root / "loser-old.joblib"
+    recent = root / "loser-new.joblib"
+    for f in (active, stale, recent):
+        f.write_bytes(b"x")
+    old_ts = _time.time() - 30 * 86400
+    os.utime(active, (old_ts, old_ts))   # old but referenced -> kept
+    os.utime(stale, (old_ts, old_ts))    # old and unreferenced -> pruned
+    # `recent` keeps its fresh mtime -> kept
+
+    with engine.begin() as conn:
+        conn.execute(model_versions.insert().values(
+            symbol="IR_GOLD_18K", horizon="1d", model_name="naive",
+            version="v", trained_at=utcnow(), metrics={}, baseline_metrics={},
+            params={}, artifact_path=str(active), is_active=True,
+        ))
+    settings.models_dir = str(tmp_path / "models")
+    removed = prune_model_artifacts(engine, settings)
+    assert removed == 1
+    assert active.exists() and recent.exists() and not stale.exists()

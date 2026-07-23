@@ -107,9 +107,10 @@ def test_apply_meta_gate_handles_garbage():
 
 def test_meta_gate_custom_horizon_string():
     # custom horizons arrive as e.g. "12d" — must parse, not crash
+    # (10 features since Addendum 14 added is_global)
     gate = {
-        "mean": [0.0] * 9, "std": [1.0] * 9,
-        "coef": [0.0] * 9, "intercept": 0.0,
+        "mean": [0.0] * 10, "std": [1.0] * 10,
+        "coef": [0.0] * 10, "intercept": 0.0,
     }
     p = apply_meta_gate(gate, 1000.0, 990.0, 1010.0, 0.5, 0.5, "12d", "ranging", True)
     assert p == pytest.approx(0.5)
@@ -256,3 +257,16 @@ def test_tuned_hist_gb_artifact_roundtrip(tmp_path):
     joblib.dump(model, path)
     loaded = joblib.load(path)
     assert np.isfinite(loaded.predict_point())
+
+
+def test_meta_gate_rejects_stale_feature_set():
+    """A gate persisted before a feature-set change must stay silent (None)
+    instead of scoring a mismatched vector."""
+    from app.models.metagate import apply_meta_gate
+
+    old_gate = {
+        "feature_names": ["rel_width", "abs_expected_pct"],  # pre-change set
+        "mean": [0.0] * 2, "std": [1.0] * 2, "coef": [0.0] * 2, "intercept": 0.0,
+    }
+    assert apply_meta_gate(old_gate, 1000.0, 990.0, 1010.0, 0.5, 0.5, "1d",
+                           "ranging", True) is None

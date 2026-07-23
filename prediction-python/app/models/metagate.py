@@ -33,12 +33,17 @@ REGIMES = ("trending_up", "trending_down", "ranging", "high_volatility")
 HORIZON_DAYS = {"1h": 1 / 24, "4h": 4 / 24, "eod": 1.0, "1d": 1.0,
                 "3d": 3.0, "7d": 7.0, "30d": 30.0}
 
+PRIMARY_SYMBOL = "IR_GOLD_18K"
+
 FEATURE_NAMES = (
     "rel_width",        # (upper - lower) / point — model's own uncertainty
     "abs_expected_pct", # size of the predicted move
-    "confidence",       # confidence stored at prediction time
+    "confidence",       # pre-gate confidence stored at prediction time
     "log_horizon_days", # horizon scale
     "data_fresh",       # was input data fresh
+    "is_global",        # symbol != IR_GOLD_18K: the two instruments have
+                        # different hit-rate structure; pooling them without
+                        # this feature bled one's calibration into the other
     *(f"regime_{r}" for r in REGIMES),
 )
 
@@ -46,6 +51,7 @@ FEATURE_NAMES = (
 def _row_features(
     point: float, lower: float, upper: float, expected_pct: float,
     confidence: float, horizon: str, regime: str, data_fresh: bool,
+    symbol: str = PRIMARY_SYMBOL,
 ) -> Optional[list[float]]:
     if point == 0:
         return None
@@ -61,6 +67,7 @@ def _row_features(
         float(confidence),
         float(np.log(days)),
         1.0 if data_fresh else 0.0,
+        0.0 if symbol == PRIMARY_SYMBOL else 1.0,
     ]
     feats.extend(1.0 if regime == r else 0.0 for r in REGIMES)
     return feats
@@ -83,9 +90,11 @@ def fit_meta_gate(engine: Engine) -> Optional[dict]:
         select(
             predictions.c.point_forecast, predictions.c.lower_bound,
             predictions.c.upper_bound, predictions.c.expected_change_pct,
-            predictions.c.confidence, predictions.c.horizon,
+            predictions.c.confidence, predictions.c.raw_confidence,
+            predictions.c.horizon,
             predictions.c.regime, predictions.c.data_fresh,
             predictions.c.direction, predictions.c.actual_value,
+            predictions.c.symbol,
         )
         .where(predictions.c.actual_value.is_not(None))
         .order_by(predictions.c.target_time.desc())
@@ -96,15 +105,21 @@ def fit_meta_gate(engine: Engine) -> Optional[dict]:
 
     X: list[list[float]] = []
     y: list[int] = []
-    for point, lower, upper, exp_pct, conf, horizon, regime, fresh, direction, actual in rows:
+    for (point, lower, upper, exp_pct, conf, raw_conf, horizon, regime, fresh,
+         direction, actual, symbol) in rows:
         if direction == "flat":
             continue
         point = float(point)
         base = _recover_base(point, float(exp_pct))
         if base is None:
             continue
+        # Train on the PRE-gate confidence: the stored blended value contains
+        # the previous gate's own output (self-reference). Old rows without
+        # raw_confidence fall back to the blended value.
+        conf_feature = float(raw_conf) if raw_conf is not None else float(conf)
         feats = _row_features(point, float(lower), float(upper), float(exp_pct),
-                              float(conf), str(horizon), str(regime), bool(fresh))
+                              conf_feature, str(horizon), str(regime), bool(fresh),
+                              str(symbol))
         if feats is None:
             continue
         pred_sign = np.sign(point - base)
@@ -144,13 +159,19 @@ def apply_meta_gate(
     gate: Optional[dict],
     point: float, lower: float, upper: float, expected_pct: float,
     confidence: float, horizon: str, regime: str, data_fresh: bool,
+    symbol: str = PRIMARY_SYMBOL,
 ) -> Optional[float]:
     """P(direction call is right) from the stored gate; None when unusable."""
     if not gate:
         return None
     feats = _row_features(point, lower, upper, expected_pct, confidence,
-                          horizon, regime, data_fresh)
+                          horizon, regime, data_fresh, symbol)
     if feats is None:
+        return None
+    # A gate persisted before a feature-set change cannot score the new
+    # vector; stay silent until the evaluate job refits it.
+    stored_names = gate.get("feature_names")
+    if stored_names is not None and list(stored_names) != list(FEATURE_NAMES):
         return None
     try:
         mean = np.asarray(gate["mean"], dtype=float)

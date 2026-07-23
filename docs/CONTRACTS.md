@@ -185,6 +185,16 @@ Migration `0012` inserts provider `hamrahgold` (category `iran_gold`, **priority
 
 **Brief tab.** New `/brief` page (see Addendum 12 body below).
 
+## Addendum 14 — holdout scoring, honest meta-gate, ops hardening (2026-07-23)
+
+**Holdout-scored tournament.** `evaluate_candidates` splits each candidate's walk-forward folds chronologically: the first ~70% ("selection") drive candidate ranking and ensemble membership/weights; the last ~30% (≥5 folds; requires ≥15 total, else legacy all-fold behavior) are held out. `select_winner` picks on selection folds and CONFIRMS on the holdout — a non-naive winner that fails to beat naive out-of-sample falls back to naive. Stored `metrics`/`baseline_metrics`, the `MODEL_SMAPE` gauge, `models_evaluated` and the custom-forecast metrics all report holdout numbers (`report_metrics`; `params.holdout_scored` marks which). Interval `residual_pcts` come from the winner's holdout folds when ≥8 exist. Rationale: the min of ~18 noisy sMAPEs is optimistically biased; the ensemble previously entered the tournament with weights fit on the folds it was scored on. Expect stored sMAPEs to rise slightly after the first retrain — they are honest now, not worse.
+
+**Meta-gate.** Migration `0015` adds `predictions.raw_confidence` (pre-gate confidence). The gate trains on it (fallback: blended value for old rows) so its own output no longer feeds back into its features; a new `is_global` feature separates IR_GOLD_18K from XAUUSD hit-rate structure; `apply_meta_gate` takes `symbol` and refuses to score with a gate whose stored `feature_names` don't match the current set (stays silent until the next refit).
+
+**Artifact pruning.** The cleanup job deletes `.joblib` files under `MODELS_DIR` that are not referenced by any ACTIVE `model_versions.artifact_path` and are older than 14 days (summary key `pruned_model_artifacts`).
+
+**Ops.** Per-account login lockout (5 consecutive failures in 15 min → locked 15 min → HTTP 429 `account_locked`; success resets; in-memory, single-replica by design) independent of the IP limiter. `make migrate-force VERSION=n` (api binary flag `-force-migration-version`) recovers a dirty migration state; procedure documented in troubleshooting.md. `make backup` / `scripts/backup.sh`: pg_dump custom-format dumps into `./backups/` with 14-day retention and optional off-host `rsync` via `BACKUP_RSYNC_TARGET`; cron line in the script header (installed on the production host).
+
 ## Addendum 13 — end-to-end review fixes (2026-07-23)
 
 **Quant/ML correctness.**

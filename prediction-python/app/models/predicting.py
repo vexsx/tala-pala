@@ -414,11 +414,12 @@ def _predict_one(
     # meta-gate (meta-labeling): the system's learned self-assessment — a
     # secondary model trained on this app's own matured predictions estimates
     # P(this direction call is right) and pulls confidence toward it
+    raw_confidence = confidence  # pre-gate value, persisted for gate training
     gate = load_meta_gate(engine)
     if gate and direction != "flat":
         p_hit = apply_meta_gate(
             gate, point, lower, upper, expected_change_pct,
-            confidence, horizon, regime, data_fresh,
+            confidence, horizon, regime, data_fresh, symbol,
         )
         if p_hit is not None:
             confidence = float(np.clip(0.5 * confidence + 0.5 * p_hit, 0.05, 0.95))
@@ -450,6 +451,7 @@ def _predict_one(
                 expected_change_pct=expected_change_pct,
                 direction=direction,
                 confidence=confidence,
+                raw_confidence=raw_confidence,
                 regime=regime,
                 drivers=drivers,
                 data_fresh=data_fresh,

@@ -177,6 +177,9 @@ predictions = Table(
     Column("expected_change_pct", Float, nullable=False),
     Column("direction", Text, nullable=False),
     Column("confidence", Float, nullable=False),
+    # Confidence BEFORE the meta-gate blend (migration 0015): the gate trains
+    # on this so its own output never feeds back into its features.
+    Column("raw_confidence", Float),
     Column("regime", Text, nullable=False, server_default="unknown"),
     Column("drivers", JSON, nullable=False, default=list),
     Column("data_fresh", Boolean, nullable=False, server_default=text("TRUE")),

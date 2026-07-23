@@ -218,6 +218,26 @@ def detect_regime(series: pd.Series, window: int = 20) -> str:
     return "ranging"
 
 
+# Holdout split (Addendum 14): the LAST ~30% of folds (chronologically, at
+# least HOLDOUT_MIN) are excluded from candidate selection and ensemble
+# weight fitting, then used to score the chosen winner. The minimum of ~18
+# noisy sMAPE estimates is optimistically biased; scoring on folds the
+# winner was not selected on removes that bias from the stored metrics and
+# the interval residuals. With fewer than HOLDOUT_MIN_TOTAL folds there is
+# not enough data to split and the legacy all-fold behavior applies.
+HOLDOUT_FRACTION = 0.3
+HOLDOUT_MIN = 5
+HOLDOUT_MIN_TOTAL = 15
+
+
+def split_folds(folds: list[Fold]) -> tuple[list[Fold], list[Fold]]:
+    """Chronological (selection, holdout) split; holdout empty when too few."""
+    if len(folds) < HOLDOUT_MIN_TOTAL:
+        return folds, []
+    n_hold = max(HOLDOUT_MIN, int(len(folds) * HOLDOUT_FRACTION))
+    return folds[:-n_hold], folds[-n_hold:]
+
+
 def evaluate_candidates(
     series: pd.Series,
     horizon_steps: int,
@@ -227,7 +247,17 @@ def evaluate_candidates(
 ) -> dict[str, dict]:
     """Walk-forward all candidates on the same folds; add the ensemble.
 
-    Returns ``{model_name: {"folds": [...], "metrics": {...}}}``.
+    Returns ``{model_name: {"folds": [...], "metrics": {...},
+    "sel_metrics": {...}, "holdout_metrics": {...}|None}}``:
+
+    * ``sel_metrics`` — the SELECTION folds (first ~70%): what the
+      tournament may look at;
+    * ``holdout_metrics`` — the held-out tail (last ~30%): unbiased scoring
+      for whichever candidate wins; ``None`` when too few folds to split;
+    * ``metrics`` — all folds (legacy consumers, display).
+
+    Ensemble membership and weights come from selection folds only, so the
+    ensemble candidate enters the tournament with no in-sample advantage.
     ``candidates`` defaults to the module-level ``CANDIDATES`` (resolved at
     call time so tests can narrow the set); ``context`` feeds exog-aware
     models (see :func:`walk_forward`); ``max_folds`` lets interactive callers
@@ -239,15 +269,21 @@ def evaluate_candidates(
     for name in candidates:
         folds = walk_forward(series, name, horizon_steps, context=context, max_folds=max_folds)
         if folds:
-            results[name] = {"folds": folds, "metrics": fold_metrics(folds)}
+            sel, hold = split_folds(folds)
+            results[name] = {
+                "folds": folds,
+                "metrics": fold_metrics(folds),
+                "sel_metrics": fold_metrics(sel),
+                "holdout_metrics": fold_metrics(hold) if hold else None,
+            }
 
     naive = results.get("naive")
     if naive:
-        naive_smape = naive["metrics"]["smape"]
+        naive_smape = naive["sel_metrics"]["smape"]
         member_smapes = {
-            name: r["metrics"]["smape"]
+            name: r["sel_metrics"]["smape"]
             for name, r in results.items()
-            if name != "naive" and r["metrics"]["smape"] < naive_smape
+            if name != "naive" and r["sel_metrics"]["smape"] < naive_smape
         }
         if len(member_smapes) >= 2:
             weights = inverse_smape_weights(member_smapes)
@@ -269,26 +305,43 @@ def evaluate_candidates(
                 for i in sorted(common)
             ]
             if ens_folds:
+                sel, hold = split_folds(ens_folds)
                 results["ensemble"] = {
                     "folds": ens_folds,
                     "metrics": fold_metrics(ens_folds),
+                    "sel_metrics": fold_metrics(sel),
+                    "holdout_metrics": fold_metrics(hold) if hold else None,
                     "weights": weights,
                 }
     return results
 
 
+def report_metrics(r: dict) -> dict:
+    """The honest metrics for a candidate: holdout when available, else all."""
+    return r.get("holdout_metrics") or r["metrics"]
+
+
 def select_winner(results: dict[str, dict]) -> str:
-    """Lowest sMAPE, but ONLY if it beats naive on the same folds; else naive."""
+    """Lowest selection-fold sMAPE among candidates beating naive there,
+    CONFIRMED on the holdout: the chosen non-naive winner must also beat
+    naive on the held-out folds, else the fallback is naive."""
+    if not results:
+        return ""
     if "naive" not in results:
-        return min(results, key=lambda n: results[n]["metrics"]["smape"]) if results else ""
-    naive_smape = results["naive"]["metrics"]["smape"]
-    best_name, best_smape = "naive", naive_smape
+        return min(results, key=lambda n: results[n]["sel_metrics"]["smape"])
+    naive_sel = results["naive"]["sel_metrics"]["smape"]
+    best_name, best_smape = "naive", naive_sel
     for name, r in results.items():
         if name == "naive":
             continue
-        smape = r["metrics"]["smape"]
-        if smape < best_smape and smape < naive_smape:
+        smape = r["sel_metrics"]["smape"]
+        if smape < best_smape and smape < naive_sel:
             best_name, best_smape = name, smape
+    if best_name != "naive":
+        winner_hold = results[best_name].get("holdout_metrics")
+        naive_hold = results["naive"].get("holdout_metrics")
+        if winner_hold and naive_hold and winner_hold["smape"] >= naive_hold["smape"]:
+            return "naive"
     return best_name
 
 
@@ -401,12 +454,19 @@ def train_all(
                 winner = select_winner(results)
                 selected_by_symbol[sym][horizon] = winner
                 any_trained = True
-                baseline_metrics = results.get("naive", {}).get("metrics", {})
+                naive_result = results.get("naive")
+                baseline_metrics = report_metrics(naive_result) if naive_result else {}
 
                 final_model = _build_final_model(winner, results, series, steps, context)
-                winner_folds = results[winner]["folds"]
+                # Interval residuals from the winner's HOLDOUT folds when
+                # enough exist: selection-fold residuals understate true
+                # out-of-sample error for the fold-minimizing winner.
+                _, winner_hold = split_folds(results[winner]["folds"])
+                residual_folds = (
+                    winner_hold if len(winner_hold) >= 8 else results[winner]["folds"]
+                )
                 residuals = relative_residuals(
-                    [f.pred for f in winner_folds], [f.actual for f in winner_folds]
+                    [f.pred for f in residual_folds], [f.actual for f in residual_folds]
                 )
                 artifact_dir = os.path.join(settings.models_dir, sym, horizon)
                 os.makedirs(artifact_dir, exist_ok=True)
@@ -422,7 +482,7 @@ def train_all(
                         "horizon_steps": steps,
                         "freq": freq,
                         "residual_pcts": residuals,
-                        "metrics": results[winner]["metrics"],
+                        "metrics": report_metrics(results[winner]),
                         "trained_at": version,
                     },
                     artifact_path,
@@ -439,7 +499,8 @@ def train_all(
                     )
                     winner_id = None
                     for name, r in results.items():
-                        params: dict = {"horizon_steps": steps, "freq": freq}
+                        params: dict = {"horizon_steps": steps, "freq": freq,
+                                        "holdout_scored": r.get("holdout_metrics") is not None}
                         if name == "ensemble":
                             params["weights"] = r["weights"]
                         row_id = conn.execute(
@@ -452,7 +513,7 @@ def train_all(
                                 training_start=series.index.min().to_pydatetime(),
                                 training_end=series.index.max().to_pydatetime(),
                                 n_observations=int(len(series)),
-                                metrics=r["metrics"],
+                                metrics=report_metrics(r),
                                 baseline_metrics=baseline_metrics,
                                 params=params,
                                 artifact_path=artifact_path if name == winner else None,
@@ -465,11 +526,11 @@ def train_all(
                             # metric labels predate multi-symbol; keep them
                             # stable for the primary symbol only
                             MODEL_SMAPE.labels(horizon=horizon, model=name).set(
-                                r["metrics"]["smape"]
+                                report_metrics(r)["smape"]
                             )
                         models_evaluated.append(
                             {"symbol": sym, "horizon": horizon, "model": name,
-                             "smape": r["metrics"]["smape"]}
+                             "smape": report_metrics(r)["smape"]}
                         )
                     if winner_id is not None:
                         conn.execute(
@@ -482,7 +543,7 @@ def train_all(
                     "enabled": True,
                     "winner": winner,
                     "beats_naive": winner != "naive",
-                    "metrics": results[winner]["metrics"],
+                    "metrics": report_metrics(results[winner]),
                     "baseline_metrics": baseline_metrics,
                 }
             sym_summary["selected"] = dict(selected_by_symbol[sym])

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -43,6 +44,11 @@ func main() {
 }
 
 func run() error {
+	forceVersion := flag.Int("force-migration-version", -1,
+		"force the schema_migrations version and clear the dirty flag, then exit "+
+			"(recovery after a failed migration; see docs/troubleshooting.md)")
+	flag.Parse()
+
 	cfg, err := config.FromOSEnv()
 	if err != nil {
 		return err
@@ -50,6 +56,11 @@ func run() error {
 
 	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
+
+	if *forceVersion >= 0 {
+		return storage.ForceMigrationVersion(cfg.DSN(), cfg.MigrationsDir, *forceVersion, logger)
+	}
+
 	logger.Info("starting", slog.String("service", "backend-go"), slog.String("port", cfg.APIPort))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

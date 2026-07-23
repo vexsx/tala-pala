@@ -52,7 +52,7 @@ The dashboard is published on `FRONTEND_PORT` (default 8088); Postgres, Redis, t
 
 ## Database backups
 
-There is no bundled backup tooling; a one-liner covers it when needed:
+Bundled backup tooling: `make backup` (or `scripts/backup.sh`) dumps via the running postgres container into `./backups/` with retention, and mirrors off-host when `BACKUP_RSYNC_TARGET` is set. Install the cron shown in the script header. The old manual approach; a one-liner covers it when needed:
 
 ```bash
 docker compose exec -T postgres pg_dump -U goldpred -d goldpred -Fc > goldpred_$(date -u +%Y%m%dT%H%M%SZ).dump

@@ -32,6 +32,7 @@ from .predicting import (
     provider_gap_pct,
 )
 from .training import (
+    report_metrics,
     MIN_DAILY_POINTS,
     detect_regime,
     evaluate_candidates,
@@ -91,7 +92,7 @@ def predict_custom(
         raise ValueError("no candidate model produced walk-forward folds")
     winner = select_winner(results)
     winner_res = results[winner]
-    metrics = winner_res["metrics"]
+    metrics = report_metrics(winner_res)
 
     # Refit the winner on the full series (ensemble never appears here because
     # evaluate_candidates only adds it when >= 2 members beat naive — if it
@@ -149,7 +150,7 @@ def predict_custom(
     if gate and direction != "flat":
         p_hit = apply_meta_gate(
             gate, point, lower, upper, expected_change_pct,
-            confidence, f"{days}d", regime, fresh,
+            confidence, f"{days}d", regime, fresh, "IR_GOLD_18K",
         )
         if p_hit is not None:
             import numpy as np

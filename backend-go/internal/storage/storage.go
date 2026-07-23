@@ -54,6 +54,34 @@ func NewPool(ctx context.Context, dsn string, log *slog.Logger) (*pgxpool.Pool, 
 	}
 }
 
+// ForceMigrationVersion clears golang-migrate's dirty flag by forcing the
+// recorded schema version (recovery tooling: a failed migration leaves the
+// dirty flag set and the api crash-loops on every restart until an operator
+// intervenes). Run via `make migrate-force VERSION=n` — see
+// docs/troubleshooting.md for how to pick n.
+func ForceMigrationVersion(dsn, dir string, version int, log *slog.Logger) error {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return fmt.Errorf("open sql db: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	driver, err := migratepgx.WithInstance(db, &migratepgx.Config{})
+	if err != nil {
+		return fmt.Errorf("migrate driver: %w", err)
+	}
+	m, err := migrate.NewWithDatabaseInstance("file://"+dir, "pgx5", driver)
+	if err != nil {
+		return fmt.Errorf("migrate init (dir=%s): %w", dir, err)
+	}
+	if err := m.Force(version); err != nil {
+		return fmt.Errorf("migrate force %d: %w", version, err)
+	}
+	v, dirty, _ := m.Version()
+	log.Info("migration_version_forced", slog.Uint64("version", uint64(v)), slog.Bool("dirty", dirty))
+	return nil
+}
+
 // RunMigrations applies all up migrations from dir (file:// source).
 func RunMigrations(dsn, dir string, log *slog.Logger) error {
 	db, err := sql.Open("pgx", dsn)

@@ -63,15 +63,36 @@ def test_fold_metrics_shape():
     assert 0.0 <= metrics["directional_accuracy"] <= 1.0
 
 
+def _cand(sel: float, hold: float | None = None) -> dict:
+    return {
+        "metrics": {"smape": sel},
+        "sel_metrics": {"smape": sel},
+        "holdout_metrics": {"smape": hold} if hold is not None else None,
+    }
+
+
 def test_select_winner_requires_beating_naive():
     results = {
-        "naive": {"metrics": {"smape": 1.0}},
-        "rf": {"metrics": {"smape": 1.2}},       # worse than naive
-        "linear": {"metrics": {"smape": 1.05}},  # worse than naive
+        "naive": _cand(1.0),
+        "rf": _cand(1.2),       # worse than naive
+        "linear": _cand(1.05),  # worse than naive
     }
     assert select_winner(results) == "naive"
 
-    results["gbr"] = {"metrics": {"smape": 0.7}}
+    results["gbr"] = _cand(0.7)
+    assert select_winner(results) == "gbr"
+
+
+def test_select_winner_holdout_confirmation():
+    """A selection-fold winner that fails to beat naive on the held-out tail
+    falls back to naive (winner-selection bias guard)."""
+    results = {
+        "naive": _cand(1.0, hold=1.0),
+        "gbr": _cand(0.7, hold=1.3),   # great in selection, worse out-of-sample
+    }
+    assert select_winner(results) == "naive"
+
+    results["gbr"] = _cand(0.7, hold=0.8)  # confirmed on holdout
     assert select_winner(results) == "gbr"
 
 
@@ -82,7 +103,7 @@ def test_evaluate_candidates_winner_gate_on_random_walk():
     results = evaluate_candidates(series, 1, candidates=("naive", "sma", "ses"))
     assert "naive" in results
     winner = select_winner(results)
-    assert results[winner]["metrics"]["smape"] <= results["naive"]["metrics"]["smape"]
+    assert results[winner]["sel_metrics"]["smape"] <= results["naive"]["sel_metrics"]["smape"]
 
 
 def test_evaluate_candidates_ensemble_only_from_beating_members():
