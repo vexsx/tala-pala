@@ -33,6 +33,7 @@ import {
   parseAdvisorSelection,
   serializeAdvisorSelection,
   tiltBadgeClass,
+  tiltReason,
   tiltPhrase,
   type AdvisorSelection
 } from '../lib/advice'
@@ -268,7 +269,9 @@ function StandardTimeframeDetail({
     <div className="advisor-detail" data-testid="advisor-timeframe-detail">
       <div className="advisor-detail-head">
         <span className="muted small">Selected timeframe · {label}</span>
-        <span className={`badge ${tiltBadgeClass(tilt)}`}>{TILT_LABELS[tilt]}</span>
+        <span className={`badge ${tiltBadgeClass(tilt)}`} title={tiltReason(p, costPct)}>
+          {TILT_LABELS[tilt]}
+        </span>
       </div>
       <div className="advisor-detail-price">
         <span className={`direction-arrow ${pctClass(p.expected_change_pct)}`}>

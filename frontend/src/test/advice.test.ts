@@ -9,6 +9,7 @@ import {
   planRows,
   serializeAdvisorSelection,
   ROUND_TRIP_COST_PCT,
+  tiltReason,
   type Tilt
 } from '../lib/advice'
 import { normalizePrediction } from '../lib/forecastChart'
@@ -294,5 +295,43 @@ describe('changeOverDays', () => {
   it('returns null with fewer than two points', () => {
     expect(changeOverDays([hist('2026-07-20T00:00:00Z', 8_000_000)], 7)).toBeNull()
     expect(changeOverDays([], 7)).toBeNull()
+  })
+})
+
+describe('tiltReason', () => {
+  const base = {
+    id: 1,
+    horizon: '1d',
+    target_time: '2026-07-24T08:00:00Z',
+    point_forecast: 5_000_000,
+    lower_bound: 4_900_000,
+    upper_bound: 5_100_000,
+    direction: 'up',
+    model_name: 'naive',
+    actual_value: null
+  } as unknown as Prediction
+
+  it('explains a naive 0% projection', () => {
+    const p = { ...base, expected_change_pct: 0, confidence: 0.5 }
+    expect(tiltReason(p, 0.49)).toContain('"naive"')
+    expect(tiltReason(p, 0.49)).toContain('0.49% round-trip cost')
+  })
+
+  it('explains a move smaller than the cost', () => {
+    const p = { ...base, expected_change_pct: 0.31, confidence: 0.62 }
+    expect(tiltReason(p, 0.49)).toContain('+0.31% is smaller than the 0.49%')
+  })
+
+  it('explains the confidence bar for cost-clearing moves', () => {
+    const p = { ...base, expected_change_pct: 1.35, confidence: 0.4 }
+    const r = tiltReason(p, 0.49)
+    expect(r).toContain('clears the 0.49% round-trip cost')
+    expect(r).toContain('below the 55% bar')
+  })
+
+  it('endorses a confident cost-clearing move', () => {
+    const p = { ...base, expected_change_pct: 1.35, confidence: 0.7 }
+    expect(tiltReason(p, 0.49)).toContain('with 70% confidence')
+    expect(horizonTilt(p, 0.49)).toBe('favors-buying')
   })
 })

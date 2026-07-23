@@ -496,13 +496,23 @@ export function ActionPlanner({
                     </td>
                     <td className={`num mono ${pctClass(r.netPct)}`}>{formatPct(r.netPct)}</td>
                     <td>
-                      <span className={`badge ${tiltBadgeClass(r.tilt)}`}>{TILT_LABELS[r.tilt]}</span>
+                      <span className={`badge ${tiltBadgeClass(r.tilt)}`} title={r.tiltReason}>
+                        {TILT_LABELS[r.tilt]}
+                      </span>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+
+          <p className="muted small planner-tilt-note">
+            How to read the tilt: <em>favors waiting</em> = the projected move is smaller than the{' '}
+            {costPct.toFixed(2)}% round-trip cost (a 0.00% projection means the horizon&apos;s active
+            model is &quot;naive&quot; — nothing beat it in validation, i.e. no short-term edge);{' '}
+            <em>unclear</em> = the move clears the cost but confidence is below 55%. Hover a badge
+            for that row&apos;s exact reason.
+          </p>
 
           {held !== null && sellRow !== null && (
             <p className="planner-portfolio">

@@ -78,6 +78,9 @@ export function tiltPhrase(tilt: Tilt): string {
   }
 }
 
+/** Confidence (percent) a tilt needs before making a directional call. */
+export const TILT_CONFIDENCE_MIN = 55
+
 /**
  * Cost-aware tilt for a single horizon prediction:
  * - stale inputs (`data_fresh === false`) → 'no-call';
@@ -91,10 +94,42 @@ export function horizonTilt(p: Prediction, costPct: number = ROUND_TRIP_COST_PCT
   const pct = p.expected_change_pct
   if (!Number.isFinite(pct)) return 'unclear'
   const conf = confidencePct(p.confidence) ?? 0
-  if (pct > costPct && conf >= 55) return 'favors-buying'
-  if (pct < -costPct / 2 && conf >= 55) return 'favors-selling'
+  if (pct > costPct && conf >= TILT_CONFIDENCE_MIN) return 'favors-buying'
+  if (pct < -costPct / 2 && conf >= TILT_CONFIDENCE_MIN) return 'favors-selling'
   if (Math.abs(pct) <= costPct) return 'favors-waiting'
   return 'unclear'
+}
+
+/**
+ * One-sentence explanation of WHY a horizon got its tilt, with the actual
+ * numbers — shown as the badge tooltip so "favors waiting" is never a
+ * mystery. Mirrors horizonTilt's branches exactly.
+ */
+export function tiltReason(p: Prediction, costPct: number = ROUND_TRIP_COST_PCT): string {
+  if (p.data_fresh === false) return 'Input data is stale — no call is made.'
+  const pct = p.expected_change_pct
+  if (!Number.isFinite(pct)) return 'No usable forecast for this horizon.'
+  const conf = confidencePct(p.confidence) ?? 0
+  const move = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+  const cost = `${costPct.toFixed(2)}% round-trip cost`
+  if (Math.abs(pct) <= costPct) {
+    if (pct === 0) {
+      return (
+        `The active model for this horizon is "naive" (nothing beat it in validation), ` +
+        `so the projected move is 0.00% — it cannot cover the ${cost}.`
+      )
+    }
+    return `Projected ${move} is smaller than the ${cost} — trading it would lose money even if exactly right.`
+  }
+  if (conf < TILT_CONFIDENCE_MIN) {
+    return (
+      `Projected ${move} clears the ${cost}, but confidence is ` +
+      `${conf.toFixed(0)}% — below the ${TILT_CONFIDENCE_MIN}% bar for a directional call.`
+    )
+  }
+  return pct > 0
+    ? `Projected ${move} clears the ${cost} with ${conf.toFixed(0)}% confidence.`
+    : `Projected drop ${move} exceeds half the ${cost} with ${conf.toFixed(0)}% confidence.`
 }
 
 // ---------- Advisor timeframe selection ----------
@@ -183,6 +218,8 @@ export interface PlanRow {
   /** Model expected change minus the assumed round-trip cost. */
   netPct: number
   tilt: Tilt
+  /** Plain-language explanation of the tilt (badge tooltip). */
+  tiltReason: string
   dataFresh: boolean
   warnings: string[]
 }
@@ -218,6 +255,7 @@ export function planRows(
           : null,
       netPct: p.expected_change_pct - costPct,
       tilt: horizonTilt(p, costPct),
+      tiltReason: tiltReason(p, costPct),
       dataFresh: p.data_fresh !== false,
       warnings: p.warnings ?? []
     })
