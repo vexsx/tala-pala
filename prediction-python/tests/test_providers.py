@@ -559,3 +559,56 @@ def test_metals_dev_parse():
     assert by_symbol["XAUUSD"].value == pytest.approx(3350.2)
     assert by_symbol["XAGUSD"].value == pytest.approx(38.1)
     assert by_symbol["XAUUSD"].observed_at.tzinfo is not None
+
+
+# --- hamrahgold (Addendum 10: 24/7 primary 18k source) ------------------------
+
+def test_hamrahgold_midpoint_and_normalization(monkeypatch):
+    from app.providers.hamrahgold import HamrahGoldProvider
+
+    sell = load_fixture_json("hamrahgold_sell.json")
+    buy = load_fixture_json("hamrahgold_buy.json")
+    provider = HamrahGoldProvider(courtesy_delay=0.0, backoff_base=0.0)
+    monkeypatch.setattr(
+        provider, "_get_json",
+        lambda url, params: sell if params["type"] == "sell" else buy,
+    )
+    obs = provider.fetch()
+    assert len(obs) == 1
+    o = obs[0]
+    assert o.symbol == "IR_GOLD_18K"
+    assert o.raw_currency == "IRR" and o.currency == "IRT"
+    # midpoint of 188,370,000 / 187,450,000 rial -> 18,791,000 toman
+    assert o.value == pytest.approx(18_791_000.0)
+    assert o.raw_payload["spread_pct"] == pytest.approx(0.4896, abs=1e-3)
+
+
+def test_hamrahgold_single_side_still_quotes(monkeypatch):
+    from app.providers.base import ProviderError
+    from app.providers.hamrahgold import HamrahGoldProvider
+
+    sell = load_fixture_json("hamrahgold_sell.json")
+
+    def get(url, params):
+        if params["type"] == "sell":
+            return sell
+        raise ProviderError("buy side down")
+
+    provider = HamrahGoldProvider(courtesy_delay=0.0, backoff_base=0.0)
+    monkeypatch.setattr(provider, "_get_json", get)
+    obs = provider.fetch()
+    assert obs[0].value == pytest.approx(18_837_000.0)
+    assert obs[0].raw_payload["sides"] == 1
+
+
+def test_hamrahgold_total_failure_raises(monkeypatch):
+    from app.providers.base import ProviderError
+    from app.providers.hamrahgold import HamrahGoldProvider
+
+    provider = HamrahGoldProvider(courtesy_delay=0.0, backoff_base=0.0)
+    monkeypatch.setattr(
+        provider, "_get_json",
+        lambda url, params: (_ for _ in ()).throw(ProviderError("down")),
+    )
+    with pytest.raises(ProviderError):
+        provider.fetch()
