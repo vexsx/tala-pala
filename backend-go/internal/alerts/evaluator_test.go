@@ -137,31 +137,30 @@ func TestStaleData(t *testing.T) {
 	}
 }
 
-func TestStaleData_MarketClosed(t *testing.T) {
-	// IR_GOLD_18K trades 24h on trading days, so evening instants are open;
-	// Thursday 2026-07-16 08:30 UTC (12:00 Tehran) is inside the Thu+Fri
-	// off-day block, closed since Thursday 00:00 Tehran = Wed 20:30 UTC.
-	closedNow := time.Date(2026, 7, 16, 8, 30, 0, 0, time.UTC)
+func TestStaleData_AlwaysOpen18k(t *testing.T) {
+	// IR_GOLD_18K is always open now (Hamrah quotes 24/7): the plain age
+	// rule applies at every instant, Thursday included — the old
+	// closed-market grace no longer exists for 18k.
+	thursdayNoon := time.Date(2026, 7, 16, 8, 30, 0, 0, time.UTC)
 	s := baseSnapshot()
-	s.Now = closedNow
+	s.Now = thursdayNoon
 
-	// Last-session data (Wed 20:20 UTC, ~12 hours old) must NOT trigger:
-	// no Thursday false alarms while the market is closed.
+	// Thursday data within the threshold: no alarm.
+	s.Gold = &PricePoint{Value: 5_000_000, ObservedAt: thursdayNoon.Add(-20 * time.Minute)}
+	if Evaluate(alertOf("stale_data", nil), s).Triggered {
+		t.Fatal("young Thursday data must not trigger stale_data")
+	}
+
+	// Wednesday-night data on Thursday noon: honestly stale (source is
+	// live 24/7, so a 12-hour gap is a real problem), market_state open.
 	s.Gold = &PricePoint{Value: 5_000_000,
 		ObservedAt: time.Date(2026, 7, 15, 20, 20, 0, 0, time.UTC)}
-	if Evaluate(alertOf("stale_data", nil), s).Triggered {
-		t.Fatal("last-session data must not trigger stale_data while closed")
-	}
-
-	// Data from before (closure start - 30m) = Wed 20:00 UTC still triggers.
-	s.Gold = &PricePoint{Value: 5_000_000,
-		ObservedAt: time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)}
 	res := Evaluate(alertOf("stale_data", nil), s)
 	if !res.Triggered {
-		t.Fatal("pre-session data should trigger stale_data even while closed")
+		t.Fatal("12h-old data should trigger stale_data: 18k never closes")
 	}
-	if res.Payload["market_state"] != "closed" {
-		t.Fatalf("payload market_state = %v, want closed", res.Payload["market_state"])
+	if res.Payload["market_state"] != "open" {
+		t.Fatalf("payload market_state = %v, want open", res.Payload["market_state"])
 	}
 }
 

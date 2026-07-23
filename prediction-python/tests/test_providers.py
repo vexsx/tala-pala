@@ -612,3 +612,31 @@ def test_hamrahgold_total_failure_raises(monkeypatch):
     )
     with pytest.raises(ProviderError):
         provider.fetch()
+
+
+# --- bitmax (Addendum 11: 24/7 USDT/toman as the USD proxy) -------------------
+
+def test_bitmax_parses_usdt_toman(monkeypatch):
+    from app.providers.bitmax import BitmaxProvider
+
+    payload = load_fixture_json("bitmax_watcher.json")
+    provider = BitmaxProvider(courtesy_delay=0.0, backoff_base=0.0)
+    monkeypatch.setattr(provider, "_get_json", lambda url, params=None: payload)
+    obs = provider.fetch()
+    assert len(obs) == 1
+    o = obs[0]
+    assert o.symbol == "USD_IRT"
+    assert o.value == pytest.approx(192_676.0)  # already toman
+    assert o.currency == "IRT" and o.unit == "usd"
+    assert o.raw_payload["instrument"] == "USDT"
+    assert o.raw_payload["change"] == pytest.approx(0.01052256)
+
+
+def test_bitmax_rejects_malformed(monkeypatch):
+    from app.providers.base import ProviderError
+    from app.providers.bitmax import BitmaxProvider
+
+    provider = BitmaxProvider(courtesy_delay=0.0, backoff_base=0.0)
+    monkeypatch.setattr(provider, "_get_json", lambda url, params=None: {"message": {}})
+    with pytest.raises(ProviderError):
+        provider.fetch()

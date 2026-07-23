@@ -1,12 +1,12 @@
 // Package markethours implements the Addendum 1 market-calendar rules,
 // mirrored between the Go and Python services from the same env vars:
 //
-//   - IR_GOLD_18K trades 24h/day on Iranian trading days: its primary source
-//     (Milli Gold) is an online platform with no intraday session, but the
-//     Iranian off-days still apply — closed all Thursday and Friday (Tehran).
-//   - Other Iranian symbols (USD_IRT, IR_COIN_EMAMI) trade Sat-Wed between
-//     MARKET_TEHRAN_OPEN and MARKET_TEHRAN_CLOSE (Asia/Tehran local,
-//     open inclusive, close exclusive); closed all Thursday and Friday.
+//   - IR_GOLD_18K and USD_IRT are ALWAYS open: their primary sources quote
+//     24/7 every day (Hamrah Gold; the USDT market). Only the plain
+//     STALE_MINUTES age rule applies.
+//   - IR_COIN_EMAMI trades Sat-Wed between MARKET_TEHRAN_OPEN and
+//     MARKET_TEHRAN_CLOSE (Asia/Tehran local, open inclusive, close
+//     exclusive); closed all Thursday and Friday.
 //   - Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y, ...) are closed
 //     from Friday 21:00 UTC until Sunday 22:00 UTC.
 //
@@ -34,26 +34,19 @@ const (
 	tseClose = "18:00"
 )
 
-// usdOpen: the free-market USD session opens earlier than the gold bazaar
-// (close is shared). Fixed here for display freshness; the Python service
-// reads MARKET_USD_OPEN for prediction-side rules.
-const usdOpen = "10:00"
-
 // tseFundPrefix marks Tehran-exchange gold-fund symbols.
 const tseFundPrefix = "IR_GOLD_FUND"
 
-// iran24h: symbols whose primary source trades around the clock on Iranian
-// trading days. IR_GOLD_18K's primary provider is Milli Gold (milli.gold),
-// a 24-hour online platform — no intraday session window, but the Iranian
-// off-days (Thursday + Friday, Tehran) still close the market.
-var iran24h = map[string]bool{
+// alwaysOpen: primary sources quote 24/7 every day of the week (Hamrah
+// Gold for 18k; the USDT market for the free-market dollar).
+var alwaysOpen = map[string]bool{
 	"IR_GOLD_18K": true,
+	"USD_IRT":     true,
 }
 
 // iranian is the set of symbols that follow the Tehran bazaar calendar.
 // Every other symbol follows the global (UTC weekend) calendar.
 var iranian = map[string]bool{
-	"USD_IRT":       true,
 	"IR_COIN_EMAMI": true,
 }
 
@@ -84,9 +77,8 @@ func parseHHMM(s, def string) int {
 // open/close are "HH:MM" Tehran-local session bounds (only used for Iranian
 // symbols); pass the configured MARKET_TEHRAN_OPEN / MARKET_TEHRAN_CLOSE.
 func IsOpen(symbol string, at time.Time, open, close string) bool {
-	if iran24h[symbol] {
-		wd := at.In(tehran).Weekday()
-		return wd != time.Thursday && wd != time.Friday
+	if alwaysOpen[symbol] {
+		return true
 	}
 	if strings.HasPrefix(symbol, tseFundPrefix) {
 		lt := at.In(tehran)
@@ -102,11 +94,7 @@ func IsOpen(symbol string, at time.Time, open, close string) bool {
 			return false
 		}
 		m := lt.Hour()*60 + lt.Minute()
-		openM := parseHHMM(open, DefaultOpen)
-		if symbol == "USD_IRT" {
-			openM = parseHHMM(usdOpen, usdOpen)
-		}
-		return m >= openM && m < parseHHMM(close, DefaultClose)
+		return m >= parseHHMM(open, DefaultOpen) && m < parseHHMM(close, DefaultClose)
 	}
 	u := at.UTC()
 	switch u.Weekday() {
@@ -127,16 +115,6 @@ func IsOpen(symbol string, at time.Time, open, close string) bool {
 func ClosureStartedAt(symbol string, at time.Time, open, close string) time.Time {
 	if IsOpen(symbol, at, open, close) {
 		return at.UTC()
-	}
-	if iran24h[symbol] {
-		// Closed only during the Thu+Fri block; the closure began at
-		// Thursday 00:00 Tehran of the current block.
-		lt := at.In(tehran)
-		day := time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, tehran)
-		if lt.Weekday() == time.Friday {
-			day = day.AddDate(0, 0, -1)
-		}
-		return day.UTC()
 	}
 	if strings.HasPrefix(symbol, tseFundPrefix) {
 		closeM := parseHHMM(tseClose, tseClose)

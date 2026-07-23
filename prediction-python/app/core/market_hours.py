@@ -2,13 +2,13 @@
 
 Pure functions, no I/O.  Two calendars:
 
-* IR_GOLD_18K trades 24h/day on Iranian trading days: its primary source
-  (Milli Gold, milli.gold) is an online platform with no intraday session —
-  but the Iranian off-days still apply: closed all Thursday and Friday
-  (Tehran).  During open days a paused feed goes honestly stale.
-* Other Iranian symbols (USD_IRT, IR_COIN_EMAMI): open Sat-Wed between
-  ``MARKET_TEHRAN_OPEN`` and ``MARKET_TEHRAN_CLOSE`` (Asia/Tehran local time,
-  a fixed UTC+03:30 since Iran abolished DST); closed all Thursday and Friday.
+* IR_GOLD_18K and USD_IRT are ALWAYS open: their primary sources quote
+  24/7 every day of the week (Hamrah Gold for 18k, the USDT market for the
+  free-market dollar). Update frequency drops on Iranian off-days, but the
+  plain STALE_MINUTES age rule handles that honestly.
+* IR_COIN_EMAMI: open Sat-Wed between ``MARKET_TEHRAN_OPEN`` and
+  ``MARKET_TEHRAN_CLOSE`` (Asia/Tehran local time, a fixed UTC+03:30 since
+  Iran abolished DST); closed all Thursday and Friday.
 * Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y): closed from
   Friday 21:00 UTC to Sunday 22:00 UTC, open otherwise.
 
@@ -31,10 +31,10 @@ TEHRAN = ZoneInfo("Asia/Tehran")
 THURSDAY = 3  # Python weekday(): Monday=0 .. Sunday=6
 FRIDAY = 4
 
-# 24h-traded on Iranian trading days (primary source: Milli Gold, no intraday
-# session window; Thursday+Friday off-days still apply).
-IRAN_24H_SYMBOLS = frozenset({"IR_GOLD_18K"})
-IRANIAN_SYMBOLS = frozenset({"USD_IRT", "IR_COIN_EMAMI"})
+# Always-open symbols: primary sources quote 24/7 every day (Hamrah Gold
+# for 18k, the USDT market for USD). Only the plain age rule applies.
+ALWAYS_OPEN_SYMBOLS = frozenset({"IR_GOLD_18K", "USD_IRT"})
+IRANIAN_SYMBOLS = frozenset({"IR_COIN_EMAMI"})
 GLOBAL_SYMBOLS = frozenset({"XAUUSD", "XAGUSD", "BRENT_OIL", "DXY", "US10Y"})
 # Tehran-exchange gold funds trade Sat-Wed between MARKET_TSE_OPEN and
 # MARKET_TSE_CLOSE (default 12:00-18:00 Tehran); closed Thursday AND Friday.
@@ -62,8 +62,8 @@ def _ensure_utc(dt: datetime) -> datetime:
 def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
     """True when ``symbol``'s market is open at ``at_utc`` (aware or naive-UTC)."""
     at_utc = _ensure_utc(at_utc)
-    if symbol in IRAN_24H_SYMBOLS:
-        return at_utc.astimezone(TEHRAN).weekday() not in (THURSDAY, FRIDAY)
+    if symbol in ALWAYS_OPEN_SYMBOLS:
+        return True
     if symbol.startswith(TSE_FUND_PREFIX):
         local = at_utc.astimezone(TEHRAN)
         if local.weekday() in (THURSDAY, FRIDAY):
@@ -75,12 +75,7 @@ def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
         local = at_utc.astimezone(TEHRAN)
         if local.weekday() in (THURSDAY, FRIDAY):
             return False
-        # the free-market USD opens earlier than the gold bazaar (MARKET_USD_OPEN,
-        # default 10:00 Tehran); the close is shared
-        if symbol == "USD_IRT":
-            open_t = _parse_hhmm(getattr(settings, "market_usd_open", "10:00"), time(10, 0))
-        else:
-            open_t = _parse_hhmm(settings.market_tehran_open, time(12, 0))
+        open_t = _parse_hhmm(settings.market_tehran_open, time(12, 0))
         close_t = _parse_hhmm(settings.market_tehran_close, time(20, 0))
         return open_t <= local.time() < close_t
     if symbol in GLOBAL_SYMBOLS:
@@ -100,22 +95,13 @@ def closure_started_at(
 ) -> Optional[datetime]:
     """UTC start of the closure containing ``at_utc``; None while open.
 
-    For 18k (24h symbol) that is Thursday 00:00 Tehran of the current
-    Thu+Fri block; for windowed Iranian symbols the most recent trading-day
-    close (``MARKET_TEHRAN_CLOSE`` on the latest Sat-Wed day at or before
-    now); for global symbols the most recent Friday 21:00 UTC.
+    Always-open symbols (18k, USD) never enter a closure. Windowed Iranian
+    symbols close at ``MARKET_TEHRAN_CLOSE`` on the latest Sat-Wed day at or
+    before now; global symbols at the most recent Friday 21:00 UTC.
     """
     at_utc = _ensure_utc(at_utc)
     if is_market_open(symbol, at_utc, settings):
         return None
-    if symbol in IRAN_24H_SYMBOLS:
-        # Closed only during the Thu+Fri block; closure began at
-        # Thursday 00:00 Tehran of the current block.
-        local = at_utc.astimezone(TEHRAN)
-        day = local.date()
-        if day.weekday() == FRIDAY:
-            day -= timedelta(days=1)
-        return datetime.combine(day, time(0, 0), tzinfo=TEHRAN).astimezone(timezone.utc)
     if symbol.startswith(TSE_FUND_PREFIX):
         close_t = _parse_hhmm(getattr(settings, "market_tse_close", "18:00"), time(18, 0))
         local = at_utc.astimezone(TEHRAN)

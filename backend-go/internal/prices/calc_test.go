@@ -126,10 +126,14 @@ func TestMarketState(t *testing.T) {
 	if s := MarketState("IR_GOLD_18K", tehranNoon, "09:00", "20:00"); s != "open" {
 		t.Fatalf("tehran midday = %s, want open", s)
 	}
-	// Friday 2026-07-17: Tehran closed, but before 21:00 UTC global is open.
+	// Friday 2026-07-17: 18k stays open (always-open source); the windowed
+	// coin is closed; before 21:00 UTC the global market is still open.
 	friday := time.Date(2026, 7, 17, 8, 30, 0, 0, time.UTC)
-	if s := MarketState("IR_GOLD_18K", friday, "09:00", "20:00"); s != "closed" {
-		t.Fatalf("tehran friday = %s, want closed", s)
+	if s := MarketState("IR_GOLD_18K", friday, "09:00", "20:00"); s != "open" {
+		t.Fatalf("18k friday = %s, want open", s)
+	}
+	if s := MarketState("IR_COIN_EMAMI", friday, "09:00", "20:00"); s != "closed" {
+		t.Fatalf("coin friday = %s, want closed", s)
 	}
 	if s := MarketState("XAUUSD", friday, "09:00", "20:00"); s != "open" {
 		t.Fatalf("global friday morning = %s, want open", s)

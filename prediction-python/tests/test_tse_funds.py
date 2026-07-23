@@ -134,10 +134,10 @@ def test_tse_fund_calendar():
     assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 14, 30), s)
     # Tue 11:59 Tehran: not yet open
     assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 21, 8, 29), s)
-    # Thursday 2026-07-23 13:00 Tehran: closed — funds and the physical
-    # market alike (Thursday is an Iranian off-day for both)
+    # Thursday 2026-07-23 13:00 Tehran: funds closed; 18k stays open
+    # (always-open source since Hamrah Gold became primary)
     assert not is_market_open("IR_GOLD_FUND_AYAR", utc(2026, 7, 23, 9, 30), s)
-    assert not is_market_open("IR_GOLD_18K", utc(2026, 7, 23, 9, 30), s)  # physical closed Thu
+    assert is_market_open("IR_GOLD_18K", utc(2026, 7, 23, 9, 30), s)
     # Friday: closed; Saturday 13:00 Tehran: open again
     assert not is_market_open("IR_GOLD_FUND_FLOW", utc(2026, 7, 24, 9, 30), s)
     assert is_market_open("IR_GOLD_FUND_FLOW", utc(2026, 7, 25, 9, 30), s)
@@ -237,12 +237,10 @@ def test_funds_job_skips_thu_fri_and_never_repays(engine):
     assert funds_job_due(engine, s, now=utc(2026, 7, 25, 15, 0))  # 18:30 Tehran
 
 
-def test_usd_market_opens_at_10_tehran():
+def test_usd_market_always_open():
     s = _mh_settings()
-    # Tue 10:30 Tehran (07:00 UTC): USD open, coin market still closed
-    assert is_market_open("USD_IRT", utc(2026, 7, 21, 7, 0), s)
+    # USD follows the 24/7 USDT market: open at any hour, any day
+    for day, hour in ((21, 7), (21, 6), (23, 7), (24, 2)):
+        assert is_market_open("USD_IRT", utc(2026, 7, day, hour, 0), s)
+    # the coin keeps its bazaar window
     assert not is_market_open("IR_COIN_EMAMI", utc(2026, 7, 21, 7, 0), s)
-    # Tue 09:59 Tehran (06:29 UTC): USD not yet open
-    assert not is_market_open("USD_IRT", utc(2026, 7, 21, 6, 29), s)
-    # Thursday: closed regardless
-    assert not is_market_open("USD_IRT", utc(2026, 7, 23, 7, 0), s)

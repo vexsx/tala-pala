@@ -18,6 +18,7 @@ from ..config import Settings
 from ..db import data_providers, ensure_utc, utcnow
 from .alanchand import AlanchandProvider
 from .base import Provider
+from .bitmax import BitmaxProvider
 from .brsapi import BrsApiProvider
 from .hamrahgold import HamrahGoldProvider
 from .gold_api import GoldAPIProvider
@@ -51,6 +52,8 @@ def build_provider(code: str, settings: Settings) -> Optional[Provider]:
         # two modes: documented Bearer-token API when ALANCHAND_TOKEN is set,
         # keyless HTML parsing of the public 18ayar page otherwise
         return AlanchandProvider(token=settings.alanchand_token, **kwargs)
+    if code == "bitmax":
+        return BitmaxProvider(**kwargs)
     if code == "hamrahgold":
         return HamrahGoldProvider(**kwargs)
     if code == "milligold":

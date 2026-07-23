@@ -44,11 +44,13 @@ def test_18k_trades_around_the_clock_on_trading_days(mh_settings):
     assert is_market_open("IR_GOLD_18K", utc(2026, 7, 19, 20, 31), mh_settings)  # Mon 00:01 Tehran
 
 
-def test_18k_closed_all_thursday_and_friday(mh_settings):
-    # Thursday 2026-07-16 and Friday 2026-07-17: closed at any hour
+def test_18k_and_usd_open_all_week(mh_settings):
+    # Always-open symbols (Hamrah Gold / USDT market quote 24/7): Thursday
+    # 2026-07-16 and Friday 2026-07-17 are OPEN at any hour
     for day in (16, 17):
         for hour in (5, 8, 12, 16):
-            assert not is_market_open("IR_GOLD_18K", utc(2026, 7, day, hour, 0), mh_settings)
+            assert is_market_open("IR_GOLD_18K", utc(2026, 7, day, hour, 0), mh_settings)
+            assert is_market_open("USD_IRT", utc(2026, 7, day, hour, 0), mh_settings)
 
 
 def test_18k_ignores_configured_window(mh_settings):
@@ -57,24 +59,18 @@ def test_18k_ignores_configured_window(mh_settings):
     mh_settings.market_tehran_close = "18:00"
     assert is_market_open("IR_GOLD_18K", utc(2026, 7, 20, 6, 30), mh_settings)   # 10:00 Tehran
     assert is_market_open("IR_GOLD_18K", utc(2026, 7, 20, 14, 30), mh_settings)  # 18:00 Tehran
-    assert not is_market_open("IR_GOLD_18K", utc(2026, 7, 16, 12, 0), mh_settings)  # Thursday
+    assert is_market_open("IR_GOLD_18K", utc(2026, 7, 16, 12, 0), mh_settings)   # Thursday too
 
 
-def test_18k_closure_starts_thursday_midnight_tehran(mh_settings):
-    # Thursday noon and Friday noon Tehran both belong to the same Thu+Fri
-    # block: closure began Thursday 00:00 Tehran = Wednesday 20:30 UTC
-    block_start = utc(2026, 7, 15, 20, 30)
-    assert closure_started_at(
-        "IR_GOLD_18K", utc(2026, 7, 16, 8, 30), mh_settings
-    ) == block_start
-    assert closure_started_at(
-        "IR_GOLD_18K", utc(2026, 7, 17, 8, 30), mh_settings
-    ) == block_start
-    # Saturday 05:00 Tehran (2026-07-18 01:30 UTC) is a trading day again:
-    # open around the clock, so no closure in progress
-    assert closure_started_at(
-        "IR_GOLD_18K", utc(2026, 7, 18, 1, 30), mh_settings
-    ) is None
+def test_always_open_symbols_never_enter_closure(mh_settings):
+    # 18k and USD never close: closure_started_at is None at any instant
+    for day, hour in ((16, 8), (17, 8), (18, 1), (20, 23)):
+        assert closure_started_at(
+            "IR_GOLD_18K", utc(2026, 7, day, hour, 30), mh_settings
+        ) is None
+        assert closure_started_at(
+            "USD_IRT", utc(2026, 7, day, hour, 30), mh_settings
+        ) is None
 
 
 # --- windowed Iranian symbols: Sat-Wed 09:00-20:00 Tehran, Thu+Fri closed ----
@@ -82,45 +78,41 @@ def test_18k_closure_starts_thursday_midnight_tehran(mh_settings):
 
 def test_tehran_open_hours_monday(mh_settings):
     # Monday 2026-07-20; boundaries: open inclusive, close exclusive.
-    # USD follows MARKET_USD_OPEN — pin it to the fixture's 09:00 window.
-    mh_settings.market_usd_open = "09:00"
-    assert not is_market_open("USD_IRT", utc(2026, 7, 20, 5, 29), mh_settings)  # 08:59
-    assert is_market_open("USD_IRT", utc(2026, 7, 20, 5, 30), mh_settings)      # 09:00
-    assert is_market_open("USD_IRT", utc(2026, 7, 20, 12, 0), mh_settings)      # 15:30
-    assert is_market_open("USD_IRT", utc(2026, 7, 20, 16, 29), mh_settings)     # 19:59
-    assert not is_market_open("USD_IRT", utc(2026, 7, 20, 16, 30), mh_settings)  # 20:00
+    # The coin is the windowed symbol now (USD moved to always-open).
+    mh_settings.market_tehran_open = "09:00"
+    assert not is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 5, 29), mh_settings)  # 08:59
+    assert is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 5, 30), mh_settings)      # 09:00
+    assert is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 12, 0), mh_settings)      # 15:30
+    assert is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 16, 29), mh_settings)     # 19:59
+    assert not is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 16, 30), mh_settings)  # 20:00
 
 
 def test_tehran_closed_all_thursday_and_friday(mh_settings):
     # Thursday 2026-07-16 and Friday 2026-07-17, mid-session hours still closed
+    # for the windowed coin symbol (18k/USD stay open: always-open sources)
     for day in (16, 17):
         for hour in (5, 8, 12, 16):
-            assert not is_market_open("USD_IRT", utc(2026, 7, day, hour, 0), mh_settings)
             assert not is_market_open("IR_COIN_EMAMI", utc(2026, 7, day, hour, 0), mh_settings)
 
 
 def test_tehran_saturday_is_a_trading_day(mh_settings):
-    # Saturday 2026-07-18 10:00 Tehran = 06:30 UTC
-    assert is_market_open("USD_IRT", utc(2026, 7, 18, 6, 30), mh_settings)
+    # Saturday 2026-07-18 12:30 Tehran = 09:00 UTC (coin window open)
+    assert is_market_open("IR_COIN_EMAMI", utc(2026, 7, 18, 9, 0), mh_settings)
 
 
 def test_tehran_configurable_hours(mh_settings):
-    # USD follows its own MARKET_USD_OPEN; the bazaar window drives the rest
-    mh_settings.market_usd_open = "10:30"
     mh_settings.market_tehran_open = "11:30"
     mh_settings.market_tehran_close = "18:00"
-    assert not is_market_open("USD_IRT", utc(2026, 7, 20, 6, 30), mh_settings)  # 10:00
-    assert is_market_open("USD_IRT", utc(2026, 7, 20, 7, 0), mh_settings)       # 10:30
-    assert not is_market_open("USD_IRT", utc(2026, 7, 20, 14, 30), mh_settings)  # 18:00
     assert not is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 7, 30), mh_settings)  # 11:00
     assert is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 8, 0), mh_settings)       # 11:30
+    assert not is_market_open("IR_COIN_EMAMI", utc(2026, 7, 20, 14, 30), mh_settings)  # 18:00
 
 
 def test_iranian_closure_start_overnight(mh_settings):
     # Monday 04:30 UTC (08:00 Tehran, before open): closure began Sunday
-    # 20:00 Tehran = Sunday 16:30 UTC
+    # 20:00 Tehran = Sunday 16:30 UTC (coin: the windowed symbol)
     assert closure_started_at(
-        "USD_IRT", utc(2026, 7, 20, 4, 30), mh_settings
+        "IR_COIN_EMAMI", utc(2026, 7, 20, 4, 30), mh_settings
     ) == utc(2026, 7, 19, 16, 30)
 
 
@@ -130,13 +122,13 @@ def test_iranian_closure_start_skips_thursday_and_friday(mh_settings):
     # Thursday nor Friday has a session to close
     wednesday_close = utc(2026, 7, 15, 16, 30)
     assert closure_started_at(
-        "USD_IRT", utc(2026, 7, 16, 8, 30), mh_settings
+        "IR_COIN_EMAMI", utc(2026, 7, 16, 8, 30), mh_settings
     ) == wednesday_close
     assert closure_started_at(
-        "USD_IRT", utc(2026, 7, 17, 8, 30), mh_settings
+        "IR_COIN_EMAMI", utc(2026, 7, 17, 8, 30), mh_settings
     ) == wednesday_close
     assert closure_started_at(
-        "USD_IRT", utc(2026, 7, 18, 1, 30), mh_settings  # Sat 05:00 Tehran
+        "IR_COIN_EMAMI", utc(2026, 7, 18, 1, 30), mh_settings  # Sat 05:00 Tehran
     ) == wednesday_close
 
 
@@ -196,30 +188,22 @@ def test_18k_open_evening_uses_plain_age_rule(mh_settings):
 
 
 def test_last_session_data_is_fresh_during_iranian_closure(mh_settings):
-    # USD_IRT Monday 04:30 UTC: closed since Sunday 16:30 UTC; threshold
-    # 16:00 UTC
+    # IR_COIN_EMAMI Monday 04:30 UTC: closed since Sunday 16:30 UTC;
+    # threshold 16:00 UTC
     now = utc(2026, 7, 20, 4, 30)
-    assert is_acceptably_fresh("USD_IRT", utc(2026, 7, 19, 16, 20), now, mh_settings)
-    assert is_acceptably_fresh("USD_IRT", utc(2026, 7, 19, 16, 0), now, mh_settings)   # boundary
-    assert not is_acceptably_fresh("USD_IRT", utc(2026, 7, 19, 15, 59), now, mh_settings)
+    assert is_acceptably_fresh("IR_COIN_EMAMI", utc(2026, 7, 19, 16, 20), now, mh_settings)
+    assert is_acceptably_fresh("IR_COIN_EMAMI", utc(2026, 7, 19, 16, 0), now, mh_settings)   # boundary
+    assert not is_acceptably_fresh("IR_COIN_EMAMI", utc(2026, 7, 19, 15, 59), now, mh_settings)
 
 
-def test_18k_pre_block_data_survives_thursday_and_friday(mh_settings):
-    # 18k Friday evening: closure began Thursday 00:00 Tehran = Wednesday
-    # 20:30 UTC; threshold 20:00 UTC.  Wednesday-night data is still
-    # acceptably fresh, Wednesday-morning data is not
-    now = utc(2026, 7, 17, 18, 0)
-    assert is_acceptably_fresh("IR_GOLD_18K", utc(2026, 7, 15, 20, 15), now, mh_settings)
-    assert is_acceptably_fresh("IR_GOLD_18K", utc(2026, 7, 15, 20, 0), now, mh_settings)   # boundary
-    assert not is_acceptably_fresh("IR_GOLD_18K", utc(2026, 7, 15, 19, 59), now, mh_settings)
-
-
-def test_usd_pre_block_data_survives_thursday_and_friday(mh_settings):
-    # USD_IRT Friday evening: closure began Wednesday 20:00 Tehran = 16:30
-    # UTC; Wednesday-session data is still acceptably fresh, older is not
-    now = utc(2026, 7, 17, 18, 0)
-    assert is_acceptably_fresh("USD_IRT", utc(2026, 7, 15, 16, 15), now, mh_settings)
-    assert not is_acceptably_fresh("USD_IRT", utc(2026, 7, 15, 10, 0), now, mh_settings)
+def test_always_open_symbols_use_plain_age_rule_on_offdays(mh_settings):
+    # 18k and USD are open on Thursday/Friday too: the plain STALE_MINUTES
+    # rule applies — data older than the window is honestly stale even
+    # though the sources quote continuously with lower update frequency
+    now = utc(2026, 7, 17, 18, 0)  # Friday evening
+    for symbol in ("IR_GOLD_18K", "USD_IRT"):
+        assert is_acceptably_fresh(symbol, utc(2026, 7, 17, 17, 31), now, mh_settings)
+        assert not is_acceptably_fresh(symbol, utc(2026, 7, 17, 17, 29), now, mh_settings)
 
 
 def test_global_weekend_last_session_freshness(mh_settings):
