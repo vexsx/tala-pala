@@ -3,10 +3,17 @@
 # The frontend is published on ${FRONTEND_PORT:-8088}; everything else stays on the
 # internal network. Postgres/Redis are NOT published to the host.
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-goldpred}
       POSTGRES_USER: ${POSTGRES_USER:-goldpred}
@@ -27,7 +34,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    logging: *default-logging
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
     networks: [internal]
@@ -46,6 +54,7 @@ services:
       context: .
       dockerfile: backend-go/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     environment:
       POSTGRES_HOST: postgres
@@ -74,6 +83,7 @@ services:
       context: ./prediction-python
       dockerfile: Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-goldpred}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-goldpred}
@@ -102,6 +112,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       api:
         condition: service_healthy

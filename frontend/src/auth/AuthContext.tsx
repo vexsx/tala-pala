@@ -15,7 +15,6 @@ export interface AuthValue {
   token: string | null
   user: User | null
   login: (email: string, password: string) => Promise<void>
-  register: (email: string, password: string) => Promise<void>
   logout: () => void
 }
 
@@ -88,16 +87,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(res.user)
   }, [])
 
-  const register = useCallback(
-    async (email: string, password: string) => {
-      await api('/auth/register', { method: 'POST', body: { email, password } })
-      await login(email, password)
-    },
-    [login]
-  )
-
   return (
-    <AuthContext.Provider value={{ token, user, login, register, logout }}>
+    <AuthContext.Provider value={{ token, user, login, logout }}>
       {children}
     </AuthContext.Provider>
   )

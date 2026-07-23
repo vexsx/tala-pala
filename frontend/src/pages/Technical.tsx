@@ -16,7 +16,7 @@ import {
 import { useApi } from '../hooks/useApi'
 import type { IndicatorPoint, IndicatorsResponse } from '../api/types'
 import { useSettings } from '../lib/settings'
-import { formatCompact, formatGrouped, formatToman, shortDate } from '../lib/format'
+import { formatCompact, formatCompactToman, formatGrouped, formatToman, shortDate } from '../lib/format'
 import { ChartTip } from '../components/PriceChart'
 import Loading from '../components/Loading'
 import ErrorMessage from '../components/ErrorMessage'
@@ -305,7 +305,7 @@ export default function Technical() {
               />
               <YAxis
                 tick={{ fill: 'var(--muted)', fontSize: 11 }}
-                tickFormatter={(v: number) => formatCompact(v)}
+                tickFormatter={(v: number) => formatCompactToman(v, unit)}
                 width={64}
                 domain={['auto', 'auto']}
                 tickLine={false}
@@ -609,7 +609,7 @@ export default function Technical() {
 
       <div className="grid grid-2">
         <div className="card">
-          <div className="card-title">Annualized volatility (20d)</div>
+          <div className="card-title">Volatility (20-day, per step)</div>
           <div className="chart-box" style={{ height: 200 }}>
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={rows} margin={{ top: 8, right: 16, bottom: 4, left: 8 }}>

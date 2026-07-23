@@ -165,6 +165,14 @@ export default function Issues() {
                     <tr
                       key={issue.id}
                       onClick={() => setExpanded(isOpen ? null : issue.id)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setExpanded(isOpen ? null : issue.id)
+                        }
+                      }}
+                      tabIndex={details ? 0 : undefined}
+                      aria-expanded={details ? isOpen : undefined}
                       style={{ cursor: details ? 'pointer' : 'default' }}
                       title={details ? 'Click to toggle details' : undefined}
                     >

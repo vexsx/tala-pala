@@ -49,14 +49,26 @@ DEFAULT_TOLERANCE = timedelta(hours=36)
 
 
 def _nearest_price(
-    engine: Engine, symbol: str, target, tolerance: timedelta
+    engine: Engine, symbol: str, target, tolerance: timedelta, predicted_at=None
 ) -> Optional[tuple[float, object]]:
+    """Nearest good observation to ``target`` within ``tolerance``.
+
+    The window is floored at ``predicted_at``: for the wide day-scale
+    tolerances (36h on a 24h horizon) the naive window reached back BEFORE
+    the forecast was made, so a collection outage could mature a prediction
+    against its own base price — a zero-move "actual" that poisoned the
+    live-calibration, meta-gate and ACI loops. An observation can only count
+    as the outcome if it happened after the forecast existed.
+    """
+    lower = target - tolerance
+    if predicted_at is not None and predicted_at > lower:
+        lower = predicted_at
     stmt = (
         select(prices.c.value, prices.c.observed_at)
         .where(
             prices.c.symbol == symbol,
             prices.c.quality == "ok",
-            prices.c.observed_at >= target - tolerance,
+            prices.c.observed_at > lower,
             prices.c.observed_at <= target + tolerance,
         )
         .order_by(prices.c.observed_at)
@@ -187,7 +199,10 @@ def run_evaluate(engine: Engine, settings: Settings) -> dict:
     for row in pending:
         target = ensure_utc(row["target_time"])
         tolerance = TOLERANCES.get(str(row["horizon"]), DEFAULT_TOLERANCE)
-        match = _nearest_price(engine, str(row["symbol"]), target, tolerance)
+        match = _nearest_price(
+            engine, str(row["symbol"]), target, tolerance,
+            predicted_at=ensure_utc(row["predicted_at"]),
+        )
         if match is None:
             unmatched += 1
             continue
@@ -226,7 +241,6 @@ def run_evaluate(engine: Engine, settings: Settings) -> dict:
     summary = {
         "evaluated": evaluated,
         "unmatched": unmatched,
-        "pending_remaining": len(pending) - evaluated - unmatched,
         "live_mape_pct": round(float(np.mean(abs_pct_errors)), 4) if abs_pct_errors else None,
         "live_directional_accuracy": (
             round(float(np.mean(direction_hits)), 4) if direction_hits else None

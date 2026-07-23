@@ -179,7 +179,11 @@ def _hist_gb_estimator() -> object:
     return HistGradientBoostingRegressor(
         max_iter=150, learning_rate=0.06, min_samples_leaf=5,
         max_leaf_nodes=15, l2_regularization=1e-3,
-        early_stopping=True, n_iter_no_change=8, validation_fraction=0.15,
+        # early_stopping uses a RANDOM validation split; with overlapping
+        # h-step log-return targets that leaks future returns into the stop
+        # decision, so it is disabled (the tuned variant selects its config
+        # on a chronological split instead).
+        early_stopping=False,
         random_state=42,
     )
 
@@ -410,9 +414,16 @@ class TunedHistGBModel(TabularModel):
 
     def __getstate__(self) -> dict:
         state = super().__getstate__()
-        # bound method is unpicklable; restore from _tuned_params on load
+        # bound method is unpicklable; __setstate__ rebuilds it from _tuned_params
         state["_factory"] = _hist_gb_estimator
         return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        # Without this, a loaded artifact refit at predict time silently used
+        # the DEFAULT estimator config instead of the tuned one it validated.
+        if self._tuned_params is not None:
+            self._factory = self._factory_tuned
 
 
 register("hist_gb_tuned", TunedHistGBModel)

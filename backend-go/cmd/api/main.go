@@ -100,7 +100,7 @@ func run() error {
 	router := httpserver.NewRouter(cfg, httpserver.Deps{
 		Logger:  logger,
 		Metrics: metrics,
-		Verify:  auth.VerifyForMiddleware(tokens),
+		Verify:  auth.VerifyAgainstDB(tokens, pool),
 		Health:  obs.HealthHandler(),
 		Readiness: obs.ReadinessHandler(metrics,
 			func(ctx context.Context) error { return pool.Ping(ctx) },

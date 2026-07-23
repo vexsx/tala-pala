@@ -279,8 +279,13 @@ def compute_signal(inputs: SignalInputs, now: Optional[datetime] = None) -> dict
 # ---------------------------------------------------------------------------
 
 
-def _load_latest_predictions(engine) -> dict:
-    """Latest prediction per horizon from the last 24h."""
+def _load_latest_predictions(engine, symbol: str = "IR_GOLD_18K") -> dict:
+    """Latest prediction per horizon for ONE symbol from the last 24h.
+
+    The symbol filter is load-bearing: without it, XAUUSD rows (written after
+    the gold rows every predict cycle) silently overwrote the gold entries and
+    the Tehran buy/hold/sell signal was scored from global-gold forecasts.
+    """
     from sqlalchemy import select
 
     from ..db import ensure_utc, predictions, utcnow
@@ -293,7 +298,7 @@ def _load_latest_predictions(engine) -> dict:
             predictions.c.confidence,
             predictions.c.predicted_at,
         )
-        .where(predictions.c.predicted_at >= cutoff)
+        .where(predictions.c.predicted_at >= cutoff, predictions.c.symbol == symbol)
         .order_by(predictions.c.predicted_at)
     )
     latest: dict[str, dict] = {}

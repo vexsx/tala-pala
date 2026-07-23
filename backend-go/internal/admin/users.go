@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/audit"
@@ -105,7 +106,8 @@ func (h *Handler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3) RETURNING id`,
 		req.Email, string(hash), req.Role).Scan(&id)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			httpserver.Conflict(w, "email already registered")
 			return
 		}

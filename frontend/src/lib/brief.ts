@@ -74,9 +74,14 @@ function situationParagraphs(s: MarketSummary | null, costPct: number, fmt: (v: 
     }
     out.push(sentence + '.')
   }
+  const liveSpread =
+    typeof s.trading_cost_pct === 'number' &&
+    Number.isFinite(s.trading_cost_pct) &&
+    Math.abs(s.trading_cost_pct - costPct) < 1e-9
   out.push(
     `Every round trip through a dealer costs about ${costPct.toFixed(2)}% ` +
-      `(the observed buy/sell spread) — a forecast move only matters once it clears that bar.`
+      `(${liveSpread ? 'the observed buy/sell spread' : 'an assumed estimate; no recent spread observation'}) — ` +
+      `a forecast move only matters once it clears that bar.`
   )
   return out
 }

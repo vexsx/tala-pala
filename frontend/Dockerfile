@@ -2,9 +2,10 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 
-COPY package.json ./
-# No package-lock.json is committed; install resolves against the pinned exact versions.
-RUN npm install --no-audit --no-fund
+COPY package.json package-lock.json ./
+# npm ci installs the exact committed lockfile — reproducible builds, no
+# silent transitive upgrades on rebuild.
+RUN npm ci --no-audit --no-fund
 
 COPY . .
 RUN npm run build

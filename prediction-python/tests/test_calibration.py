@@ -209,3 +209,66 @@ def test_live_member_smapes_requires_all_members_matured(engine):
     assert live_member_smapes(engine, "1d", ["sma", "ses"]) is None
     # different horizon has no rows at all
     assert live_member_smapes(engine, "7d", ["sma"]) is None
+
+
+# --- Addendum 13 regression tests -------------------------------------------
+
+
+def _insert_price(engine, symbol: str, value: float, at) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            prices.insert().values(
+                symbol=symbol, value=value, currency="IRT", unit="gram",
+                source="test", observed_at=at, quality="ok",
+            )
+        )
+
+
+def test_maturity_never_matches_pre_forecast_observation(engine, settings):
+    """A prediction must not mature against a price observed before it was
+    made (the old 36h window reached 12h behind a 1d forecast's base)."""
+    now = utcnow()
+    predicted_at = now - timedelta(hours=48)
+    target = now - timedelta(hours=24)
+    with engine.begin() as conn:
+        conn.execute(
+            predictions.insert().values(
+                symbol="IR_GOLD_18K", horizon="1d", model_name="naive",
+                predicted_at=predicted_at, target_time=target,
+                point_forecast=105.0, lower_bound=100.0, upper_bound=110.0,
+                expected_change_pct=5.0, direction="up", confidence=0.5,
+                drivers=[], warnings=[], actual_value=None,
+            )
+        )
+    # Only observation in the window is BEFORE the forecast was made.
+    _insert_price(engine, "IR_GOLD_18K", 100.0, predicted_at - timedelta(hours=1))
+    summary = run_evaluate(engine, settings)
+    assert summary["evaluated"] == 0
+    assert summary["unmatched"] == 1
+
+    # An observation after predicted_at (even if before target) DOES match.
+    _insert_price(engine, "IR_GOLD_18K", 104.0, target - timedelta(hours=6))
+    summary = run_evaluate(engine, settings)
+    assert summary["evaluated"] == 1
+
+
+def test_signal_predictions_are_symbol_scoped(engine):
+    """XAUUSD rows written after the gold rows must not leak into the gold
+    signal (they used to overwrite per-horizon entries)."""
+    from app.signals.engine import _load_latest_predictions
+
+    now = utcnow()
+    with engine.begin() as conn:
+        for symbol, pct, offset in (("IR_GOLD_18K", 1.5, 2), ("XAUUSD", -9.0, 1)):
+            conn.execute(
+                predictions.insert().values(
+                    symbol=symbol, horizon="1d", model_name="naive",
+                    predicted_at=now - timedelta(minutes=offset),
+                    target_time=now + timedelta(hours=24),
+                    point_forecast=105.0, lower_bound=100.0, upper_bound=110.0,
+                    expected_change_pct=pct, direction="up", confidence=0.5,
+                    drivers=[], warnings=[], actual_value=None,
+                )
+            )
+    latest = _load_latest_predictions(engine)
+    assert latest["1d"]["expected_change_pct"] == pytest.approx(1.5)

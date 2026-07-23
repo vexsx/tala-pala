@@ -8,7 +8,8 @@ import {
   XAxis,
   YAxis
 } from 'recharts'
-import { formatCompact } from '../lib/format'
+import { formatCompact, formatCompactToman } from '../lib/format'
+import { useSettings } from '../lib/settings'
 
 export interface ChartPoint {
   label: string
@@ -70,6 +71,9 @@ export default function PriceChart({
   height?: number
   format: (v: number) => string
 }) {
+  // Axis ticks must honor the IRT/IRR toggle like the tooltip does — with
+  // ریال selected the axis used to read 10× lower than the tooltip.
+  const { unit } = useSettings()
   return (
     <div className="chart-box" style={{ height }}>
       <ResponsiveContainer width="100%" height="100%">
@@ -84,7 +88,7 @@ export default function PriceChart({
           />
           <YAxis
             tick={{ fill: 'var(--muted)', fontSize: 11 }}
-            tickFormatter={(v: number) => formatCompact(v)}
+            tickFormatter={(v: number) => formatCompactToman(v, unit)}
             width={64}
             domain={['auto', 'auto']}
             tickLine={false}

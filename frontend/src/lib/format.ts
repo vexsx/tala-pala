@@ -53,6 +53,11 @@ export function pctClass(value: number | null | undefined): string {
   return value > 0 ? 'pos' : 'neg'
 }
 
+/** Compact toman/rial amount honoring the display-unit toggle (axis ticks). */
+export function formatCompactToman(valueIrt: number, unit: DisplayUnit = 'IRT'): string {
+  return formatCompact(convertDisplay(valueIrt, unit))
+}
+
 export function formatCompact(value: number): string {
   const abs = Math.abs(value)
   if (abs >= 1e9) return `${(value / 1e9).toFixed(abs >= 1e10 ? 0 : 1)}B`

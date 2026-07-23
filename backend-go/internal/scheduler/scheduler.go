@@ -17,8 +17,16 @@ import (
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/obs"
 )
 
-// LockTTL is the Redis lock expiry for each job run.
+// LockTTL is the default Redis lock expiry (and job context timeout). Jobs
+// that legitimately run longer declare their own timeout below; the lock TTL
+// always matches the job timeout so a second replica cannot start the same
+// job while a long run is still in flight.
 const LockTTL = 10 * time.Minute
+
+// trainTimeout must exceed a full training run (30–36 min observed in
+// production for both symbols). The old 10-minute default cancelled the HTTP
+// call mid-run: Go recorded job_failed while Python kept training.
+const trainTimeout = internalclient.TrainTimeout
 
 // releaseScript deletes the lock only if this instance still owns it.
 const releaseScript = `
@@ -54,34 +62,35 @@ func New(cfg *config.Config, rdb *redis.Client, client *internalclient.Client,
 	}
 
 	jobs := []struct {
-		name string
-		spec string
-		fn   func(ctx context.Context) error
+		name    string
+		spec    string
+		timeout time.Duration
+		fn      func(ctx context.Context) error
 	}{
-		{"collect", cfg.Crons.Collect, func(ctx context.Context) error {
+		{"collect", cfg.Crons.Collect, LockTTL, func(ctx context.Context) error {
 			_, err := client.Collect(ctx, nil)
 			return err
 		}},
-		{"predict", cfg.Crons.Predict, func(ctx context.Context) error {
+		{"predict", cfg.Crons.Predict, LockTTL, func(ctx context.Context) error {
 			if _, err := client.GenerateFeatures(ctx); err != nil {
 				return err
 			}
 			_, err := client.Predict(ctx, nil)
 			return err
 		}},
-		{"signals", cfg.Crons.Signals, func(ctx context.Context) error {
+		{"signals", cfg.Crons.Signals, LockTTL, func(ctx context.Context) error {
 			_, err := client.GenerateSignals(ctx)
 			return err
 		}},
-		{"evaluate", cfg.Crons.Evaluate, func(ctx context.Context) error {
+		{"evaluate", cfg.Crons.Evaluate, LockTTL, func(ctx context.Context) error {
 			_, err := client.Evaluate(ctx)
 			return err
 		}},
-		{"train", cfg.Crons.Train, func(ctx context.Context) error {
+		{"train", cfg.Crons.Train, trainTimeout, func(ctx context.Context) error {
 			_, err := client.Train(ctx, nil)
 			return err
 		}},
-		{"alerts", cfg.Crons.Alerts, func(ctx context.Context) error {
+		{"alerts", cfg.Crons.Alerts, LockTTL, func(ctx context.Context) error {
 			// Go-side job: alert evaluation + prediction/price freshness.
 			if err := alertRunner.UpdateFreshness(ctx, metrics); err != nil {
 				log.Warn("freshness_update_failed", slog.String("error", err.Error()))
@@ -95,15 +104,15 @@ func New(cfg *config.Config, rdb *redis.Client, client *internalclient.Client,
 			}
 			return nil
 		}},
-		{"cleanup", cfg.Crons.Cleanup, func(ctx context.Context) error {
+		{"cleanup", cfg.Crons.Cleanup, LockTTL, func(ctx context.Context) error {
 			_, err := client.Cleanup(ctx)
 			return err
 		}},
 	}
 
 	for _, j := range jobs {
-		name, fn := j.name, j.fn
-		if _, err := s.cron.AddFunc(j.spec, func() { s.runWithLock(name, fn) }); err != nil {
+		name, timeout, fn := j.name, j.timeout, j.fn
+		if _, err := s.cron.AddFunc(j.spec, func() { s.runWithLock(name, timeout, fn) }); err != nil {
 			return nil, err
 		}
 	}
@@ -124,12 +133,13 @@ func (s *Scheduler) Stop() context.Context {
 }
 
 // runWithLock acquires lock:job:<name> and runs the job, updating metrics.
-func (s *Scheduler) runWithLock(name string, fn func(ctx context.Context) error) {
-	ctx, cancel := context.WithTimeout(context.Background(), LockTTL)
+// The lock TTL equals the job timeout so the lock outlives the whole run.
+func (s *Scheduler) runWithLock(name string, timeout time.Duration, fn func(ctx context.Context) error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	key := "lock:job:" + name
-	ok, err := s.redis.SetNX(ctx, key, s.instanceID, LockTTL).Result()
+	ok, err := s.redis.SetNX(ctx, key, s.instanceID, timeout).Result()
 	if err != nil {
 		s.log.Error("job_lock_error", slog.String("job", name), slog.String("error", err.Error()))
 		return

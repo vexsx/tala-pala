@@ -9,12 +9,14 @@ from __future__ import annotations
 
 from typing import Optional, Sequence
 
+from datetime import timedelta
+
 import numpy as np
 import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 
-from ..db import predictions
+from ..db import predictions, utcnow
 from .base import ForecastModel, ModelUnavailable
 
 MIN_LIVE_MATURED = 20   # matured predictions required per member
@@ -38,6 +40,12 @@ def live_member_smapes(
     weights — partial live evidence must not skew the mix).
     """
     out: dict[str, float] = {}
+    # Members only accumulate rows while they are themselves active, so
+    # without a recency bound the comparison could pit one member's rows
+    # from last winter against another's from this spring — different
+    # regimes, not comparable accuracy. Stale evidence keeps validation
+    # weights instead.
+    recent_cutoff = utcnow() - timedelta(days=120)
     with engine.connect() as conn:
         for name in members:
             rows = conn.execute(
@@ -47,6 +55,7 @@ def live_member_smapes(
                     predictions.c.horizon == horizon,
                     predictions.c.model_name == name,
                     predictions.c.actual_value.is_not(None),
+                    predictions.c.target_time >= recent_cutoff,
                 )
                 .order_by(predictions.c.target_time.desc())
                 .limit(window)

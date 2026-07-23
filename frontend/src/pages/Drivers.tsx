@@ -20,6 +20,7 @@ import { unwrapList } from '../lib/unwrap'
 import { useSettings } from '../lib/settings'
 import {
   formatCompact,
+  formatCompactToman,
   formatPct,
   formatToman,
   formatUsd,
@@ -81,11 +82,16 @@ export default function Drivers() {
     theoretical: p.theoretical_18k,
     premium: p.premium_pct
   }))
+  // Fallback average over the rows that actually HAVE a premium — null rows
+  // used to be coerced to 0 while still counting in the denominator.
+  const premiumWindow = premiumItems
+    .slice(-30)
+    .map((p) => p.premium_pct)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
   const premiumAvg =
     s?.premium_avg_30d ??
-    (premiumItems.length > 0
-      ? premiumItems.slice(-30).reduce((acc, p) => acc + p.premium_pct, 0) /
-        Math.min(30, premiumItems.length)
+    (premiumWindow.length > 0
+      ? premiumWindow.reduce((acc, v) => acc + v, 0) / premiumWindow.length
       : null)
 
   // Unusual movement callouts
@@ -214,7 +220,7 @@ export default function Drivers() {
                 />
                 <YAxis
                   tick={{ fill: 'var(--muted)', fontSize: 11 }}
-                  tickFormatter={(v: number) => formatCompact(v)}
+                  tickFormatter={(v: number) => formatCompactToman(v, unit)}
                   width={64}
                   domain={['auto', 'auto']}
                   tickLine={false}

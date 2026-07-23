@@ -1,13 +1,17 @@
 package auth
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
@@ -69,6 +73,21 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// Cheap pre-check before taking any lock: when registration is closed and
+	// the caller is not an admin, the request can only succeed in the
+	// first-user bootstrap case. Rejecting here keeps unauthenticated clients
+	// from serializing the users table (LOCK TABLE below) on every attempt.
+	// The locked count inside the transaction remains the authority.
+	if !h.AllowOpenRegistration && !h.callerIsAdmin(r) {
+		var exists bool
+		if err := h.Pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM users)`).Scan(&exists); err == nil && exists {
+			httpserver.Forbidden(w, "registration is closed; an admin must create accounts")
+			return
+		}
+	}
+
 	tx, err := h.Pool.Begin(ctx)
 	if err != nil {
 		h.Log.Error("register_begin_tx", "error", err)
@@ -114,7 +133,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3) RETURNING id`,
 		req.Email, string(hash), role).Scan(&id)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			httpserver.Conflict(w, "email already registered")
 			return
 		}
@@ -227,6 +247,31 @@ func VerifyForMiddleware(tm *TokenManager) httpserver.TokenVerifier {
 			return httpserver.AuthUser{}, err
 		}
 		return httpserver.AuthUser{ID: c.Sub, Email: c.Email, Role: c.Role}, nil
+	}
+}
+
+// VerifyAgainstDB wraps VerifyForMiddleware with a live user-state check:
+// a signature-valid token is rejected when its user no longer exists, and
+// the ROLE always comes from the database, not the claim. Without this a
+// deleted account kept full access and a demoted admin kept /admin/* for
+// the whole JWT TTL (up to 24h).
+func VerifyAgainstDB(tm *TokenManager, pool *pgxpool.Pool) httpserver.TokenVerifier {
+	base := VerifyForMiddleware(tm)
+	return func(token string) (httpserver.AuthUser, error) {
+		u, err := base(token)
+		if err != nil {
+			return httpserver.AuthUser{}, err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		var role string
+		err = pool.QueryRow(ctx,
+			`SELECT role FROM users WHERE id = $1`, u.ID).Scan(&role)
+		if err != nil {
+			return httpserver.AuthUser{}, fmt.Errorf("token user lookup: %w", err)
+		}
+		u.Role = role
+		return u, nil
 	}
 }
 

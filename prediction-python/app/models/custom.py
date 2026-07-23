@@ -73,7 +73,9 @@ def predict_custom(
     fee = DEFAULT_FEE_PCT if fee_pct is None else float(fee_pct)
     spread = DEFAULT_SPREAD_PCT if spread_pct is None else float(spread_pct)
     slippage = DEFAULT_SLIPPAGE_PCT if slippage_pct is None else float(slippage_pct)
-    round_trip_cost_pct = 2.0 * fee + spread + slippage
+    # Mirror app/backtest + signals exactly: fee and slippage are paid on
+    # BOTH sides of the round trip; the spread is paid once.
+    round_trip_cost_pct = 2.0 * fee + spread + 2.0 * slippage
 
     series = load_series(engine, "IR_GOLD_18K", "daily")
     if len(series) < MIN_DAILY_POINTS + days:
@@ -135,11 +137,19 @@ def predict_custom(
     from .metagate import apply_meta_gate
     from .predicting import load_meta_gate
 
+    from ..core.market_hours import is_acceptably_fresh
+    from ..db import utcnow as _utcnow
+
+    last_obs = series.index[-1].to_pydatetime() if len(series) else None
+    fresh = bool(
+        last_obs is not None
+        and is_acceptably_fresh("IR_GOLD_18K", last_obs, _utcnow(), settings)
+    )
     gate = load_meta_gate(engine)
     if gate and direction != "flat":
         p_hit = apply_meta_gate(
             gate, point, lower, upper, expected_change_pct,
-            confidence, f"{days}d", regime, True,
+            confidence, f"{days}d", regime, fresh,
         )
         if p_hit is not None:
             import numpy as np

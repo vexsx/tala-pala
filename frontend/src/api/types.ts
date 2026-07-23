@@ -183,9 +183,9 @@ export interface MarketSummary {
 
 export interface PremiumPoint {
   date: string
-  observed_18k: number
-  theoretical_18k: number
-  premium_pct: number
+  observed_18k: number | null
+  theoretical_18k: number | null
+  premium_pct: number | null
 }
 
 export interface MacdValue {
@@ -634,7 +634,8 @@ export interface AlertEvent {
   alert_id: number
   alert_type?: AlertType
   message: string
-  created_at: string
+  /** The live API emits triggered_at; created_at kept for older payloads. */
+  triggered_at?: string
+  created_at?: string
   acknowledged?: boolean
-  acked_at?: string | null
 }

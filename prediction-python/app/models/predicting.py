@@ -30,6 +30,7 @@ from sqlalchemy.engine import Engine
 
 from ..config import Settings
 from ..core.freshness import is_acceptably_fresh, is_fresh, staleness_minutes
+from ..core.market_hours import TEHRAN
 from ..db import app_settings, ensure_utc, model_versions, predictions, prices, utcnow
 from ..metrics import PREDICTION_DURATION
 from .base import ForecastModel
@@ -101,8 +102,13 @@ def _target_time(horizon: str, now: datetime) -> datetime:
     if horizon == "4h":
         return now + timedelta(hours=4)
     if horizon == "eod":
-        end = now.replace(hour=23, minute=59, second=59, microsecond=0)
-        return end if end > now else end + timedelta(days=1)
+        # End of the TEHRAN day (this is an Iranian-market forecast); the old
+        # UTC midnight target was 03:29 the next Tehran morning.
+        local = now.astimezone(TEHRAN)
+        end = local.replace(hour=23, minute=59, second=59, microsecond=0)
+        if end <= local:
+            end += timedelta(days=1)
+        return end.astimezone(timezone.utc)
     days = {"1d": 1, "3d": 3, "7d": 7, "30d": 30}[horizon]
     return now + timedelta(days=days)
 

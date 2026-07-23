@@ -18,7 +18,9 @@ interface UsersResponse {
 export default function Users() {
   const { user: me } = useAuth()
   const { calendar } = useSettings()
-  const users = useApi<UsersResponse>('/admin/users')
+  // Null path until the role is known: non-admins deep-linking here used to
+  // fire a guaranteed-403 request on every visit.
+  const users = useApi<UsersResponse>(me?.role === 'admin' ? '/admin/users' : null)
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')

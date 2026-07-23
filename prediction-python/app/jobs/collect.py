@@ -27,7 +27,7 @@ from sqlalchemy.engine import Engine
 from ..config import Settings
 from ..core import validation
 from ..core.market_hours import is_acceptably_fresh, is_market_open
-from ..db import ensure_utc, insert_ignore, prices, raw_observations, utcnow
+from ..db import app_settings, ensure_utc, insert_ignore, prices, raw_observations, utcnow
 from ..metrics import COLLECT_FAILURE, COLLECT_SUCCESS, JOB_LAST_SUCCESS, LAST_PRICE_TS
 from ..providers import registry
 from ..providers.base import Observation, ProviderError
@@ -85,6 +85,9 @@ def _parse_fetch_times(raw: str) -> list[dt_time]:
     return sorted(out) or [dt_time(12, 0), dt_time(15, 0), dt_time(18, 0)]
 
 
+FUNDS_ATTEMPT_KEY = "tse_funds_last_attempt"
+
+
 def funds_job_due(
     engine: Engine, settings: Settings, now: _Optional[object] = None
 ) -> bool:
@@ -110,7 +113,28 @@ def funds_job_due(
                 raw_observations.c.provider_code == "tse_funds"
             )
         ).scalar()
-    return last is None or ensure_utc(last) < slot_utc
+        # A failed fetch stores no rows, which used to leave the slot "due"
+        # on every subsequent collect tick — burning the ~10/day BrsApi quota
+        # on a broken key or mirror outage. The attempt marker consumes the
+        # slot regardless of outcome.
+        attempt = conn.execute(
+            select(app_settings.c.value).where(app_settings.c.key == FUNDS_ATTEMPT_KEY)
+        ).scalar()
+    marks = [ensure_utc(last)] if last is not None else []
+    if isinstance(attempt, dict) and attempt.get("at"):
+        try:
+            marks.append(ensure_utc(datetime.fromisoformat(attempt["at"])))
+        except (TypeError, ValueError):
+            pass
+    return not marks or max(marks) < slot_utc
+
+
+def mark_funds_attempt(engine: Engine, at: _Optional[object] = None) -> None:
+    """Persist the funds-slot attempt marker (success or failure alike)."""
+    from ..jobs.evaluate import upsert_setting
+
+    upsert_setting(engine, FUNDS_ATTEMPT_KEY,
+                   {"at": ensure_utc(at or utcnow()).isoformat()})
 
 
 def _recent_values(engine: Engine, symbol: str, limit: int = RECENT_WINDOW) -> list[float]:
@@ -191,8 +215,10 @@ def run_collect(
     # every Iranian evening/Friday and global weekend.
 
     for job in requested:
-        if job == FUNDS_JOB and not funds_job_due(engine, settings):
-            continue  # market closed or request budget spent too recently
+        if job == FUNDS_JOB:
+            if not funds_job_due(engine, settings):
+                continue  # market closed or request budget spent too recently
+            mark_funds_attempt(engine)
         symbols_needed = set(JOB_SYMBOLS[job])
         stale_only: set[str] = set()
         provider_rows = registry.load_provider_rows(

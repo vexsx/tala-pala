@@ -22,6 +22,7 @@ import { unwrapList } from '../lib/unwrap'
 import { useSettings } from '../lib/settings'
 import {
   formatCompact,
+  formatCompactToman,
   formatGregorianDate,
   formatGrouped,
   formatJalaliDate,
@@ -344,7 +345,7 @@ export function ActionPlanner({
                     />
                     <YAxis
                       tick={{ fill: 'var(--muted)', fontSize: 11 }}
-                      tickFormatter={(v: number) => formatCompact(v)}
+                      tickFormatter={(v: number) => formatCompactToman(v, unit)}
                       width={64}
                       domain={['auto', 'auto']}
                       tickLine={false}

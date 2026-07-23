@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Sequence
 
 import joblib
@@ -338,6 +338,18 @@ def train_all(
     version = started.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     with engine.begin() as conn:
+        # Reap runs stranded in 'running' by a container kill (OOM/redeploy):
+        # only this process ever finalizes a run, so anything still "running"
+        # after 3 hours is dead and would otherwise show as in-flight forever.
+        conn.execute(
+            training_runs.update()
+            .where(
+                training_runs.c.status == "running",
+                training_runs.c.started_at < started - timedelta(hours=3),
+            )
+            .values(status="failed", finished_at=started,
+                    error="stale run reaped: service restarted mid-training")
+        )
         run_id = conn.execute(
             training_runs.insert().values(
                 started_at=started, status="running", horizons=list(requested),

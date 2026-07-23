@@ -1,3 +1,5 @@
+import { useEffect, useRef } from 'react'
+
 export default function ConfirmDialog({
   open,
   title,
@@ -15,6 +17,19 @@ export default function ConfirmDialog({
   onConfirm: () => void
   onCancel: () => void
 }) {
+  const cancelRef = useRef<HTMLButtonElement | null>(null)
+
+  // Basic dialog keyboard behavior: focus moves in on open, Escape closes.
+  useEffect(() => {
+    if (!open) return
+    cancelRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onCancel])
+
   if (!open) return null
   return (
     <div className="modal-overlay" role="presentation" onClick={onCancel}>
@@ -28,7 +43,7 @@ export default function ConfirmDialog({
         <h3 className="modal-title">{title}</h3>
         {message && <p className="muted">{message}</p>}
         <div className="modal-actions">
-          <button type="button" className="btn btn-ghost" onClick={onCancel}>
+          <button type="button" className="btn btn-ghost" onClick={onCancel} ref={cancelRef}>
             Cancel
           </button>
           <button

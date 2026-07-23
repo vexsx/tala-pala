@@ -5,7 +5,6 @@ import {
   LineSeries,
   LineStyle,
   createChart,
-  type IChartApi,
   type UTCTimestamp
 } from 'lightweight-charts'
 import { useApi } from '../hooks/useApi'
@@ -20,7 +19,7 @@ import type {
 import { GOLD_FUND_SYMBOLS, HORIZON_LABELS, SYMBOL_LABELS, type Horizon } from '../api/types'
 import { unwrapList } from '../lib/unwrap'
 import { useSettings } from '../lib/settings'
-import { formatPct, formatToman, pctClass } from '../lib/format'
+import { convertDisplay, formatPct, formatToman, pctClass, type DisplayUnit } from '../lib/format'
 import DataFreshness from '../components/DataFreshness'
 import GaugeBar from '../components/GaugeBar'
 import Loading from '../components/Loading'
@@ -81,14 +80,15 @@ function lineData(candles: Candle[], values: Array<number | null>) {
 function CandleChart({
   data,
   overlays,
-  height
+  height,
+  unit
 }: {
   data: CandlesResponse
   overlays: Set<OverlayKey>
   height: number
+  unit: DisplayUnit
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const chartRef = useRef<IChartApi | null>(null)
   const [themeTick, setThemeTick] = useState(0)
 
   // re-render the chart when the user flips the site theme
@@ -122,10 +122,11 @@ function CandleChart({
       },
       crosshair: { horzLine: { labelBackgroundColor: c.accent }, vertLine: { labelBackgroundColor: c.accent } },
       localization: {
-        priceFormatter: (p: number) => Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(p)
+        // honor the IRT/IRR display toggle like every table on the page
+        priceFormatter: (p: number) =>
+          Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(convertDisplay(p, unit))
       }
     })
-    chartRef.current = chart
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: c.pos,
@@ -240,9 +241,8 @@ function CandleChart({
     return () => {
       window.removeEventListener('resize', onResize)
       chart.remove()
-      chartRef.current = null
     }
-  }, [data, overlays, height, themeTick])
+  }, [data, overlays, height, themeTick, unit])
 
   return <div ref={containerRef} style={{ width: '100%' }} />
 }
@@ -333,12 +333,12 @@ export default function TradePanel() {
               ))}
             </div>
 
-            {candles.loading ? (
+            {candles.loading && !candles.data ? (
               <Loading label="Loading candles…" />
             ) : candles.error ? (
               <ErrorMessage message={candles.error} onRetry={candles.reload} />
             ) : candles.data && candles.data.candles.length > 0 ? (
-              <CandleChart data={candles.data} overlays={active} height={440} />
+              <CandleChart data={candles.data} overlays={active} height={440} unit={unit} />
             ) : (
               <EmptyState title="No candle data" hint="Candles appear once price history exists." />
             )}

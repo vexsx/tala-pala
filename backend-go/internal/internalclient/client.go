@@ -14,12 +14,13 @@ import (
 	"time"
 )
 
-// Timeouts per CONTRACTS.md / task spec. Training walk-forward validates 13
-// candidate families over up to 40 folds per horizon; on the production host
-// that takes well over the old 120s budget (observed >4 min), so the train
-// timeout is generous — the scheduler runs it in the background anyway.
+// Timeouts per CONTRACTS.md / task spec. Training walk-forward validates the
+// full candidate roster over up to 40 folds per horizon for TWO symbols; on
+// the production host a run takes 30–36 minutes, so the train timeout must
+// comfortably exceed that (the caller's context must be at least as long —
+// see scheduler job timeouts — because once() takes the tighter of the two).
 const (
-	TrainTimeout   = 30 * time.Minute
+	TrainTimeout   = 90 * time.Minute
 	CollectTimeout = 60 * time.Second
 	DefaultTimeout = 60 * time.Second
 )

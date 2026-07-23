@@ -11,6 +11,7 @@ import type {
 import { useSettings } from '../lib/settings'
 import {
   formatDate,
+  formatGregorianDate,
   formatGrouped,
   formatJalaliDate,
   formatPct,
@@ -44,7 +45,7 @@ function emptyForm(): TxForm {
     price_per_gram: '',
     currency: 'IRT',
     fees: '0',
-    tx_date: new Date().toISOString().slice(0, 10),
+    tx_date: formatGregorianDate(new Date()),  // Tehran wall-clock day
     notes: ''
   }
 }

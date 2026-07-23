@@ -362,7 +362,7 @@ export default function Alerts() {
           ) : (
             <ul className="event-list">
               {eventList.map((ev) => {
-                const acked = ev.acknowledged === true || !!ev.acked_at
+                const acked = ev.acknowledged === true
                 return (
                   <li key={ev.id} className={`event-row ${acked ? 'event-acked' : ''}`}>
                     <div className="event-main">
@@ -370,8 +370,8 @@ export default function Alerts() {
                       <span>{ev.message}</span>
                     </div>
                     <div className="row">
-                      <span className="muted small" title={formatDateTime(ev.created_at, calendar)}>
-                        {relativeTime(ev.created_at)}
+                      <span className="muted small" title={formatDateTime(ev.triggered_at ?? ev.created_at, calendar)}>
+                        {relativeTime(ev.triggered_at ?? ev.created_at)}
                       </span>
                       {!acked && (
                         <button
