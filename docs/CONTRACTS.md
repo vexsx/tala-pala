@@ -166,3 +166,7 @@ From the Array 2025 DL-for-trading systematic review (S2590005625000177) and Nat
 - Deliberately not ported: RL agents, GNNs, sentiment feeds, deep architectures — the review's own flagged failure modes (overfitting, interpretability, compute) are what the naive-gated tournament exists to avoid.
 
 **UI**: numeric spans (`.mono/.delta/.stat-value/.ticker-value/.big-price/.num`) get `unicode-bidi: isolate` — the RTL word تومان adjacent to LTR percents was visually reordering them (e.g. "+0.67%" → "0.67+ %").
+
+## Addendum 10 — Hamrah Gold primary source (2026-07-23)
+
+Migration `0012` inserts provider `hamrahgold` (category `iran_gold`, **priority 1**): the public unauthenticated ticker of the 24/7 Hamrah Gold platform (`pwa.hamrahgold.com/api/v1/market/price/xau/changes?type=sell|buy`, rial/gram). The observation is the buy/sell **midpoint** (sides + spread in `raw_payload`); keyless, honest UA, standard retry rules. Milli Gold falls back to second (priority 5), TGJU third. The IR_GOLD_18K market calendar keeps the Iranian Thu+Fri off-days (deliberate: the *market reference* pauses even though this platform quotes continuously).

@@ -52,3 +52,13 @@ The 18k local premium vs theoretical parity is normally within **±3%** (range r
 2. Insert/enable a row in `data_providers` with a priority (lower = tried first).
 3. Add a fixture test in `prediction-python/tests/` with a saved real response.
 No Go/frontend changes needed — everything downstream reads normalized `prices`.
+
+## Hamrah Gold (pwa.hamrahgold.com) — PRIMARY 18k source (2026-07-23)
+
+Public pre-login price ticker of the Hamrah Gold 24/7 online trading platform:
+`GET /api/v1/market/price/xau/changes?type=sell|buy` (unauthenticated JSON,
+rial per 18k gram). The provider emits the buy/sell midpoint; both sides and
+the spread stay in `raw_payload`. Fetched with the project's honest
+User-Agent at the normal collect cadence. Consistent with the repo ethics:
+public data only, no accounts, no private Hamrah Gold data (the portfolio
+deliberately never connects to Hamrah accounts).
