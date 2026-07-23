@@ -8,11 +8,26 @@ import { confidencePct } from './format'
 import { pointForecastOf } from './forecastChart'
 
 /**
- * Assumed round-trip trading cost (dealer fee + bid/ask spread estimate), in
+ * Fallback round-trip trading cost (dealer fee + bid/ask spread estimate), in
  * percent. Display-only heuristic used to express forecasts net of costs —
- * it never executes or prices anything.
+ * it never executes or prices anything. Used only when the LIVE dealer spread
+ * (market summary `trading_cost_pct`, from Hamrah Gold's observed buy/sell
+ * sides) is unavailable; the live spread is normally ~0.5%, so this fallback
+ * is deliberately conservative.
  */
 export const ROUND_TRIP_COST_PCT = 1.5
+
+/**
+ * Effective round-trip cost: the live observed dealer spread when present and
+ * sane, otherwise the conservative fallback. A tiny floor guards against a
+ * glitched near-zero spread flipping every tilt to "buy".
+ */
+export function effectiveCostPct(liveSpreadPct: number | null | undefined): number {
+  if (typeof liveSpreadPct === 'number' && Number.isFinite(liveSpreadPct)) {
+    if (liveSpreadPct >= 0.1 && liveSpreadPct <= 10) return liveSpreadPct
+  }
+  return ROUND_TRIP_COST_PCT
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000
 

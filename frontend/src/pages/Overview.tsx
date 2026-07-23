@@ -19,6 +19,7 @@ import {
   formatUsd,
   shortDate
 } from '../lib/format'
+import { effectiveCostPct } from '../lib/advice'
 import { buildForecastChartData, normalizePrediction } from '../lib/forecastChart'
 import StatCard from '../components/StatCard'
 import DataFreshness from '../components/DataFreshness'
@@ -179,7 +180,7 @@ export default function Overview() {
                 {premiumAbnormal && (
                   <div className="warn-text small">
                     Premium deviates {premiumDeviation?.toFixed(1)} pp from its 30-day average —
-                    local market is unusually {s.premium_pct > s.premium_avg_30d ? 'expensive' : 'cheap'}
+                    local market is unusually {(s.premium_pct ?? 0) > (s.premium_avg_30d ?? 0) ? 'expensive' : 'cheap'}
                     {' '}versus global parity.
                   </div>
                 )}
@@ -194,6 +195,7 @@ export default function Overview() {
         predictions={predictions}
         currentPrice={goldValue}
         premiumPct={s?.premium_pct ?? null}
+        costPct={effectiveCostPct(s?.trading_cost_pct)}
         loading={summary.loading}
         portfolio={portfolio.data}
       />
@@ -207,6 +209,7 @@ export default function Overview() {
         premiumAvg30d={s?.premium_avg_30d ?? null}
         fundsFlowPct={funds.data?.flow_pct ?? null}
         portfolio={portfolio.data}
+        costPct={effectiveCostPct(s?.trading_cost_pct)}
       />
 
       <div className="grid grid-wide">

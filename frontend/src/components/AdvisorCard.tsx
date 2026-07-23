@@ -139,7 +139,13 @@ function bothCalendars(input: string): string {
 
 // ---------- Timeframe selector (chips + detail block) ----------
 
-function AdvisorTimeframe({ predictions }: { predictions: Prediction[] }) {
+function AdvisorTimeframe({
+  predictions,
+  costPct
+}: {
+  predictions: Prediction[]
+  costPct: number
+}) {
   const { unit } = useSettings()
   const available = useMemo(() => latestByHorizon(predictions), [predictions])
   const availableHorizons = useMemo(() => available.map((p) => p.horizon), [available])
@@ -231,7 +237,7 @@ function AdvisorTimeframe({ predictions }: { predictions: Prediction[] }) {
       </div>
 
       {effective?.kind === 'std' && activePrediction && (
-        <StandardTimeframeDetail prediction={activePrediction} fmt={fmt} />
+        <StandardTimeframeDetail prediction={activePrediction} fmt={fmt} costPct={costPct} />
       )}
 
       {effective?.kind === 'custom' && (
@@ -248,13 +254,15 @@ function AdvisorTimeframe({ predictions }: { predictions: Prediction[] }) {
 
 function StandardTimeframeDetail({
   prediction: p,
-  fmt
+  fmt,
+  costPct
 }: {
   prediction: Prediction
   fmt: (v: number) => string
+  costPct: number
 }) {
   const point = pointForecastOf(p)
-  const tilt = horizonTilt(p, ROUND_TRIP_COST_PCT)
+  const tilt = horizonTilt(p, costPct)
   const label = ADVISOR_HORIZON_LABELS[p.horizon] ?? p.horizon
   return (
     <div className="advisor-detail" data-testid="advisor-timeframe-detail">
@@ -286,7 +294,8 @@ function StandardTimeframeDetail({
       <GaugeBar value={confidencePct(p.confidence)} label="Confidence" />
       <p className="muted small advisor-tilt-sentence">
         Models project {formatPct(p.expected_change_pct)} by {label.toLowerCase()}; net of ~
-        {ROUND_TRIP_COST_PCT}% round-trip costs, {tiltPhrase(tilt)}.
+        {costPct.toFixed(2)}% round-trip costs
+        {costPct !== ROUND_TRIP_COST_PCT ? ' (live dealer spread)' : ''}, {tiltPhrase(tilt)}.
       </p>
     </div>
   )
@@ -422,6 +431,8 @@ export interface AdvisorCardProps {
   currentPrice: number | null
   /** Current premium over theoretical parity, in percent. */
   premiumPct?: number | null
+  /** Round-trip cost basis for tilts (live dealer spread or fallback). */
+  costPct?: number
 }
 
 /** Advisor panel body — props-driven except the on-demand custom forecast. */
@@ -430,7 +441,8 @@ export function AdvisorCard({
   predictions,
   portfolio,
   currentPrice,
-  premiumPct = null
+  premiumPct = null,
+  costPct = ROUND_TRIP_COST_PCT
 }: AdvisorCardProps) {
   const { unit, calendar } = useSettings()
 
@@ -486,7 +498,7 @@ export function AdvisorCard({
         <p className="advisor-sentence">{headlineSentence(bias, headlinePrediction)}</p>
       </div>
 
-      <AdvisorTimeframe predictions={predictions} />
+      <AdvisorTimeframe predictions={predictions} costPct={costPct} />
 
       <div className="advisor-meters">
         <div className="advisor-meter">
@@ -582,6 +594,8 @@ export interface AdvisorPanelProps {
   predictions: Prediction[]
   currentPrice: number | null
   premiumPct?: number | null
+  /** Round-trip cost basis for tilts (live dealer spread or fallback). */
+  costPct?: number
   /** True while the parent is still loading the market summary. */
   loading?: boolean
   /**
@@ -601,6 +615,7 @@ export default function AdvisorPanel({
   predictions,
   currentPrice,
   premiumPct = null,
+  costPct = ROUND_TRIP_COST_PCT,
   loading = false,
   portfolio
 }: AdvisorPanelProps) {
@@ -623,6 +638,7 @@ export default function AdvisorPanel({
       portfolio={resolvedPortfolio}
       currentPrice={currentPrice}
       premiumPct={premiumPct}
+      costPct={costPct}
     />
   )
 }

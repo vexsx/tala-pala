@@ -391,6 +391,24 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Live round-trip trading cost: the primary dealer's observed buy/sell
+	// spread (Hamrah Gold reports both sides). Buying at the dealer's sell
+	// price and later selling at their buy price costs exactly the spread,
+	// so this is the honest cost basis for net-of-cost tilts. Null when the
+	// spread has not been observed recently; the UI then falls back to a
+	// conservative fixed assumption.
+	var costPct *float64
+	err = h.Pool.QueryRow(ctx, `
+		SELECT (raw_payload->>'spread_pct')::float8
+		FROM raw_observations
+		WHERE provider_code = 'hamrahgold' AND raw_payload ? 'spread_pct'
+		  AND observed_at > now() - interval '3 days'
+		ORDER BY observed_at DESC LIMIT 1`).Scan(&costPct)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		h.Log.Error("summary_trading_cost", "error", err)
+	}
+	out["trading_cost_pct"] = costPct
+
 	// Provider health.
 	provRows, err := h.Pool.Query(ctx, `
 		SELECT code, name, category, enabled, priority, last_success_at,

@@ -19,6 +19,7 @@ import DataFreshness from './components/DataFreshness'
 import ErrorBoundary from './components/ErrorBoundary'
 import ThemeToggle from './components/ThemeToggle'
 import Overview from './pages/Overview'
+import Brief from './pages/Brief'
 import TradePanel from './pages/TradePanel'
 import Forecast from './pages/Forecast'
 import Technical from './pages/Technical'
@@ -31,6 +32,7 @@ import Users from './pages/Users'
 
 const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean; adminOnly?: boolean }> = [
   { to: '/', label: 'Overview', end: true },
+  { to: '/brief', label: 'Brief' },
   { to: '/trade', label: 'Trade' },
   { to: '/forecast', label: 'Forecast' },
   { to: '/technical', label: 'Technical' },
@@ -184,6 +186,7 @@ export default function App() {
               }
             >
               <Route index element={<Overview />} />
+              <Route path="/brief" element={<Brief />} />
               <Route path="/trade" element={<TradePanel />} />
               <Route path="/forecast" element={<Forecast />} />
               <Route path="/technical" element={<Technical />} />

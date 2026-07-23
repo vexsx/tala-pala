@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -79,15 +80,28 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	httpserver.JSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-// Performance implements GET /api/v1/models/performance: per-horizon active
-// model metrics vs baseline, live accuracy from matured predictions, and the
-// most recent training run.
+// canonicalHorizons orders performance rows shortest-to-longest; unknown
+// horizons (custom Nd) sort after, alphabetically.
+var canonicalHorizons = map[string]int{
+	"1h": 0, "4h": 1, "eod": 2, "1d": 3, "3d": 4, "7d": 5, "30d": 6,
+}
+
+// Performance implements GET /api/v1/models/performance?symbol=: per-horizon
+// active model metrics vs baseline for ONE symbol (default IR_GOLD_18K), live
+// accuracy from that symbol's matured predictions, and the most recent
+// training run. `horizons` is an ARRAY (the map form shipped earlier was
+// unreadable by the frontend and mixed symbols).
 func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	symbol := r.URL.Query().Get("symbol")
+	if symbol == "" {
+		symbol = "IR_GOLD_18K"
+	}
 
-	// Active model per horizon.
+	// Active model per horizon for the requested symbol.
 	rows, err := h.Pool.Query(ctx, `
-		SELECT `+mvCols+` FROM model_versions WHERE is_active ORDER BY horizon`)
+		SELECT `+mvCols+` FROM model_versions
+		WHERE is_active AND symbol = $1 ORDER BY horizon`, symbol)
 	if err != nil {
 		h.Log.Error("models_perf_active", "error", err)
 		httpserver.Internal(w, "database error")
@@ -106,7 +120,7 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 
-	// Live accuracy from matured predictions, per horizon.
+	// Live accuracy from matured predictions, per horizon, same symbol.
 	liveRows, err := h.Pool.Query(ctx, `
 		SELECT horizon,
 		       count(*) AS n,
@@ -118,8 +132,8 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 		             THEN 1.0 ELSE 0.0 END)::float8 AS directional_accuracy,
 		       avg(CASE WHEN actual_value BETWEEN lower_bound AND upper_bound THEN 1.0 ELSE 0.0 END)::float8 AS interval_coverage
 		FROM predictions
-		WHERE actual_value IS NOT NULL
-		GROUP BY horizon`)
+		WHERE actual_value IS NOT NULL AND symbol = $1
+		GROUP BY horizon`, symbol)
 	if err != nil {
 		h.Log.Error("models_perf_live", "error", err)
 		httpserver.Internal(w, "database error")
@@ -137,27 +151,56 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		live[horizon] = map[string]any{
-			"n_matured": n, "mape_pct": mape,
+			"n": n, "mape_pct": mape,
 			"directional_accuracy": dirAcc, "interval_coverage": coverage,
 		}
 	}
 	liveRows.Close()
 
-	horizons := map[string]any{}
+	seen := map[string]bool{}
+	horizons := []map[string]any{}
 	for hz, m := range active {
-		horizons[hz] = map[string]any{
-			"model":            m,
-			"metrics":          m.Metrics,
-			"baseline_metrics": m.BaselineMetrics,
-			"live":             live[hz],
-		}
+		seen[hz] = true
+		horizons = append(horizons, map[string]any{
+			"horizon":    hz,
+			"symbol":     m.Symbol,
+			"model_name": m.ModelName,
+			"version":    m.Version,
+			"metrics":    m.Metrics,
+			"baseline":   m.BaselineMetrics,
+			"live_accuracy": func() any {
+				if l, ok := live[hz]; ok {
+					return l
+				}
+				return nil
+			}(),
+		})
 	}
-	// Include live stats for horizons without an active model.
+	// Live stats for horizons without an active model (e.g. after deactivation).
 	for hz, l := range live {
-		if _, ok := horizons[hz]; !ok {
-			horizons[hz] = map[string]any{"model": nil, "live": l}
+		if !seen[hz] {
+			horizons = append(horizons, map[string]any{
+				"horizon": hz, "symbol": symbol, "model_name": "(none active)",
+				"live_accuracy": l,
+			})
 		}
 	}
+	sort.Slice(horizons, func(i, j int) bool {
+		hi, _ := horizons[i]["horizon"].(string)
+		hj, _ := horizons[j]["horizon"].(string)
+		oi, iok := canonicalHorizons[hi]
+		oj, jok := canonicalHorizons[hj]
+		switch {
+		case iok && jok:
+			return oi < oj
+		case iok:
+			return true
+		case jok:
+			return false
+		default:
+			return hi < hj
+		}
+	})
 
 	// Last training run.
 	var run struct {
@@ -188,6 +231,7 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpserver.JSON(w, http.StatusOK, map[string]any{
+		"symbol":            symbol,
 		"horizons":          horizons,
 		"last_training_run": lastRun,
 	})

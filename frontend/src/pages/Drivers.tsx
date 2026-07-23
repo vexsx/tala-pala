@@ -102,10 +102,11 @@ export default function Drivers() {
       `The free-market dollar moved ${formatPct(usdDay)} in a day — expect knock-on volatility in gold.`
     )
   }
-  if (s && premiumAvg !== null && Math.abs(s.premium_pct - premiumAvg) >= 2) {
+  const premiumNow = s?.premium_pct ?? null
+  if (premiumNow !== null && premiumAvg !== null && Math.abs(premiumNow - premiumAvg) >= 2) {
     callouts.push(
-      `The local premium (${formatPct(s.premium_pct)}) is far from its 30-day average (${formatPct(premiumAvg)}) — the market is pricing local risk ${
-        s.premium_pct > premiumAvg ? 'up' : 'down'
+      `The local premium (${formatPct(premiumNow)}) is far from its 30-day average (${formatPct(premiumAvg)}) — the market is pricing local risk ${
+        premiumNow > premiumAvg ? 'up' : 'down'
       }.`
     )
   }

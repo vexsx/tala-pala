@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import {
   HORIZON_LABELS,
@@ -36,23 +36,38 @@ function healthOf(r: HorizonPerformance): { label: string; cls: string } {
   return { label: 'Healthy', cls: 'badge-ok' }
 }
 
+const MODEL_SYMBOLS: Array<{ symbol: string; label: string }> = [
+  { symbol: 'IR_GOLD_18K', label: 'Tehran 18k' },
+  { symbol: 'XAUUSD', label: 'Global gold' }
+]
+
+/** Backend emits is_active; older payloads used active. */
+const isActiveVersion = (v: ModelVersion): boolean => v.active ?? v.is_active ?? false
+
 export default function Models() {
   const { calendar } = useSettings()
+  const [symbol, setSymbol] = useState<string>('IR_GOLD_18K')
 
   const models = useApi<unknown>('/models')
-  const versions = useMemo(
+  const allVersions = useMemo(
     () => unwrapList<ModelVersion>(models.data, 'items', 'models', 'model_versions'),
     [models.data]
   )
+  // The registry lists every symbol; show the selected one (rows without a
+  // symbol predate multi-symbol and belong to the Tehran series).
+  const versions = useMemo(
+    () => allVersions.filter((v) => (v.symbol ?? 'IR_GOLD_18K') === symbol),
+    [allVersions, symbol]
+  )
 
-  const perf = useApi<unknown>('/models/performance')
+  const perf = useApi<unknown>(`/models/performance?symbol=${encodeURIComponent(symbol)}`)
   const perfRows = useMemo(
     () => unwrapList<HorizonPerformance>(perf.data, 'horizons', 'items'),
     [perf.data]
   )
   const lastRun = unwrapField<TrainingRun>(perf.data, 'last_training_run')
 
-  const activeVersions = versions.filter((v) => v.active)
+  const activeVersions = versions.filter(isActiveVersion)
   const lastTrainedAt =
     lastRun?.finished_at ??
     lastRun?.started_at ??
@@ -82,10 +97,24 @@ export default function Models() {
           </span>
         </div>
         {lastRun?.status && (
-          <span className={`badge ${lastRun.status === 'success' || lastRun.status === 'completed' ? 'badge-ok' : 'badge-warn'}`}>
+          <span className={`badge ${['success', 'succeeded', 'completed'].includes(lastRun.status) ? 'badge-ok' : 'badge-warn'}`}>
             {lastRun.status}
           </span>
         )}
+      </div>
+
+      <div className="chip-row" role="group" aria-label="Model symbol">
+        {MODEL_SYMBOLS.map((s) => (
+          <button
+            key={s.symbol}
+            type="button"
+            className={`chip ${symbol === s.symbol ? 'active' : ''}`}
+            aria-pressed={symbol === s.symbol}
+            onClick={() => setSymbol(s.symbol)}
+          >
+            {s.label}
+          </button>
+        ))}
       </div>
 
       {warningRows.map((r) => (
@@ -189,7 +218,7 @@ export default function Models() {
                     <td className="muted small">{formatDateTime(v.trained_at, calendar)}</td>
                     <td className="num mono">{fmtMetric(v.metrics?.smape)}</td>
                     <td>
-                      {v.active ? (
+                      {isActiveVersion(v) ? (
                         <span className="badge badge-ok">active</span>
                       ) : (
                         <span className="badge badge-off">archived</span>

@@ -1363,3 +1363,16 @@ input[type='checkbox'] {
 .num {
   unicode-bidi: isolate;
 }
+
+/* Brief tab: readable article-style prose */
+.brief-section {
+  max-width: 860px;
+}
+.brief-paragraph {
+  margin: 0 0 0.75rem;
+  line-height: 1.7;
+  font-size: 0.95rem;
+}
+.brief-paragraph:last-child {
+  margin-bottom: 0;
+}

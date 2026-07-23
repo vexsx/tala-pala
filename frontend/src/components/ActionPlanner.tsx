@@ -177,6 +177,8 @@ export interface ActionPlannerProps {
   corrXau20?: number | null
   fundsFlowPct?: number | null
   portfolio?: PortfolioSummary | null
+  /** Round-trip cost basis for tilts (live dealer spread or fallback). */
+  costPct?: number
   /** Fixed clock for tests. */
   now?: number
 }
@@ -213,6 +215,7 @@ export function ActionPlanner({
   corrXau20 = null,
   fundsFlowPct = null,
   portfolio = null,
+  costPct = ROUND_TRIP_COST_PCT,
   now
 }: ActionPlannerProps) {
   const { unit, calendar } = useSettings()
@@ -220,8 +223,8 @@ export function ActionPlanner({
   const fmt = (v: number) => formatToman(v, unit)
 
   const rows: PlanRow[] = useMemo(
-    () => planRows(predictions, currentPrice, ROUND_TRIP_COST_PCT, clock),
-    [predictions, currentPrice, clock]
+    () => planRows(predictions, currentPrice, costPct, clock),
+    [predictions, currentPrice, costPct, clock]
   )
   const windows = useMemo(() => bestWindows(rows, currentPrice), [rows, currentPrice])
 
@@ -470,7 +473,7 @@ export function ActionPlanner({
                   <th>Target date</th>
                   <th className="num">Projected (90% band)</th>
                   <th className="num">Δ vs today</th>
-                  <th className="num" title={`Model expected change minus an assumed ${ROUND_TRIP_COST_PCT}% round-trip cost`}>
+                  <th className="num" title={`Model expected change minus the ${costPct.toFixed(2)}% round-trip cost${costPct !== ROUND_TRIP_COST_PCT ? ' (live dealer spread)' : ' (assumed)'}`}>
                     Net if buy today → sell then
                   </th>
                   <th>Tilt</th>
@@ -570,6 +573,8 @@ export interface ActionPlannerPanelProps {
   history: PriceHistoryItem[]
   /** True while the parent is still loading predictions/history. */
   loading?: boolean
+  /** Round-trip cost basis for tilts (live dealer spread or fallback). */
+  costPct?: number
   currentPrice: number | null
   premiumPct?: number | null
   premiumAvg30d?: number | null
@@ -593,7 +598,8 @@ export default function ActionPlannerPanel({
   premiumPct = null,
   premiumAvg30d = null,
   fundsFlowPct = null,
-  portfolio = null
+  portfolio = null,
+  costPct = ROUND_TRIP_COST_PCT
 }: ActionPlannerPanelProps) {
   const xauLatest = useApi<unknown>('/predictions?symbol=XAUUSD')
   const xauPredictions = useMemo(
@@ -628,6 +634,7 @@ export default function ActionPlannerPanel({
       corrXau20={indicators.data?.corr_xau_20 ?? null}
       fundsFlowPct={fundsFlowPct}
       portfolio={portfolio}
+      costPct={costPct}
     />
   )
 }

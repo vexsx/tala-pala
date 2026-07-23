@@ -171,6 +171,11 @@ export interface MarketSummary {
   theoretical_18k: number | null
   premium_pct: number | null
   premium_avg_30d: number | null
+  /**
+   * Live round-trip trading cost in percent: the primary dealer's observed
+   * buy/sell spread (Hamrah Gold). Null when not observed recently.
+   */
+  trading_cost_pct?: number | null
   last_update: string | null
   providers: ProviderHealth[]
   signal: SignalSummary | null
@@ -365,10 +370,13 @@ export interface ModelMetrics {
 
 export interface ModelVersion {
   id: number
+  symbol?: string
   horizon: Horizon
   model_name: string
   version: string
-  active: boolean
+  /** Older payloads; the live API emits is_active. */
+  active?: boolean
+  is_active?: boolean
   trained_at: string
   metrics?: ModelMetrics
   baseline_metrics?: ModelMetrics
@@ -379,15 +387,18 @@ export interface LiveAccuracy {
   directional_accuracy?: number
   mae?: number
   smape?: number
+  mape_pct?: number
+  interval_coverage?: number
 }
 
 export interface HorizonPerformance {
   horizon: Horizon
+  symbol?: string
   model_name: string
   version?: string
   metrics?: ModelMetrics
   baseline?: ModelMetrics
-  live_accuracy?: LiveAccuracy
+  live_accuracy?: LiveAccuracy | null
   degraded?: boolean
   warnings?: string[]
 }

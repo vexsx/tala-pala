@@ -65,7 +65,7 @@ Authenticated endpoints require <code>Authorization: Bearer &lt;JWT&gt;</code>.<
   <li><span class="m">GET</span> <code>/api/v1/signals/current</code></li>
   <li><span class="m">GET</span> <code>/api/v1/signals/history?limit=50</code></li>
   <li><span class="m">GET</span> <code>/api/v1/models</code></li>
-  <li><span class="m">GET</span> <code>/api/v1/models/performance</code></li>
+  <li><span class="m">GET</span> <code>/api/v1/models/performance?symbol=</code></li>
 </ul>
 <h2>Portfolio</h2>
 <ul>
