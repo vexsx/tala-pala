@@ -366,6 +366,15 @@ def _hist_gb_with(params: dict) -> object:
 
 
 class TunedHistGBModel(TabularModel):
+    # Search the config ONCE, on the earliest walk-forward window, and reuse it
+    # across folds - the same discipline ARIMA/SARIMAX use for order selection.
+    # Two reasons: (1) point-in-time hygiene, the configuration is fixed from
+    # train-only information rather than re-chosen as future data arrives, and
+    # (2) cost, a per-fold search is 4 configs x 40 folds x 7 horizons x 2
+    # symbols of extra fits, which pushed an observed training run from ~40 to
+    # >100 minutes once TUNE_MIN_ROWS became reachable.
+    reuse_across_folds = True
+
     """HistGB whose hyperparameters are selected once (earliest window) by
     EvoLearn-style combined train+validation fitness, then reused across
     walk-forward folds."""
