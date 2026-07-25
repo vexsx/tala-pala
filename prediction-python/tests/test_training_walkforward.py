@@ -1,7 +1,7 @@
 """Walk-forward validation: time-ordered folds, metrics, winner-vs-naive gate."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -10,6 +10,7 @@ import pytest
 from app.models.training import (
     HORIZON_SPECS,
     MIN_TRAIN_POINTS,
+    Fold,
     detect_regime,
     evaluate_candidates,
     fold_metrics,
@@ -17,6 +18,11 @@ from app.models.training import (
     select_winner,
     walk_forward,
 )
+
+
+def _t(i: int) -> datetime:
+    """Fold timestamp helper (day i of a fixed reference window)."""
+    return datetime(2025, 1, 1, tzinfo=timezone.utc) + timedelta(days=i)
 
 
 def _series(values) -> pd.Series:
@@ -68,6 +74,7 @@ def _cand(sel: float, hold: float | None = None) -> dict:
         "metrics": {"smape": sel},
         "sel_metrics": {"smape": sel},
         "holdout_metrics": {"smape": hold} if hold is not None else None,
+        "folds": [],  # empty -> bootstrap returns None (untestable, not a veto)
     }
 
 
@@ -79,8 +86,14 @@ def test_select_winner_requires_beating_naive():
     }
     assert select_winner(results) == "naive"
 
-    results["gbr"] = _cand(0.7)
+    results["gbr"] = _cand(0.7)  # 30% better than naive: clears MIN_EDGE_PCT
     assert select_winner(results) == "gbr"
+
+
+def test_select_winner_rejects_immaterial_edge():
+    """A winner that beats naive by less than MIN_EDGE_PCT is noise, not skill."""
+    results = {"naive": _cand(1.0), "rf": _cand(0.995)}  # 0.5% better
+    assert select_winner(results) == "naive"
 
 
 def test_select_winner_holdout_confirmation():
@@ -159,3 +172,92 @@ def test_detect_regime():
     flat = _series(100.0 + rng.normal(0, 0.3, 120))
     assert detect_regime(flat) in ("ranging", "high_volatility")
     assert detect_regime(_series([1, 2, 3])) == "unknown"
+
+
+# --- Addendum 15: conformal intervals, embargo, significance ------------------
+
+def test_conformal_interval_covers_nominal_level():
+    """The 90% band must actually cover ~90% under exchangeability.
+
+    The previous np.quantile implementation measured 0.72-0.78 at the 8-12
+    residuals this pipeline produces; the conformal order statistic restores
+    the nominal level. Uses a fixed seed so the assertion is deterministic.
+    """
+    import numpy as np
+
+    from app.models.intervals import conformal_interval
+
+    rng = np.random.default_rng(11)
+    for n in (10, 12, 20):
+        hits = 0
+        trials = 4000
+        for _ in range(trials):
+            draws = rng.standard_t(df=5, size=n + 1) * 0.01
+            lo, hi, diag = conformal_interval(1000.0, draws[:n], 0.1)
+            hits += lo <= 1000.0 * (1 + draws[n]) <= hi
+            assert diag["coverage_guaranteed"] is True
+        assert hits / trials >= 0.88, f"n={n} coverage {hits / trials:.3f}"
+
+
+def test_conformal_flags_low_evidence_instead_of_pretending():
+    from app.models.intervals import conformal_interval
+
+    lo, hi, diag = conformal_interval(1000.0, [0.001, -0.002, 0.003], 0.1)
+    assert diag["coverage_guaranteed"] is False
+    assert diag["method"] == "conformal_extrapolated"
+    # must be at least as wide as the largest observed error
+    assert hi - lo >= 2 * 0.003 * 1000.0
+
+
+def test_split_folds_embargoes_overlapping_targets():
+    """With step < horizon_steps, adjacent folds share future data; the gap
+    between selection and holdout must remove those overlapping folds."""
+    from app.models.training import split_folds
+
+    folds = [
+        Fold(t_index=i, t_time=_t(i), base=100.0, pred=100.0, actual=100.0)
+        for i in range(40)
+    ]
+    sel, hold = split_folds(folds, horizon_steps=7, step=1)
+    assert len(hold) == 12
+    # last selection fold must be >= horizon_steps behind the first holdout fold
+    assert hold[0].t_index - sel[-1].t_index >= 7
+    # no embargo needed when folds are spaced at least a horizon apart
+    sel2, hold2 = split_folds(folds, horizon_steps=1, step=1)
+    assert hold2[0].t_index - sel2[-1].t_index == 1
+
+
+def test_bootstrap_rejects_indistinguishable_candidate():
+    """A candidate that is better on average by pure noise must not pass."""
+    import numpy as np
+
+    from app.models.training import bootstrap_beats
+
+    rng = np.random.default_rng(5)
+    naive, cand = [], []
+    for i in range(30):
+        a = 100.0 + rng.normal(0, 1)
+        naive.append(Fold(i, _t(i), 100.0, 100.0, a))
+        cand.append(Fold(i, _t(i), 100.0, 100.0 + rng.normal(0, 1), a))
+    assert bootstrap_beats(cand, naive) is False
+
+
+def test_bootstrap_accepts_clear_winner():
+    import numpy as np
+
+    from app.models.training import bootstrap_beats
+
+    rng = np.random.default_rng(6)
+    naive, cand = [], []
+    for i in range(30):
+        a = 100.0 + rng.normal(0, 1)
+        naive.append(Fold(i, _t(i), 100.0, 90.0, a))       # badly wrong
+        cand.append(Fold(i, _t(i), 100.0, a + 0.05, a))    # nearly exact
+    assert bootstrap_beats(cand, naive) is True
+
+
+def test_fold_metrics_reports_mase_and_nullable_coverage():
+    naive_like = [Fold(i, _t(i), 100.0, 100.0, 101.0) for i in range(5)]
+    m = fold_metrics(naive_like)
+    assert m["mase"] == pytest.approx(1.0)      # exactly naive performance
+    assert m["interval_coverage"] is None       # too few folds to score honestly

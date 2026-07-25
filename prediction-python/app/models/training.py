@@ -469,7 +469,9 @@ def select_winner(results: dict[str, dict]) -> str:
             f"edge {(naive_sel - best_smape) / naive_sel:.3%} < {MIN_EDGE_PCT:.0%}"
         )
     # 2) paired bootstrap on the same selection folds
-    sig = bootstrap_beats(results[best_name]["folds"], results["naive"]["folds"])
+    sig = bootstrap_beats(
+        results[best_name].get("folds", []), results["naive"].get("folds", [])
+    )
     if sig is False:
         reasons.append("bootstrap CI includes no improvement")
     # 3) embargoed holdout confirmation
