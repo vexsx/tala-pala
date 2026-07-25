@@ -106,30 +106,40 @@ export function horizonTilt(p: Prediction, costPct: number = ROUND_TRIP_COST_PCT
  * mystery. Mirrors horizonTilt's branches exactly.
  */
 export function tiltReason(p: Prediction, costPct: number = ROUND_TRIP_COST_PCT): string {
-  if (p.data_fresh === false) return 'Input data is stale — no call is made.'
   const pct = p.expected_change_pct
-  if (!Number.isFinite(pct)) return 'No usable forecast for this horizon.'
   const conf = confidencePct(p.confidence) ?? 0
-  const move = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`
+  const move = `${pct >= 0 ? '+' : ''}${Number.isFinite(pct) ? pct.toFixed(2) : '—'}%`
   const cost = `${costPct.toFixed(2)}% round-trip cost`
-  if (Math.abs(pct) <= costPct) {
-    if (pct === 0) {
+
+  // Derive from horizonTilt rather than re-deriving the branches: the two
+  // used to disagree for -cost < pct < -cost/2 (badge said "favors selling"
+  // while the tooltip said the move could not cover costs), because the
+  // sell branch is tested BEFORE the waiting branch.
+  switch (horizonTilt(p, costPct)) {
+    case 'no-call':
+      return 'Input data is stale — no call is made.'
+    case 'favors-buying':
+      return `Projected ${move} clears the ${cost} with ${conf.toFixed(0)}% confidence.`
+    case 'favors-selling':
       return (
-        `The active model for this horizon is "naive" (nothing beat it in validation), ` +
-        `so the projected move is 0.00% — it cannot cover the ${cost}.`
+        `Projected drop ${move} exceeds half the ${cost} (the sell side only pays the ` +
+        `exit leg) with ${conf.toFixed(0)}% confidence.`
       )
-    }
-    return `Projected ${move} is smaller than the ${cost} — trading it would lose money even if exactly right.`
+    case 'favors-waiting':
+      if (pct === 0) {
+        return (
+          `The active model for this horizon is "naive" (nothing beat it in validation), ` +
+          `so the projected move is 0.00% — it cannot cover the ${cost}.`
+        )
+      }
+      return `Projected ${move} is smaller than the ${cost} — trading it would lose money even if exactly right.`
+    default:
+      if (!Number.isFinite(pct)) return 'No usable forecast for this horizon.'
+      return (
+        `Projected ${move} clears the ${cost}, but confidence is ` +
+        `${conf.toFixed(0)}% — below the ${TILT_CONFIDENCE_MIN}% bar for a directional call.`
+      )
   }
-  if (conf < TILT_CONFIDENCE_MIN) {
-    return (
-      `Projected ${move} clears the ${cost}, but confidence is ` +
-      `${conf.toFixed(0)}% — below the ${TILT_CONFIDENCE_MIN}% bar for a directional call.`
-    )
-  }
-  return pct > 0
-    ? `Projected ${move} clears the ${cost} with ${conf.toFixed(0)}% confidence.`
-    : `Projected drop ${move} exceeds half the ${cost} with ${conf.toFixed(0)}% confidence.`
 }
 
 // ---------- Advisor timeframe selection ----------

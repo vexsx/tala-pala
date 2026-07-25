@@ -335,3 +335,37 @@ describe('tiltReason', () => {
     expect(horizonTilt(p, 0.49)).toBe('favors-buying')
   })
 })
+
+describe('tiltReason agrees with the badge', () => {
+  const mk = (pct: number, conf: number): Prediction =>
+    ({
+      id: 1, horizon: '1d', target_time: '2026-07-24T08:00:00Z',
+      point_forecast: 5_000_000, lower_bound: 4_900_000, upper_bound: 5_100_000,
+      direction: pct >= 0 ? 'up' : 'down', model_name: 'x', actual_value: null,
+      expected_change_pct: pct, confidence: conf
+    }) as unknown as Prediction
+
+  it('never contradicts the badge in the sell band', () => {
+    // -cost < pct < -cost/2 with high confidence: badge says favors selling
+    const p = mk(-0.4, 0.6)
+    expect(horizonTilt(p, 0.5)).toBe('favors-selling')
+    expect(tiltReason(p, 0.5)).not.toContain('lose money')
+    expect(tiltReason(p, 0.5)).toContain('exceeds half')
+  })
+
+  it('stays consistent across a sweep of moves and confidences', () => {
+    for (const pct of [-3, -1, -0.4, -0.2, 0, 0.2, 0.4, 1, 3]) {
+      for (const conf of [0.3, 0.6, 0.9]) {
+        const p = mk(pct, conf)
+        const tilt = horizonTilt(p, 0.5)
+        const reason = tiltReason(p, 0.5)
+        if (tilt === 'favors-waiting') {
+          // pct === 0 gets the naive-model explanation instead
+          expect(reason).toMatch(/smaller than|"naive"/)
+        }
+        if (tilt === 'favors-buying') expect(reason).toContain('clears')
+        if (tilt === 'unclear') expect(reason).toContain('below the 55% bar')
+      }
+    }
+  })
+})
