@@ -501,11 +501,23 @@ def select_winner(results: dict[str, dict]) -> str:
     )
     if sig is False:
         reasons.append("bootstrap CI includes no improvement")
-    # 3) embargoed holdout confirmation
+    # 3) embargoed holdout confirmation, held to the SAME materiality bar as
+    #    selection. A bare "<" let XAUUSD/1d extra_trees activate on a 0.0004
+    #    sMAPE edge over 12 folds (1.47963 vs 1.47999 — 0.02% relative, and
+    #    MASE 1.004, i.e. worse than naive in absolute-error terms). Winning by
+    #    a rounding difference is not evidence of skill.
     winner_hold = results[best_name].get("holdout_metrics")
     naive_hold = results["naive"].get("holdout_metrics")
-    if winner_hold and naive_hold and winner_hold["smape"] >= naive_hold["smape"]:
-        reasons.append("holdout sMAPE not better than naive")
+    if winner_hold and naive_hold:
+        nh = naive_hold["smape"]
+        edge = (nh - winner_hold["smape"]) / nh if nh > 0 else 0.0
+        if edge < MIN_EDGE_PCT:
+            reasons.append(f"holdout edge {edge:.3%} < {MIN_EDGE_PCT:.0%}")
+    # 4) a MASE >= 1 means it did not beat "carry the last value forward" in
+    #    absolute-error terms, whatever sMAPE says.
+    winner_mase = (winner_hold or {}).get("mase")
+    if isinstance(winner_mase, (int, float)) and winner_mase >= 1.0:
+        reasons.append(f"holdout MASE {winner_mase:.3f} >= 1 (no gain over naive)")
     if reasons:
         log.info("candidate %s rejected -> naive (%s)", best_name, "; ".join(reasons))
         results[best_name]["rejection_reason"] = "; ".join(reasons)

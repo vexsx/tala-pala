@@ -302,3 +302,26 @@ def test_drop_incomplete_bar_removes_still_filling_bucket():
     old = series.iloc[:-1]
     trimmed2, dropped2 = _drop_incomplete_bar(old, "daily")
     assert dropped2 is None and len(trimmed2) == len(old)
+
+
+def test_holdout_edge_must_be_material():
+    """A winner may not activate on a rounding-difference holdout edge."""
+    results = {
+        "naive": _cand(1.0, hold=1.47999),
+        "extra_trees": _cand(0.90, hold=1.47963),  # 0.02% holdout edge
+    }
+    assert select_winner(results) == "naive"
+    assert "holdout edge" in results["extra_trees"]["rejection_reason"]
+
+
+def test_holdout_mase_at_or_above_one_is_rejected():
+    """sMAPE can flatter a model that is no better than carrying the last
+    value forward; MASE >= 1 vetoes it."""
+    results = {
+        "naive": {"metrics": {"smape": 1.0}, "sel_metrics": {"smape": 1.0},
+                  "holdout_metrics": {"smape": 1.0, "mase": 1.0}, "folds": []},
+        "rf": {"metrics": {"smape": 0.5}, "sel_metrics": {"smape": 0.5},
+               "holdout_metrics": {"smape": 0.5, "mase": 1.004}, "folds": []},
+    }
+    assert select_winner(results) == "naive"
+    assert "MASE" in results["rf"]["rejection_reason"]
