@@ -61,7 +61,10 @@ CREATE TABLE IF NOT EXISTS news_sources (
 -- a different URL (then duplicate_of points at the original).
 CREATE TABLE IF NOT EXISTS news_articles (
     id            BIGSERIAL PRIMARY KEY,
-    source_code   TEXT NOT NULL REFERENCES news_sources (code) ON DELETE CASCADE,
+    -- No ON DELETE CASCADE on purpose: removing a source row must not silently
+    -- destroy the archive accumulated from it (the archive is unrecoverable —
+    -- there is no historical news backfill anywhere).
+    source_code   TEXT NOT NULL REFERENCES news_sources (code),
     external_id   TEXT NOT NULL DEFAULT '',        -- feed <guid>
     canonical_url TEXT NOT NULL,                   -- normalized; the dedupe key
     url           TEXT NOT NULL DEFAULT '',        -- exactly as published

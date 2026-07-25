@@ -4,6 +4,7 @@ identity on an analytically known case."""
 from __future__ import annotations
 
 import math
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -440,7 +441,7 @@ def test_every_spec_carries_complete_metadata():
 def test_registry_is_immutable():
     with pytest.raises(TypeError):
         FEATURE_REGISTRY["dealer_spread_pct"] = FEATURE_SPECS[0]
-    with pytest.raises(Exception):  # FrozenInstanceError
+    with pytest.raises(FrozenInstanceError):
         FEATURE_SPECS[0].name = "renamed"
 
 

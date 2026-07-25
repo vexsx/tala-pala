@@ -19,11 +19,12 @@ from app.jobs import news as news_job
 from app.news import (
     ArticleRecord,
     NewsProvider,
+    dedupe,
     news_article_versions,
     news_articles,
     news_sources,
+    taxonomy,
 )
-from app.news import dedupe, taxonomy
 from app.providers import fedpress
 from app.providers.base import ProviderError
 

@@ -49,6 +49,7 @@ from .engineering import LeakageError, assert_no_future
 __all__ = [
     "FeatureSpec",
     "PremiumDecomposition",
+    "FEATURE_SPECS",
     "FEATURE_REGISTRY",
     "STREAM_FEATURES",
     "DECOMPOSITION_FEATURES",
@@ -57,6 +58,9 @@ __all__ = [
     "POLICY_FFILL",
     "POLICY_NAN_ON_GAP",
     "AGE_COLUMN",
+    "PRIMARY_PROVIDER",
+    "PRIMARY_SYMBOL",
+    "DISPERSION_KEY",
     "normalize_observations",
     "build_microstructure_frame",
     "unavailable_features",
@@ -99,7 +103,8 @@ RV_SHORT = 12
 RV_LONG = 48
 JUMP_WINDOW = 48
 JUMP_SIGMA = 4.0
-# median(|x|) -> sigma for a normal; robust to the very jumps we are hunting
+# median(|x|) -> sigma for a normal; the median ignores the very outliers a
+# plain standard deviation would absorb (and then fail to flag)
 MAD_TO_SIGMA = 1.4826
 PREMIUM_DECOMP_LAG = 1
 
@@ -108,7 +113,7 @@ POLICY_FFILL = "ffill_within_staleness"  # carry forward, NaN past the threshold
 POLICY_NAN_ON_GAP = "nan_on_gap"         # valid only on an exact timestamp match
 
 _HOUR = 3600
-SPREAD_STALENESS_S = 3 * _HOUR   # a half-day-old dealer spread is not today's
+SPREAD_STALENESS_S = 3 * _HOUR   # past this the dealer has long re-quoted
 CADENCE_STALENESS_S = 1 * _HOUR
 VOL_STALENESS_S = 1 * _HOUR
 DECOMP_STALENESS_S = 24 * _HOUR  # decomposition runs on a daily/close series
@@ -131,6 +136,10 @@ class FeatureSpec:
     observation that produced it; :func:`asof_join` NaNs it out beyond that.
     ``POLICY_NAN_ON_GAP`` features are never carried forward at all, so their
     threshold is 0.
+
+    ``requires_payload_key`` names the provider payload key the feature is
+    read from, when there is one; :func:`unavailable_features` uses it to
+    report which features this deployment's data cannot support.
     """
 
     name: str
@@ -579,7 +588,7 @@ def normalize_observations(
             "payload": payloads.to_numpy(),
         }
     )
-    out.index = pd.DatetimeIndex(stamps.to_numpy(), name="observed_at")
+    out.index = pd.DatetimeIndex(stamps).rename("observed_at")
     out = out[out.index.notna()].sort_index()
 
     if as_of is not None:
