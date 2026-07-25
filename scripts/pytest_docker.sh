@@ -19,12 +19,13 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     echo "base image $BASE missing — run: docker compose build prediction-service" >&2
     exit 1
   }
-  printf 'FROM %s\nUSER root\nRUN pip install --no-cache-dir -q pytest pytest-asyncio httpx\n' "$BASE" \
+  printf 'FROM %s\nUSER root\nCOPY prediction-python/requirements-dev.txt /tmp/requirements-dev.txt\nRUN pip install --no-cache-dir -q -r /tmp/requirements-dev.txt\n' "$BASE" \
     | docker build -q -t "$IMAGE" -f - . >/dev/null
 fi
 
 exec docker run --rm \
-  -v "$(pwd)/prediction-python:/src:ro" \
+  -v "$(pwd)/prediction-python:/src" \
   -w /src \
-  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYTHONDONTWRITEBYTECODE=1 -e PYTHONPYCACHEPREFIX=/tmp/pycache \
+  -e PYTEST_ADDOPTS="-p no:cacheprovider" \
   "$IMAGE" python -m pytest "$@"
