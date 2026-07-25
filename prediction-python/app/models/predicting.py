@@ -477,20 +477,6 @@ def _predict_one(
             "18k price; the interval was widened to reflect this quote uncertainty."
         )
 
-    if interval_diag:
-        live_cov = (live_cal or {}).get("coverage")
-        drivers.append({
-            "factor": "interval_quality",
-            "note": (
-                f"{interval_diag.get('method', 'n/a')} band from "
-                f"{interval_diag.get('n_residuals', 0)} held-out residuals"
-                + (f"; live coverage {live_cov:.0%} over {int((live_cal or {}).get('n') or 0)} "
-                   "matured predictions" if isinstance(live_cov, (int, float)) else
-                   "; no live coverage evidence yet")
-                + ("" if interval_diag.get("coverage_guaranteed") else "; NOT guaranteed")
-            ),
-        })
-
     expected_change_pct = (point / last_price - 1.0) * 100.0
     direction = _direction(expected_change_pct)
     regime = detect_regime(series)
@@ -509,6 +495,20 @@ def _predict_one(
         else _target_time(horizon, now)
     )
     drivers = _drivers(model, series, regime)
+    if interval_diag:
+        live_cov = (live_cal or {}).get("coverage")
+        drivers.append({
+            "factor": "interval_quality",
+            "note": (
+                f"{interval_diag.get('method', 'n/a')} band from "
+                f"{interval_diag.get('n_residuals', 0)} held-out residuals"
+                + (f"; live coverage {live_cov:.0%} over {int((live_cal or {}).get('n') or 0)} "
+                   "matured predictions" if isinstance(live_cov, (int, float)) else
+                   "; no live coverage evidence yet")
+                + ("" if interval_diag.get("coverage_guaranteed") else "; NOT guaranteed")
+            ),
+        })
+
 
     # meta-gate (meta-labeling): the system's learned self-assessment — a
     # secondary model trained on this app's own matured predictions estimates
