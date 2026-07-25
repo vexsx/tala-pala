@@ -132,6 +132,23 @@ func (s *Scheduler) Stop() context.Context {
 	return s.cron.Stop()
 }
 
+// noteMissedRun records a scheduled run that never started. A run skipped for
+// lock reasons is as bad as a failed one — job_last_success just stops
+// advancing — so it counts as a failure and is logged loudly enough (WARN+) to
+// be mirrored into app_issues and show up in the Issues tab.
+func (s *Scheduler) noteMissedRun(name, reason string, err error) {
+	s.metrics.JobFailures.WithLabelValues(name).Inc()
+	attrs := []any{slog.String("job", name), slog.String("reason", reason)}
+	if err != nil {
+		s.log.Error("job_lock_error", append(attrs, slog.String("error", err.Error()))...)
+		return
+	}
+	// Deployment is single-replica, so a held lock is almost always one left
+	// behind by a killed run (TTL up to the job timeout: 90 min for train),
+	// not a peer doing the work in our place.
+	s.log.Warn("job_lock_held_elsewhere", attrs...)
+}
+
 // runWithLock acquires lock:job:<name> and runs the job, updating metrics.
 // The lock TTL equals the job timeout so the lock outlives the whole run.
 func (s *Scheduler) runWithLock(name string, timeout time.Duration, fn func(ctx context.Context) error) {
@@ -141,11 +158,11 @@ func (s *Scheduler) runWithLock(name string, timeout time.Duration, fn func(ctx 
 	key := "lock:job:" + name
 	ok, err := s.redis.SetNX(ctx, key, s.instanceID, timeout).Result()
 	if err != nil {
-		s.log.Error("job_lock_error", slog.String("job", name), slog.String("error", err.Error()))
+		s.noteMissedRun(name, "lock_error", err)
 		return
 	}
 	if !ok {
-		s.log.Info("job_lock_held_elsewhere", slog.String("job", name))
+		s.noteMissedRun(name, "lock_held", nil)
 		return
 	}
 	defer func() {

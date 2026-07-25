@@ -9,14 +9,18 @@ Rules (docs/CONTRACTS.md + service design):
   (usually a unit mix-up: rial-vs-toman or gram-vs-ounce);
 * a value deviating strongly from the recent window median (robust MAD test)
   or jumping more than ``MAX_JUMP_PCT`` vs the last good value is *suspect*
-  and must be confirmed by a second source before entering ``prices``.
+  and must be confirmed by a second source before entering ``prices``;
+* several sources quoting the same symbol in one collect cycle are summarised
+  by :func:`dispersion_summary` — the cross-provider quote uncertainty of
+  Addendum 3, measured at collection time.
 """
 from __future__ import annotations
 
 import hashlib
+import math
 import statistics
 from datetime import datetime, timezone
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 MAX_JUMP_PCT = 15.0          # > this vs last good => needs a second source
 CONFIRM_TOLERANCE_PCT = 3.0  # two sources within this range confirm each other
@@ -85,6 +89,49 @@ def values_agree(a: float, b: float, tolerance_pct: float = CONFIRM_TOLERANCE_PC
         return True
     ref = max(abs(a), abs(b))
     return abs(a - b) / ref * 100.0 <= tolerance_pct
+
+
+def dispersion_summary(
+    values_by_source: Mapping[str, float],
+    tolerance_pct: float = CONFIRM_TOLERANCE_PCT,
+) -> Optional[dict]:
+    """Summarise how far several sources disagree about one symbol.
+
+    Returns ``None`` for fewer than two usable quotes: a single source has
+    *unknown* dispersion, not zero dispersion, and a 0.0 would let a lonely
+    provider look like perfect cross-source agreement.  Percentages are taken
+    against ``|median|`` so the numbers compare across symbols priced in
+    toman, USD or percent; they are ``None`` when the median is 0 (an
+    oscillating series such as ``IR_GOLD_FUND_FLOW``), where percent-of-median
+    carries no meaning.
+
+    ``values`` keeps the per-source NORMALIZED quotes: ``raw_observations``
+    stores each provider's raw number (TGJU rials next to BrsApi tomans), so
+    the canonical values must travel with the summary to stay comparable.
+    """
+    usable = {
+        str(source): float(value)
+        for source, value in values_by_source.items()
+        if isinstance(value, (int, float)) and math.isfinite(float(value))
+    }
+    if len(usable) < 2:
+        return None
+    values = sorted(usable.values())
+    med = statistics.median(values)
+    spread = values[-1] - values[0]
+    mad = statistics.median(abs(v - med) for v in values)
+    ref = abs(med)
+    return {
+        "n_sources": len(values),
+        "n_agreeing": sum(1 for v in values if values_agree(v, med, tolerance_pct)),
+        "values": {src: round(val, 6) for src, val in sorted(usable.items())},
+        "median": round(med, 6),
+        "spread_abs": round(spread, 6),
+        "spread_pct": round(spread / ref * 100.0, 4) if ref > 0 else None,
+        "mad": round(mad, 6),
+        "mad_pct": round(mad / ref * 100.0, 4) if ref > 0 else None,
+        "tolerance_pct": tolerance_pct,
+    }
 
 
 def premium_suspect(

@@ -1,12 +1,16 @@
 """Provider parsing tests against saved fixtures + one respx round trip."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 import respx
+from sqlalchemy import insert, select
 
+from app.core import validation
+from app.db import data_providers, prices, raw_observations, utcnow
+from app.jobs.collect import PEER_DISPERSION_KEY, run_collect
 from app.providers import (
     alanchand,
     brsapi,
@@ -20,7 +24,7 @@ from app.providers import (
     tgju,
     yahoo,
 )
-from app.providers.base import ProviderError
+from app.providers.base import Observation, Provider, ProviderError
 
 from .conftest import load_fixture_json, load_fixture_text
 
@@ -640,3 +644,193 @@ def test_bitmax_rejects_malformed(monkeypatch):
     monkeypatch.setattr(provider, "_get_json", lambda url, params=None: {"message": {}})
     with pytest.raises(ProviderError):
         provider.fetch()
+
+
+# --- cross-provider dispersion in a collect cycle -----------------------------
+
+
+def _seed_provider(engine, code, priority, category="iran_gold"):
+    with engine.begin() as conn:
+        conn.execute(
+            insert(data_providers).values(
+                code=code, name=code.title(), base_url="https://example.invalid",
+                category=category, priority=priority, enabled=True,
+                consecutive_failures=0,
+            )
+        )
+
+
+class CountingStub(Provider):
+    """Serves canned observations and counts how often it was fetched."""
+
+    def __init__(self, observations, max_attempts=3):
+        super().__init__(timeout=1.0, courtesy_delay=0.0, backoff_base=0.0)
+        self._observations = observations
+        self.max_attempts = max_attempts  # 1 => quota-billed provider
+        self.fetch_count = 0
+
+    def fetch(self):
+        self.fetch_count += 1
+        return list(self._observations)
+
+
+def _iran_obs(code, symbol, toman, observed_at, unit="gram", payload=None):
+    """An Iranian quote as providers emit it: rial raw value, toman normalized."""
+    return Observation(
+        provider_code=code, symbol=symbol, raw_value=toman * 10,
+        raw_unit=f"IRR/{unit}", raw_currency="IRR", value=toman,
+        currency="IRT", unit=unit, observed_at=observed_at, raw_payload=payload,
+    )
+
+
+def _patch_registry(monkeypatch, stubs):
+    from app.providers import registry as registry_mod
+
+    monkeypatch.setattr(
+        registry_mod, "build_provider", lambda code, settings: stubs.get(code)
+    )
+
+
+def _raw_rows(engine, symbol):
+    with engine.connect() as conn:
+        rows = conn.execute(
+            select(raw_observations).where(raw_observations.c.symbol == symbol)
+        ).all()
+    return {r._mapping["provider_code"]: r._mapping for r in rows}
+
+
+def test_collect_records_peer_quotes_and_dispersion(engine, settings, monkeypatch):
+    """Two providers quoting 18k in one cycle: the priority-1 value is still the
+    one served, the peer quote is no longer discarded, and their disagreement is
+    summarised on the winner's raw row."""
+    _seed_provider(engine, "primary", priority=1)
+    _seed_provider(engine, "secondary", priority=5)
+    now = utcnow()
+    stubs = {
+        "primary": CountingStub(
+            [_iran_obs("primary", "IR_GOLD_18K", 18_300_000.0,
+                       now - timedelta(minutes=1), payload={"spread_pct": 0.49})]
+        ),
+        # consulted only because the coin is still missing — its 18k quote used
+        # to be dropped on the floor by the "symbol already satisfied" check
+        "secondary": CountingStub(
+            [
+                _iran_obs("secondary", "IR_GOLD_18K", 18_420_000.0,
+                          now - timedelta(minutes=2)),
+                _iran_obs("secondary", "IR_COIN_EMAMI", 191_500_000.0,
+                          now - timedelta(minutes=2), unit="coin"),
+            ]
+        ),
+    }
+    _patch_registry(monkeypatch, stubs)
+
+    result = run_collect(engine, settings, ["iran_gold"])
+    assert result["collected"].get("IR_GOLD_18K") == 1
+
+    # (a) the priority-1 value is the only 18k row in prices
+    with engine.connect() as conn:
+        price_rows = conn.execute(
+            select(prices).where(prices.c.symbol == "IR_GOLD_18K")
+        ).all()
+    assert len(price_rows) == 1
+    assert price_rows[0]._mapping["source"] == "primary"
+    assert float(price_rows[0]._mapping["value"]) == 18_300_000.0
+
+    # (b) both observations are on record
+    raws = _raw_rows(engine, "IR_GOLD_18K")
+    assert set(raws) == {"primary", "secondary"}
+    assert raws["secondary"]["quality"] == "ok"
+    assert float(raws["secondary"]["raw_value"]) == 184_200_000.0  # rial kept
+
+    # (c) dispersion recorded on the winner, provider payload preserved
+    payload = raws["primary"]["raw_payload"]
+    assert payload["spread_pct"] == 0.49
+    dispersion = payload[PEER_DISPERSION_KEY]
+    assert dispersion["n_sources"] == 2
+    assert dispersion["n_agreeing"] == 2
+    # normalized toman values, since the peer's own row keeps only rials
+    assert dispersion["values"] == {
+        "primary": 18_300_000.0, "secondary": 18_420_000.0
+    }
+    assert dispersion["spread_pct"] == pytest.approx(0.6536, abs=1e-3)
+    assert dispersion["mad"] == pytest.approx(60_000.0)
+    # only the canonical row carries the summary
+    assert (raws["secondary"]["raw_payload"] or {}).get(PEER_DISPERSION_KEY) is None
+
+
+def test_collect_single_source_dispersion_is_null(engine, settings, monkeypatch):
+    """One provider covering the whole job: dispersion is unknown, not zero."""
+    _seed_provider(engine, "primary", priority=1)
+    now = utcnow()
+    stubs = {
+        "primary": CountingStub(
+            [
+                _iran_obs("primary", "IR_GOLD_18K", 18_300_000.0,
+                          now - timedelta(minutes=1)),
+                _iran_obs("primary", "IR_COIN_EMAMI", 191_500_000.0,
+                          now - timedelta(minutes=1), unit="coin"),
+            ]
+        )
+    }
+    _patch_registry(monkeypatch, stubs)
+
+    run_collect(engine, settings, ["iran_gold"])
+
+    raws = _raw_rows(engine, "IR_GOLD_18K")
+    assert set(raws) == {"primary"}
+    assert (raws["primary"]["raw_payload"] or {}).get(PEER_DISPERSION_KEY) is None
+
+
+def test_collect_dispersion_never_refetches_quota_provider(engine, settings, monkeypatch):
+    """A quota-billed provider (max_attempts == 1, e.g. tse_funds/brsapi) is
+    fetched exactly once per cycle: its dispersion contribution comes from the
+    response already in the fetch cache, never from an extra request."""
+    _seed_provider(engine, "primary", priority=1)
+    _seed_provider(engine, "quota", priority=5)
+    now = utcnow()
+    stubs = {
+        "primary": CountingStub(
+            [_iran_obs("primary", "IR_GOLD_18K", 18_300_000.0,
+                       now - timedelta(minutes=1))]
+        ),
+        "quota": CountingStub(
+            [
+                _iran_obs("quota", "IR_GOLD_18K", 18_420_000.0,
+                          now - timedelta(minutes=2)),
+                _iran_obs("quota", "IR_COIN_EMAMI", 191_500_000.0,
+                          now - timedelta(minutes=2), unit="coin"),
+            ],
+            max_attempts=1,
+        ),
+    }
+    _patch_registry(monkeypatch, stubs)
+
+    run_collect(engine, settings, ["iran_gold"])
+
+    assert stubs["quota"].fetch_count == 1
+    assert stubs["primary"].fetch_count == 1
+    dispersion = _raw_rows(engine, "IR_GOLD_18K")["primary"]["raw_payload"][
+        PEER_DISPERSION_KEY
+    ]
+    assert dispersion["n_sources"] == 2  # measured from the cached response
+
+
+def test_dispersion_summary_needs_two_sources():
+    assert validation.dispersion_summary({"primary": 18_300_000.0}) is None
+    summary = validation.dispersion_summary(
+        {"primary": 18_300_000.0, "secondary": 18_420_000.0}
+    )
+    assert summary["n_sources"] == 2 and summary["n_agreeing"] == 2
+    assert summary["median"] == pytest.approx(18_360_000.0)
+    assert summary["spread_abs"] == pytest.approx(120_000.0)
+    assert summary["spread_pct"] == pytest.approx(0.6536, abs=1e-3)
+    assert summary["mad_pct"] == pytest.approx(0.3268, abs=1e-3)
+    # a source beyond the confirmation tolerance stops counting as agreeing
+    wide = validation.dispersion_summary(
+        {"a": 18_300_000.0, "b": 18_420_000.0, "c": 25_000_000.0}
+    )
+    assert wide["n_sources"] == 3 and wide["n_agreeing"] == 2
+    # percent-of-median is meaningless for a series that oscillates around zero
+    oscillating = validation.dispersion_summary({"a": 1.0, "b": -1.0})
+    assert oscillating["spread_pct"] is None and oscillating["mad_pct"] is None
+    assert oscillating["mad"] == pytest.approx(1.0)

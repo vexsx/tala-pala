@@ -6,6 +6,20 @@ lower-priority provider is only consulted for symbols the earlier providers
 did not deliver a *good* value for.  Suspicious values (>15% jump vs last
 good, or MAD outliers) are stored in ``raw_observations`` only, unless a
 second source confirms them within tolerance — then both are promoted.
+
+Cross-provider dispersion (Addendum 3) is measured in a second pass over the
+responses already in the fetch cache: fallback stops *storing* once a symbol
+is satisfied, but the lower-priority providers consulted for the job's other
+symbols have usually quoted it too, and those quotes were being thrown away —
+leaving the advertised "provider disagreement" signal structurally empty.
+Peer quotes now land in ``raw_observations`` (never in ``prices``: which value
+is *served* is still decided by priority alone) and their summary rides on the
+winner's ``raw_payload`` under ``peer_dispersion``.  That key, rather than a
+new table, because the row already carries (symbol, cycle, canonical source),
+JSONB is queryable in place (``raw_payload->'peer_dispersion'``), and the
+retention job prunes the measurement together with the observation it
+describes — a table would add a migration, a retention rule and a join for no
+extra information.
 """
 from __future__ import annotations
 
@@ -21,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 TEHRAN_TZ = ZoneInfo("Asia/Tehran")
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import Engine
 
 from ..config import Settings
@@ -59,6 +73,10 @@ JOB_PROVIDER_CATEGORIES: dict[str, list[str]] = {
 }
 
 RECENT_WINDOW = 30  # good values used for the MAD outlier test
+
+# raw_payload key carrying the cross-provider dispersion of the cycle that
+# produced the row (see the module docstring for why it lives here).
+PEER_DISPERSION_KEY = "peer_dispersion"
 
 # TSE funds quota guard: BrsApi's free tier budgets the TSETMC_Symbol
 # endpoint at ~10 requests/day and each funds round costs one call per fund.
@@ -148,8 +166,14 @@ def _recent_values(engine: Engine, symbol: str, limit: int = RECENT_WINDOW) -> l
         return [float(v) for (v,) in conn.execute(stmt)]
 
 
-def _store(engine: Engine, obs: Observation, quality: str) -> tuple[bool, bool]:
-    """Write raw_observations always; prices only for quality='ok'.
+def _store(
+    engine: Engine, obs: Observation, quality: str, *, canonical: bool = True
+) -> tuple[bool, bool]:
+    """Write raw_observations always; prices only for canonical quality='ok'.
+
+    ``canonical=False`` records a *peer* observation — kept for dispersion
+    measurement only.  It never reaches ``prices``, so the served value stays
+    exactly the one the priority fallback chose.
 
     Returns (raw_inserted, price_inserted).
     """
@@ -177,7 +201,7 @@ def _store(engine: Engine, obs: Observation, quality: str) -> tuple[bool, bool]:
             ],
         )
         price_inserted = 0
-        if quality == "ok":
+        if quality == "ok" and canonical:
             price_inserted = insert_ignore(
                 conn,
                 prices,
@@ -197,6 +221,69 @@ def _store(engine: Engine, obs: Observation, quality: str) -> tuple[bool, bool]:
     return bool(raw_inserted), bool(price_inserted)
 
 
+def _annotate_dispersion(engine: Engine, winner: Observation, summary: dict) -> None:
+    """Attach ``summary`` to the winner's raw_observations row, keeping the
+    provider's own payload keys (e.g. Hamrah Gold's ``spread_pct``)."""
+    payload = dict(winner.raw_payload or {})
+    payload[PEER_DISPERSION_KEY] = summary
+    dedupe = validation.build_dedupe_key(
+        winner.provider_code, winner.symbol, winner.observed_at, winner.raw_value
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            update(raw_observations)
+            .where(raw_observations.c.dedupe_key == dedupe)
+            .values(raw_payload=payload)
+        )
+
+
+def _measure_dispersion(
+    engine: Engine,
+    fetch_cache: dict[str, list[Observation]],
+    symbols: set[str],
+    handled: set[tuple[str, str]],
+    cycle_values: dict[str, dict[str, float]],
+    winners: dict[str, Observation],
+) -> None:
+    """Store the quotes the fallback skipped and summarise the disagreement.
+
+    Reads ONLY responses already in ``fetch_cache``: dispersion must never
+    cost an extra request, or measuring it would quietly spend the daily
+    budget of the request-billed providers (``tse_funds`` / ``brsapi``, both
+    ``max_attempts == 1``).  Peers are classified by the same rules as
+    canonical values and only ``ok`` ones enter the summary — an unconfirmed
+    suspect is not evidence of disagreement, it is an unverified quote.
+    """
+    for symbol in sorted(symbols):
+        recent: Optional[list[float]] = None
+        for code in sorted(fetch_cache):
+            if (code, symbol) in handled:
+                continue  # already stored by the fallback pass
+            for obs in fetch_cache[code]:
+                if obs.symbol != symbol:
+                    continue
+                if recent is None:
+                    recent = _recent_values(engine, symbol)
+                quality, reason = validation.classify_observation(
+                    symbol, obs.value, recent, recent[0] if recent else None
+                )
+                _store(engine, obs, quality, canonical=False)
+                handled.add((code, symbol))
+                if quality == "ok":
+                    cycle_values.setdefault(symbol, {})[code] = float(obs.value)
+                else:
+                    # a peer never blocked the job, so it is a log line, not a
+                    # collection error the operator has to triage
+                    log.debug("peer %s/%s unusable: %s", code, symbol, reason)
+        summary = validation.dispersion_summary(cycle_values.get(symbol, {}))
+        winner = winners.get(symbol)
+        # No winner means no canonical row was written this cycle (every source
+        # repeated its last quote, or none was good): the peers are stored, but
+        # an earlier cycle's row is not rewritten with today's peer view.
+        if summary is not None and winner is not None:
+            _annotate_dispersion(engine, winner, summary)
+
+
 def run_collect(
     engine: Engine, settings: Settings, jobs: Optional[Sequence[str]] = None
 ) -> dict:
@@ -206,6 +293,13 @@ def run_collect(
     errors: list[str] = []
     fetch_cache: dict[str, list[Observation]] = {}
     failed_providers: set[str] = set()
+    # dispersion bookkeeping, run-wide so a provider fetched for one job also
+    # contributes its quotes of another job's symbols (the fx job stops at
+    # bitmax, but TGJU's USD_IRT is already in the cache from iran_gold)
+    attempted_symbols: set[str] = set()
+    handled: set[tuple[str, str]] = set()          # (provider, symbol) stored
+    cycle_values: dict[str, dict[str, float]] = {}  # symbol -> {provider: value}
+    winners: dict[str, Observation] = {}            # symbol -> canonical quote
 
     # A stale observation still gets stored, but does NOT satisfy the symbol —
     # fallback continues so a provider with a lagging ticker (e.g. TGJU 'ons')
@@ -233,6 +327,7 @@ def run_collect(
         ]
         if provider_rows and not buildable:
             continue
+        attempted_symbols |= symbols_needed  # dormant jobs measure nothing
         # pending suspects awaiting confirmation by a second source
         suspects: dict[str, list[Observation]] = {}
 
@@ -264,6 +359,7 @@ def run_collect(
                 quality, reason = validation.classify_observation(
                     obs.symbol, obs.value, recent, last_good
                 )
+                handled.add((code, obs.symbol))  # every branch below stores it
                 if quality == "outlier":
                     _store(engine, obs, "outlier")
                     errors.append(f"{code}/{obs.symbol}: rejected ({reason})")
@@ -285,14 +381,22 @@ def run_collect(
                     for prior in suspects.pop(obs.symbol, []):
                         if validation.values_agree(obs.value, prior.value):
                             _, promoted = _store(engine, prior, "ok")
+                            cycle_values.setdefault(obs.symbol, {})[
+                                prior.provider_code
+                            ] = float(prior.value)
                             if promoted:
                                 collected[obs.symbol] = collected.get(obs.symbol, 0) + 1
+                                winners.setdefault(obs.symbol, prior)
                                 COLLECT_SUCCESS.labels(
                                     provider=prior.provider_code, symbol=obs.symbol
                                 ).inc()
                 _, price_inserted = _store(engine, obs, "ok")
+                # a repeat of the last quote inserts nothing but is still this
+                # cycle's opinion of the price, so it counts towards dispersion
+                cycle_values.setdefault(obs.symbol, {})[code] = float(obs.value)
                 if price_inserted:
                     collected[obs.symbol] = collected.get(obs.symbol, 0) + 1
+                    winners.setdefault(obs.symbol, obs)
                     COLLECT_SUCCESS.labels(provider=code, symbol=obs.symbol).inc()
                     LAST_PRICE_TS.labels(symbol=obs.symbol).set(
                         obs.observed_at.timestamp()
@@ -310,6 +414,16 @@ def run_collect(
                 )
             else:
                 errors.append(f"{job}: no good value collected for {symbol}")
+
+    try:
+        _measure_dispersion(
+            engine, fetch_cache, attempted_symbols, handled, cycle_values, winners
+        )
+    except Exception as exc:  # noqa: BLE001
+        # the prices are already committed; a broken measurement must not turn
+        # a successful collection into a failed job (and a retried fetch round)
+        log.warning("peer dispersion pass failed: %s", exc)
+        errors.append(f"peer dispersion: {exc}")
 
     JOB_LAST_SUCCESS.labels(job="collect").set(time.time())
     return {"collected": collected, "errors": errors}

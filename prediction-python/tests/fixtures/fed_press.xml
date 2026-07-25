@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cb="http://www.cbwiki.net/wiki/index.php/Specification_1.2">
+  <channel>
+    <title>FRB: Press Releases</title>
+    <link>https://www.federalreserve.gov/</link>
+    <description>Board of Governors of the Federal Reserve System press releases</description>
+    <language>en-us</language>
+    <lastBuildDate>Wed, 15 Jul 2026 19:05:00 GMT</lastBuildDate>
+    <item>
+      <title>Federal Reserve issues FOMC statement</title>
+      <link>https://www.federalreserve.gov/newsevents/pressreleases/monetary20260715a.htm</link>
+      <description>Recent indicators suggest that economic activity has continued to expand at a solid pace. The Committee decided to maintain the target range for the federal funds rate at 4-1/4 to 4-1/2 percent.</description>
+      <pubDate>Wed, 15 Jul 2026 14:00:00 EST</pubDate>
+      <dc:date>2026-07-15T14:00:00-05:00</dc:date>
+      <dc:language>en</dc:language>
+      <guid isPermaLink="false">https://www.federalreserve.gov/newsevents/pressreleases/monetary20260715a.htm</guid>
+      <category>Monetary Policy</category>
+    </item>
+    <item>
+      <title>Speech by Governor Adams on the economic outlook and monetary policy</title>
+      <link>https://www.federalreserve.gov/newsevents/speech/adams20260714a.htm</link>
+      <description>At the Economic Club of Chicago, Chicago, Illinois &#8212; remarks as prepared for delivery.</description>
+      <pubDate>Tue, 14 Jul 2026 10:30:00 -0400</pubDate>
+      <dc:date>2026-07-14T10:30:00-04:00</dc:date>
+      <dc:language>en</dc:language>
+      <guid isPermaLink="false">https://www.federalreserve.gov/newsevents/speech/adams20260714a.htm</guid>
+      <category>Speeches</category>
+    </item>
+    <item>
+      <title>Federal Reserve Board announces termination of enforcement action</title>
+      <link>https://www.federalreserve.gov/newsevents/pressreleases/enforcement20260713a.htm</link>
+      <description>The Federal Reserve Board on Monday announced the termination of an enforcement action.</description>
+      <dc:language>en</dc:language>
+      <guid isPermaLink="false">https://www.federalreserve.gov/newsevents/pressreleases/enforcement20260713a.htm</guid>
+      <category>Enforcement Actions</category>
+    </item>
+    <item>
+      <title>Federal Reserve Board releases results of annual bank stress test</title>
+      <link>https://www.federalreserve.gov/newsevents/pressreleases/bcreg20260710a.htm</link>
+      <description>The results show that large banks are well positioned to weather a severe recession.</description>
+      <pubDate>Fri, 10 Jul 2026 16:45:00 EST</pubDate>
+      <dc:date>2026-07-10T16:45:00-05:00</dc:date>
+      <dc:language>en</dc:language>
+      <guid isPermaLink="false">https://www.federalreserve.gov/newsevents/pressreleases/bcreg20260710a.htm</guid>
+      <category>Banking and Consumer Regulatory Policy</category>
+    </item>
+  </channel>
+</rss>

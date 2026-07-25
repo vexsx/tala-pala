@@ -68,7 +68,7 @@ func NewMetrics() *Metrics {
 		}, []string{"horizon"}),
 	}
 	reg.MustRegister(
-		m.HTTPDuration, m.HTTPTotal, m.DBUp, m.RedisUp,
+		m.HTTPDuration, m.HTTPTotal,
 		m.JobLastSuccess, m.JobFailures, m.JobDuration,
 		m.LastPriceTimestamp, m.LastPredictionTimestamp,
 		collectors.NewGoCollector(),
@@ -94,9 +94,20 @@ func HealthHandler() http.HandlerFunc {
 	}
 }
 
-// ReadinessHandler checks db + redis; returns 503 if either is down and
-// updates the corresponding gauges.
-func ReadinessHandler(m *Metrics, db, redis Pinger) http.HandlerFunc {
+// ReadinessHandler checks db + redis; returns 503 if either is down.
+//
+// It no longer maintains goldpred_db_up / goldpred_redis_up. Those gauges were
+// written here and nowhere else, and nothing polls readiness in normal
+// operation (the container healthcheck hits /api/v1/health, Prometheus scrapes
+// /metrics), so they sat at the zero value and reported both dependencies down
+// forever. Refreshing them from a scheduler tick was the alternative, but the
+// scheduler holds no database handle — it would have to borrow another
+// component's pool and duplicate this check on a timer to restate what this
+// endpoint already answers on demand, while a real outage already shows up as
+// job failures and WARN/ERROR rows in the Issues table. Deleting a permanently
+// wrong gauge is the smaller and more honest fix. The unused *Metrics
+// parameter is kept so the wiring in cmd/api stays untouched.
+func ReadinessHandler(_ *Metrics, db, redis Pinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 		defer cancel()
@@ -108,8 +119,6 @@ func ReadinessHandler(m *Metrics, db, redis Pinger) http.HandlerFunc {
 		if err := redis(ctx); err != nil {
 			redisOK = false
 		}
-		setGauge(m.DBUp, dbOK)
-		setGauge(m.RedisUp, redisOK)
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		if dbOK && redisOK {
@@ -121,14 +130,6 @@ func ReadinessHandler(m *Metrics, db, redis Pinger) http.HandlerFunc {
 		body := `{"error":{"code":"not_ready","message":"dependency check failed","details":{"db":` +
 			boolStr(dbOK) + `,"redis":` + boolStr(redisOK) + `}}}`
 		_, _ = w.Write([]byte(body))
-	}
-}
-
-func setGauge(g prometheus.Gauge, ok bool) {
-	if ok {
-		g.Set(1)
-	} else {
-		g.Set(0)
 	}
 }
 
