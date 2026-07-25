@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from app.signals.engine import SignalInputs, compute_signal
 
 FORBIDDEN_WORDING = re.compile(
@@ -133,3 +135,85 @@ def test_market_closed_with_truly_stale_data_still_forces_hold():
     assert any("STALE" in r for r in result["risks"])
     # the informational last-session note is NOT added on truly stale data
     assert not any("last session" in r for r in result["risks"])
+
+
+# --- Addendum 15: decision-layer correctness ---------------------------------
+
+def test_forecast_contribution_is_monotonic_in_expected_move():
+    """A more bullish forecast must never score lower than a less bullish one.
+
+    The previous piecewise rule scored +0.30% BELOW -0.30% and had a ~12-point
+    cliff at the cost threshold, so a 0.02pp drift flipped hold -> near-buy.
+    """
+    from app.signals.engine import SignalInputs, compute_signal
+
+    scores = []
+    for move in (-3.0, -2.0, -1.0, -0.3, 0.0, 0.3, 1.0, 2.0, 3.0, 5.0):
+        inputs = SignalInputs()
+        inputs.round_trip_cost_pct = 2.2
+        inputs.expected_change_pct = {"1d": move}
+        inputs.confidence = {"1d": 0.6}
+        scores.append(compute_signal(inputs)["score"])
+    assert scores == sorted(scores), f"non-monotonic: {scores}"
+    # and no discontinuous jump at the cost threshold
+    inputs_lo, inputs_hi = SignalInputs(), SignalInputs()
+    for i, mv in ((inputs_lo, 2.19), (inputs_hi, 2.21)):
+        i.round_trip_cost_pct = 2.2
+        i.expected_change_pct = {"1d": mv}
+        i.confidence = {"1d": 0.6}
+    jump = abs(compute_signal(inputs_hi)["score"] - compute_signal(inputs_lo)["score"])
+    assert jump <= 1.0, f"cliff of {jump} points at the cost threshold"
+
+
+def test_signal_declares_itself_technical_only_without_forecasts():
+    """With the predict job down the signal must not imply model backing."""
+    from app.signals.engine import SignalInputs, compute_signal
+
+    inputs = SignalInputs()
+    inputs.last_price, inputs.sma20, inputs.sma50 = 110.0, 105.0, 100.0
+    inputs.rsi14 = 65.0
+    out = compute_signal(inputs)
+    joined = " ".join(out["risks"] + out.get("conflicting", []))
+    assert "technical-only" in joined
+    assert "No model forecast" in joined
+
+
+def test_monte_carlo_is_conditional_on_the_forecast():
+    """Odds must move with the forecast, not just historical drift."""
+    import numpy as np
+    import pandas as pd
+
+    from app.models.tvinspired import mc_probabilities
+
+    idx = pd.date_range("2025-01-01", periods=200, freq="D", tz="UTC")
+    rng = np.random.default_rng(3)
+    series = pd.Series(
+        100.0 * np.exp(np.cumsum(rng.normal(0, 0.01, size=200))), index=idx
+    )
+    bull = mc_probabilities(series, 7, 0.5, expected_change_pct=5.0)
+    bear = mc_probabilities(series, 7, 0.5, expected_change_pct=-5.0)
+    assert bull["conditional_on_forecast"] is True
+    assert bull["p_up"] > bear["p_up"] + 0.3
+    assert bull["p_gain_over_cost"] > bear["p_gain_over_cost"]
+    # unconditional call keeps the historical view and says so
+    hist = mc_probabilities(series, 7, 0.5)
+    assert hist["conditional_on_forecast"] is False
+
+
+def test_round_trip_cost_prefers_observed_spread(engine):
+    """The cost hurdle must come from the observed dealer spread when fresh."""
+    from app.core.costs import FALLBACK_ROUND_TRIP_COST_PCT, round_trip_cost_pct
+    from app.db import raw_observations, utcnow
+
+    cost, basis = round_trip_cost_pct(engine)
+    assert basis == "assumed" and cost == FALLBACK_ROUND_TRIP_COST_PCT
+
+    with engine.begin() as conn:
+        conn.execute(raw_observations.insert().values(
+            provider_code="hamrahgold", symbol="IR_GOLD_18K", raw_value=1.0,
+            unit="gram", currency="IRT", raw_payload={"spread_pct": 0.49},
+            observed_at=utcnow(), collected_at=utcnow(), quality="ok",
+            dedupe_key="spread-test-1",
+        ))
+    cost, basis = round_trip_cost_pct(engine)
+    assert basis == "observed_spread" and cost == pytest.approx(0.49)
