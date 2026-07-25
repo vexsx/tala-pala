@@ -13,6 +13,7 @@ Rules (docs/CONTRACTS.md):
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -174,8 +175,25 @@ def walk_forward(
     return folds
 
 
+def _fold_step(series: pd.Series, horizon_steps: int, max_folds: int = MAX_FOLDS) -> int:
+    """Fold spacing used by :func:`walk_forward` (kept in one place so the
+    embargo in :func:`split_folds` matches the actual fold geometry)."""
+    last_now = len(series) - 1 - horizon_steps
+    first_now = MIN_TRAIN_POINTS - 1
+    if last_now < first_now:
+        return 1
+    return max(1, (last_now - first_now) // max_folds + 1)
+
+
 def fold_metrics(folds: Sequence[Fold]) -> dict:
-    """mae, rmse, smape, directional_accuracy, interval_coverage for folds."""
+    """mae, rmse, smape, mase, directional_accuracy, interval_coverage.
+
+    ``mase`` (Hyndman & Koehler 2006) scales MAE by the in-sample naive error
+    of the SAME folds: < 1 means "better than repeating the last observation".
+    It is scale-free and comparable across symbols and horizons, unlike sMAPE.
+    ``interval_coverage`` is ``None`` when no fold could be scored (previously
+    a hard 0.0, which the UI rendered as "0% coverage" for unscored models).
+    """
     if not folds:
         return {}
     preds = np.array([f.pred for f in folds])
@@ -185,11 +203,14 @@ def fold_metrics(folds: Sequence[Fold]) -> dict:
     denom = np.abs(actuals) + np.abs(preds)
     smape = float(np.mean(np.where(denom > 0, 2.0 * np.abs(errors) / denom, 0.0)) * 100.0)
     dir_hits = np.sign(preds - bases) == np.sign(actuals - bases)
+    mae = float(np.mean(np.abs(errors)))
+    naive_mae = float(np.mean(np.abs(actuals - bases)))  # naive = carry the base forward
     return {
         "n_folds": len(folds),
-        "mae": float(np.mean(np.abs(errors))),
+        "mae": mae,
         "rmse": float(np.sqrt(np.mean(errors**2))),
         "smape": smape,
+        "mase": float(mae / naive_mae) if naive_mae > 0 else None,
         "directional_accuracy": float(np.mean(dir_hits)),
         "interval_coverage": walk_forward_coverage(preds.tolist(), actuals.tolist()),
     }
@@ -230,12 +251,33 @@ HOLDOUT_MIN = 5
 HOLDOUT_MIN_TOTAL = 15
 
 
-def split_folds(folds: list[Fold]) -> tuple[list[Fold], list[Fold]]:
-    """Chronological (selection, holdout) split; holdout empty when too few."""
+def split_folds(
+    folds: list[Fold], horizon_steps: int = 1, step: int = 1
+) -> tuple[list[Fold], list[Fold]]:
+    """Chronological (selection, holdout) split with an EMBARGO gap.
+
+    Walk-forward folds are spaced ``step`` index positions apart while each
+    fold's target lies ``horizon_steps`` ahead, so adjacent folds share future
+    data whenever ``step < horizon_steps`` (measured: 30x target overlap at
+    n=120,h=30). Without a gap, the last selection folds and the first holdout
+    folds resolve into the SAME future window — the holdout is then not truly
+    out-of-sample.
+
+    The embargo drops ``ceil(horizon_steps / step)`` folds between the two
+    blocks (Lopez de Prado's purging/embargo idea applied to the split point).
+    Holdout is empty when too few folds remain to be meaningful.
+    """
     if len(folds) < HOLDOUT_MIN_TOTAL:
         return folds, []
     n_hold = max(HOLDOUT_MIN, int(len(folds) * HOLDOUT_FRACTION))
-    return folds[:-n_hold], folds[-n_hold:]
+    embargo = max(0, math.ceil(max(1, horizon_steps) / max(1, step)) - 1)
+    # Never let the embargo eat so much that selection loses its majority.
+    embargo = min(embargo, max(0, len(folds) - n_hold - HOLDOUT_MIN))
+    holdout = folds[-n_hold:]
+    selection = folds[: len(folds) - n_hold - embargo]
+    if len(selection) < HOLDOUT_MIN:
+        return folds, []
+    return selection, holdout
 
 
 def evaluate_candidates(
@@ -269,7 +311,7 @@ def evaluate_candidates(
     for name in candidates:
         folds = walk_forward(series, name, horizon_steps, context=context, max_folds=max_folds)
         if folds:
-            sel, hold = split_folds(folds)
+            sel, hold = split_folds(folds, horizon_steps, _fold_step(series, horizon_steps, max_folds))
             results[name] = {
                 "folds": folds,
                 "metrics": fold_metrics(folds),
@@ -285,6 +327,11 @@ def evaluate_candidates(
             for name, r in results.items()
             if name != "naive" and r["sel_metrics"]["smape"] < naive_smape
         }
+        if len(member_smapes) >= 2:
+            # Deduplicate members whose fold predictions are identical (e.g. a
+            # tuned variant that degenerated to its untuned twin): otherwise
+            # inverse-sMAPE weighting hands that single model double weight.
+            member_smapes = _drop_duplicate_members(member_smapes, results)
         if len(member_smapes) >= 2:
             weights = inverse_smape_weights(member_smapes)
             fold_maps = {
@@ -305,7 +352,9 @@ def evaluate_candidates(
                 for i in sorted(common)
             ]
             if ens_folds:
-                sel, hold = split_folds(ens_folds)
+                sel, hold = split_folds(
+                    ens_folds, horizon_steps, _fold_step(series, horizon_steps, max_folds)
+                )
                 results["ensemble"] = {
                     "folds": ens_folds,
                     "metrics": fold_metrics(ens_folds),
@@ -321,10 +370,83 @@ def report_metrics(r: dict) -> dict:
     return r.get("holdout_metrics") or r["metrics"]
 
 
+# --- significance gating (Addendum 15) --------------------------------------
+# argmin over ~18 candidates is a multiple-comparison machine: with 18 coin
+# flips against naive, the best one looks good by luck alone. Three guards,
+# all cheap and all documented in docs/CONTRACTS.md:
+#   1. MIN_EDGE_PCT   - the winner must beat naive by a material margin, not
+#                       a rounding difference;
+#   2. bootstrap CI   - resampling the per-fold sMAPE differences must put the
+#                       improvement's upper bound below zero (one-sided);
+#   3. holdout confirm - the same edge must survive on embargoed folds the
+#                       winner was never selected on.
+# Failing any of them means naive wins, which is a legitimate outcome.
+MIN_EDGE_PCT = 0.02        # relative sMAPE improvement required (2%)
+BOOTSTRAP_ROUNDS = 2000
+BOOTSTRAP_CONF = 0.90      # one-sided confidence for the paired difference
+
+
+def _paired_fold_smapes(folds: Sequence[Fold]) -> dict[int, float]:
+    """Per-fold sMAPE keyed by t_index, so candidates pair on identical folds."""
+    out: dict[int, float] = {}
+    for f in folds:
+        denom = abs(f.actual) + abs(f.pred)
+        out[f.t_index] = (2.0 * abs(f.actual - f.pred) / denom * 100.0) if denom > 0 else 0.0
+    return out
+
+
+def bootstrap_beats(
+    candidate: Sequence[Fold],
+    baseline: Sequence[Fold],
+    rounds: int = BOOTSTRAP_ROUNDS,
+    conf: float = BOOTSTRAP_CONF,
+    seed: int = 12345,
+) -> Optional[bool]:
+    """True when the candidate's paired sMAPE edge over naive is significant.
+
+    Pairs folds by ``t_index`` (never compares different fold sets), resamples
+    the per-fold differences with replacement, and requires the upper bound of
+    the one-sided ``conf`` interval on the MEAN difference to be < 0 (i.e. the
+    candidate is better even in the unlucky tail). ``None`` when there are too
+    few paired folds to say anything.
+    """
+    cand = _paired_fold_smapes(candidate)
+    base = _paired_fold_smapes(baseline)
+    common = sorted(set(cand) & set(base))
+    if len(common) < 8:
+        return None
+    diffs = np.array([cand[i] - base[i] for i in common], dtype=float)
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(diffs), size=(rounds, len(diffs)))
+    means = diffs[idx].mean(axis=1)
+    upper = float(np.quantile(means, conf))
+    return bool(upper < 0.0)
+
+
+def _drop_duplicate_members(
+    member_smapes: dict[str, float], results: dict[str, dict]
+) -> dict[str, float]:
+    """Keep one representative per identical prediction vector."""
+    kept: dict[str, float] = {}
+    seen: list[tuple[str, np.ndarray]] = []
+    for name in sorted(member_smapes, key=lambda n: member_smapes[n]):
+        vec = np.array([f.pred for f in results[name]["folds"]], dtype=float)
+        if any(v.shape == vec.shape and np.allclose(v, vec, rtol=0, atol=1e-12)
+               for _, v in seen):
+            log.info("ensemble: dropping %s (identical predictions to an existing member)", name)
+            continue
+        seen.append((name, vec))
+        kept[name] = member_smapes[name]
+    return kept
+
+
 def select_winner(results: dict[str, dict]) -> str:
-    """Lowest selection-fold sMAPE among candidates beating naive there,
-    CONFIRMED on the holdout: the chosen non-naive winner must also beat
-    naive on the held-out folds, else the fallback is naive."""
+    """Significance-gated selection (see MIN_EDGE_PCT block above).
+
+    Ranking happens on selection folds; the chosen candidate must then clear a
+    material edge, a paired bootstrap test, and the embargoed holdout. Any
+    failure falls back to ``naive``.
+    """
     if not results:
         return ""
     if "naive" not in results:
@@ -337,11 +459,28 @@ def select_winner(results: dict[str, dict]) -> str:
         smape = r["sel_metrics"]["smape"]
         if smape < best_smape and smape < naive_sel:
             best_name, best_smape = name, smape
-    if best_name != "naive":
-        winner_hold = results[best_name].get("holdout_metrics")
-        naive_hold = results["naive"].get("holdout_metrics")
-        if winner_hold and naive_hold and winner_hold["smape"] >= naive_hold["smape"]:
-            return "naive"
+    if best_name == "naive":
+        return "naive"
+
+    reasons: list[str] = []
+    # 1) material edge on selection folds
+    if naive_sel > 0 and (naive_sel - best_smape) / naive_sel < MIN_EDGE_PCT:
+        reasons.append(
+            f"edge {(naive_sel - best_smape) / naive_sel:.3%} < {MIN_EDGE_PCT:.0%}"
+        )
+    # 2) paired bootstrap on the same selection folds
+    sig = bootstrap_beats(results[best_name]["folds"], results["naive"]["folds"])
+    if sig is False:
+        reasons.append("bootstrap CI includes no improvement")
+    # 3) embargoed holdout confirmation
+    winner_hold = results[best_name].get("holdout_metrics")
+    naive_hold = results["naive"].get("holdout_metrics")
+    if winner_hold and naive_hold and winner_hold["smape"] >= naive_hold["smape"]:
+        reasons.append("holdout sMAPE not better than naive")
+    if reasons:
+        log.info("candidate %s rejected -> naive (%s)", best_name, "; ".join(reasons))
+        results[best_name]["rejection_reason"] = "; ".join(reasons)
+        return "naive"
     return best_name
 
 
@@ -351,8 +490,18 @@ def _build_final_model(
     series: pd.Series,
     horizon_steps: int,
     context: Optional[dict] = None,
+    selection_end: Optional[int] = None,
 ) -> ForecastModel:
-    """Refit the chosen model on the full series for artifact persistence."""
+    """Refit the chosen model on the full series for artifact persistence.
+
+    ``selection_end`` is the index of the last SELECTION fold. Models that
+    tune their own hyperparameters get :meth:`prepare_params` called on the
+    prefix ending there, so the deployed artifact's configuration is chosen
+    without ever seeing the embargoed holdout it was certified on. (Previously
+    the artifact re-tuned on the full series, whose tuning-validation tail
+    overlapped the holdout by ~198 rows, and then shipped carrying metrics
+    measured for a *different* configuration.)
+    """
     if name == "ensemble":
         weights = results["ensemble"]["weights"]
         members = {member: make(member) for member in weights}
@@ -360,6 +509,12 @@ def _build_final_model(
     else:
         model = make(name)
     model.set_context(context)
+    prepare = getattr(model, "prepare_params", None)
+    if callable(prepare) and selection_end is not None and selection_end > MIN_TRAIN_POINTS:
+        try:
+            prepare(series.iloc[: selection_end + 1], horizon_steps)
+        except Exception as exc:  # noqa: BLE001 — tuning must never sink a run
+            log.warning("prepare_params failed for %s: %s", name, exc)
     model.fit(series, horizon_steps)
     return model
 
@@ -457,11 +612,19 @@ def train_all(
                 naive_result = results.get("naive")
                 baseline_metrics = report_metrics(naive_result) if naive_result else {}
 
-                final_model = _build_final_model(winner, results, series, steps, context)
+                sel_folds, _ = split_folds(
+                    results[winner]["folds"], steps, _fold_step(series, steps, MAX_FOLDS)
+                )
+                selection_end = sel_folds[-1].t_index if sel_folds else None
+                final_model = _build_final_model(
+                    winner, results, series, steps, context, selection_end
+                )
                 # Interval residuals from the winner's HOLDOUT folds when
                 # enough exist: selection-fold residuals understate true
                 # out-of-sample error for the fold-minimizing winner.
-                _, winner_hold = split_folds(results[winner]["folds"])
+                _, winner_hold = split_folds(
+                    results[winner]["folds"], steps, _fold_step(series, steps, MAX_FOLDS)
+                )
                 residual_folds = (
                     winner_hold if len(winner_hold) >= 8 else results[winner]["folds"]
                 )

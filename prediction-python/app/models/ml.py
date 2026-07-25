@@ -354,7 +354,7 @@ TUNE_CONFIGS: tuple[dict, ...] = (
     {"max_iter": 200, "learning_rate": 0.04, "max_leaf_nodes": 20, "min_samples_leaf": 6},
 )
 TUNE_VAL_FRACTION = 0.25
-TUNE_MIN_ROWS = 60
+TUNE_MIN_ROWS = 24  # reachable at the 60-point first fold (24-32 clean rows)
 
 
 def _hist_gb_with(params: dict) -> object:
@@ -392,12 +392,18 @@ class TunedHistGBModel(TabularModel):
         X = train.drop(columns="__target__").to_numpy()
         y = train["__target__"].to_numpy()
         split = max(int(len(y) * (1 - TUNE_VAL_FRACTION)), TUNE_MIN_ROWS // 2)
+        # Embargo: row i's label is log(y[i+h]/y[i]), so the last `horizon`
+        # training rows resolve INSIDE the validation block. Without this gap
+        # the search is scored on labels it partly saw, which measurably
+        # biased selection toward the highest-capacity config at h=30.
+        embargo = max(0, int(horizon) - 1)
+        train_end = max(1, split - embargo)
         best, best_fit = dict(TUNE_CONFIGS[0]), -np.inf
         for cfg in TUNE_CONFIGS:
             try:
                 est = _hist_gb_with(cfg)
-                est.fit(X[:split], y[:split])
-                mse_train = float(np.mean((est.predict(X[:split]) - y[:split]) ** 2))
+                est.fit(X[:train_end], y[:train_end])
+                mse_train = float(np.mean((est.predict(X[:train_end]) - y[:train_end]) ** 2))
                 mse_val = float(np.mean((est.predict(X[split:]) - y[split:]) ** 2))
                 fitness = 1.0 / (mse_train + mse_val + 1e-12)
             except Exception:
@@ -406,10 +412,19 @@ class TunedHistGBModel(TabularModel):
                 best, best_fit = dict(cfg), fitness
         return best
 
+    def prepare_params(self, series: pd.Series, horizon: int) -> None:
+        """Fix hyperparameters from ``series`` (a point-in-time prefix).
+
+        The trainer calls this with the series truncated at the SELECTION
+        boundary before fitting the deployed artifact on the full history, so
+        the search never sees the embargoed holdout it is later certified on.
+        """
+        self._tuned_params = self._select_params(series, horizon)
+        self._factory = self._factory_tuned
+
     def fit(self, series: pd.Series, horizon: int) -> "TunedHistGBModel":
         if self._tuned_params is None:
-            self._tuned_params = self._select_params(series, horizon)
-            self._factory = self._factory_tuned
+            self.prepare_params(series, horizon)
         return super().fit(series, horizon)  # type: ignore[return-value]
 
     def __getstate__(self) -> dict:
