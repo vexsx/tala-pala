@@ -35,7 +35,7 @@ from ..db import app_settings, ensure_utc, model_versions, predictions, prices, 
 from ..metrics import PREDICTION_DURATION
 from .base import ForecastModel
 from .ensemble import EnsembleModel, inverse_smape_weights, live_member_smapes
-from .intervals import DEFAULT_ALPHA, adaptive_alpha, empirical_interval
+from .intervals import DEFAULT_ALPHA, adaptive_alpha, conformal_interval, empirical_interval
 from .metagate import META_GATE_KEY, apply_meta_gate
 from .training import CONTEXT_SYMBOLS, HORIZON_SPECS, detect_regime, load_series
 
@@ -429,6 +429,7 @@ def _predict_one(
 
     # a model exposing its own interval (e.g. quantile_gbr) takes precedence
     # over the empirical residual-quantile interval
+    interval_diag: dict = {}
     native = model.predict_interval()
     if native is not None:
         lower, upper = float(native[0]), float(native[1])
@@ -449,9 +450,20 @@ def _predict_one(
         alpha_eff = adaptive_alpha(
             (live_cal or {}).get("coverage"), int((live_cal or {}).get("n") or 0)
         )
-        lower, upper = empirical_interval(point, residuals, alpha_eff)
+        lower, upper, interval_diag = conformal_interval(point, residuals, alpha_eff)
         if alpha_eff < DEFAULT_ALPHA:
             warnings.append(UNDER_COVERAGE_WARNING)
+        # Interval honesty: say how the band was built, how much evidence backs
+        # it, and whether the finite-sample coverage guarantee actually holds.
+        # A band built by extrapolation is NOT a 90% band and must not be shown
+        # as one without qualification.
+        if not interval_diag.get("coverage_guaranteed", False):
+            warnings.append(
+                f"Interval built from only {interval_diag.get('n_residuals', 0)} validation "
+                f"residuals (need {interval_diag.get('min_n_symmetric')} for a guaranteed "
+                f"{(1 - alpha_eff) * 100:.0f}% band); it was widened by extrapolation and "
+                "its true coverage is uncertain."
+            )
 
     # provider gap: when Iranian sources disagree materially on the current
     # price, that quote uncertainty is added to the interval half-width
@@ -464,6 +476,20 @@ def _predict_one(
             f"Iranian data providers currently disagree by {gap_pct:.1f}% on the "
             "18k price; the interval was widened to reflect this quote uncertainty."
         )
+
+    if interval_diag:
+        live_cov = (live_cal or {}).get("coverage")
+        drivers.append({
+            "factor": "interval_quality",
+            "note": (
+                f"{interval_diag.get('method', 'n/a')} band from "
+                f"{interval_diag.get('n_residuals', 0)} held-out residuals"
+                + (f"; live coverage {live_cov:.0%} over {int((live_cal or {}).get('n') or 0)} "
+                   "matured predictions" if isinstance(live_cov, (int, float)) else
+                   "; no live coverage evidence yet")
+                + ("" if interval_diag.get("coverage_guaranteed") else "; NOT guaranteed")
+            ),
+        })
 
     expected_change_pct = (point / last_price - 1.0) * 100.0
     direction = _direction(expected_change_pct)
