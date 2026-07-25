@@ -185,6 +185,18 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
         """
         return run_backfill(engine, settings, body.symbols or None, body.range)
 
+    @app.post("/internal/news/ingest")
+    def news_ingest(body: BackfillRequest) -> dict:
+        """Poll approved news sources (no-op unless NEWS_ENABLED is truthy).
+
+        Deliberately NOT scheduled: there is no historical archive, so news
+        features cannot inform forecasts yet. This endpoint exists so an
+        operator can start accumulating history when they choose to.
+        """
+        from .jobs.news import run_news_ingest
+
+        return run_news_ingest(engine, settings, body.symbols or None)
+
     @app.get("/internal/data/coverage")
     def data_coverage() -> dict:
         return {"coverage": coverage_report(engine)}
