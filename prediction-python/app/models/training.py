@@ -423,6 +423,27 @@ def bootstrap_beats(
     return bool(upper < 0.0)
 
 
+# A candidate whose fold predictions are (nearly) identical to naive was not
+# actually exercised: tabular models fall back to naive until they have enough
+# clean feature rows (measured: a tabular model is bit-identical to naive until
+# n_train >= 89 at h=30, and sarimax_exog until n_train >= 69). Such a
+# candidate's selection sMAPE describes NAIVE, not the model that later ships
+# refit on the full series where it IS active.
+DEGENERATE_FOLD_TOLERANCE = 1e-9
+MAX_DEGENERATE_SHARE = 0.5
+
+
+def degenerate_share(candidate: Sequence[Fold], naive: Sequence[Fold]) -> float:
+    """Fraction of paired folds where the candidate merely reproduced naive."""
+    naive_by_idx = {f.t_index: f.pred for f in naive}
+    paired = [(f.pred, naive_by_idx[f.t_index]) for f in candidate
+              if f.t_index in naive_by_idx]
+    if not paired:
+        return 0.0
+    same = sum(1 for p, n in paired if abs(p - n) <= DEGENERATE_FOLD_TOLERANCE * max(1.0, abs(n)))
+    return same / len(paired)
+
+
 def _drop_duplicate_members(
     member_smapes: dict[str, float], results: dict[str, dict]
 ) -> dict[str, float]:
@@ -463,6 +484,12 @@ def select_winner(results: dict[str, dict]) -> str:
         return "naive"
 
     reasons: list[str] = []
+    # 0) the candidate must actually have been exercised on the selection folds
+    share = degenerate_share(
+        results[best_name].get("folds", []), results["naive"].get("folds", [])
+    )
+    if share > MAX_DEGENERATE_SHARE:
+        reasons.append(f"{share:.0%} of folds merely reproduced naive (model not exercised)")
     # 1) material edge on selection folds
     if naive_sel > 0 and (naive_sel - best_smape) / naive_sel < MIN_EDGE_PCT:
         reasons.append(

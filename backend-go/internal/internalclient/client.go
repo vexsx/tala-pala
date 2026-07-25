@@ -1,15 +1,17 @@
 // Package internalclient is the HTTP client for the Python prediction
-// service. Every request carries X-Internal-Token; 5xx responses and network
-// errors are retried once.
+// service. Every request carries X-Internal-Token; only failures that prove
+// the request never reached the service are retried (see Post).
 package internalclient
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -56,8 +58,21 @@ func truncate(s string, n int) string {
 	return s
 }
 
-// Post sends a JSON POST and returns the raw response body. Retries once on
-// 5xx or transport errors.
+// retryDelay separates the two attempts; a var so tests can exercise the
+// retry path without sleeping.
+var retryDelay = 2 * time.Second
+
+// Post sends a JSON POST and returns the raw response body.
+//
+// The retry policy is dictated by job safety, not availability. Every handler
+// on the Python side is a synchronous def running in a threadpool, so a client
+// disconnect does NOT cancel the work: after a timeout on collect/train/
+// evaluate the job is still running, still holding the same Redis lock. A
+// second attempt would therefore be a second CONCURRENT run of the same job.
+// So only errors that prove the request never reached the service are retried;
+// a per-call timeout, a transport failure mid-request and every HTTP status
+// (5xx included — the service answered, so the handler ran) are returned to
+// the caller as they are.
 func (c *Client) Post(ctx context.Context, path string, body any, timeout time.Duration) (json.RawMessage, error) {
 	var payload []byte
 	if body != nil {
@@ -74,7 +89,7 @@ func (c *Client) Post(ctx context.Context, path string, body any, timeout time.D
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(2 * time.Second):
+			case <-time.After(retryDelay):
 			}
 			c.Log.Warn("internal_client_retry", "path", path, "error", lastErr.Error())
 		}
@@ -83,21 +98,31 @@ func (c *Client) Post(ctx context.Context, path string, body any, timeout time.D
 			return res, nil
 		}
 		lastErr = err
-		var apiErr *APIError
-		// Retry only transport errors and 5xx.
-		if ok := asAPIError(err, &apiErr); ok && apiErr.Status < 500 {
+		if !undelivered(err) {
 			return nil, err
 		}
 	}
 	return nil, lastErr
 }
 
-func asAPIError(err error, target **APIError) bool {
-	if e, ok := err.(*APIError); ok {
-		*target = e
+// undelivered reports whether err proves the request never reached the
+// prediction service, which is the only condition under which replaying a
+// non-idempotent job POST is safe. Connection setup fails before a single
+// request byte is written; everything else may have started server-side work:
+// a deadline (the handler keeps running, uncancelled), a connection broken
+// mid-request, and any HTTP status at all, which means the service received
+// and dispatched the request.
+func undelivered(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
 		return true
 	}
-	return false
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 func (c *Client) once(ctx context.Context, method, path string, payload []byte, timeout time.Duration) (json.RawMessage, error) {

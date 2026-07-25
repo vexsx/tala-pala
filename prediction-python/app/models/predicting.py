@@ -287,6 +287,60 @@ def predict_all(
     return {"predictions": out, "errors": errors}
 
 
+# Complete-bar guard: never shrink the served series below this.
+MIN_SERVE_POINTS = 30
+
+
+def _drop_incomplete_bar(series, freq: str):
+    """(series_without_the_still-filling_bar, dropped_bar_or_None).
+
+    A bucket is incomplete when its period has not yet elapsed in UTC (daily
+    buckets are floored to the UTC day by ``daily_close``; hourly to the hour).
+    """
+    if series.empty:
+        return series, None
+    now = utcnow()
+    last_ts = series.index[-1].to_pydatetime()
+    if last_ts.tzinfo is None:
+        last_ts = last_ts.replace(tzinfo=timezone.utc)
+    if freq == "hourly":
+        boundary = last_ts + timedelta(hours=1)
+    else:
+        boundary = last_ts + timedelta(days=1)
+    if now < boundary:
+        return series.iloc[:-1], float(series.iloc[-1])
+    return series, None
+
+
+def _bar_aligned_target(series, steps: int, horizon: str, now: datetime) -> datetime:
+    """Target instant for the bar the model was actually trained to predict.
+
+    ``walk_forward`` counts STEPS OVER OBSERVED BARS while ``_target_time``
+    counted wall-clock time. For gappy series they diverge: XAUUSD trades ~6
+    days a week, so its 30-step model is validated over ~35 calendar days but
+    was graded at 30 - and ``eod`` was trained on the next daily bar (~27-46h
+    out) while being graded 5-18h out, mislabelling every eod outcome that
+    feeds live calibration, ACI and the meta-gate.
+
+    The bar spacing is estimated from the series' own median gap, so a symbol
+    that stops trading at weekends gets a target that lands on a trading bar.
+    """
+    if len(series) < 3:
+        return _target_time(horizon, now)
+    idx = series.index
+    deltas = (idx[1:] - idx[:-1]).to_pytimedelta()
+    spacings = sorted(d.total_seconds() for d in deltas if d.total_seconds() > 0)
+    if not spacings:
+        return _target_time(horizon, now)
+    median_gap = spacings[len(spacings) // 2]
+    last_ts = idx[-1].to_pydatetime()
+    if last_ts.tzinfo is None:
+        last_ts = last_ts.replace(tzinfo=timezone.utc)
+    target = last_ts + timedelta(seconds=median_gap * max(1, steps))
+    # never claim a target in the past (possible right after a long gap)
+    return target if target > now else now + timedelta(seconds=median_gap)
+
+
 def _predict_one(
     engine: Engine, settings: Settings, symbol: str, horizon: str, series_cache: dict
 ):
@@ -306,6 +360,17 @@ def _predict_one(
     series = series_cache[freq]
     if series.empty:
         return "no price series available"
+
+    # Train/serve alignment: models are fitted on COMPLETE bars, but the newest
+    # bucket is still filling (the predict cron runs hourly, so at 00:05 UTC the
+    # last daily bar is a 5-minute stub). Feeding that stub shifts tree models'
+    # expected move by 0.13-0.16pp - larger than the 0.15% flat band, i.e. it
+    # can flip the direction call purely on cron timing. Serve complete bars
+    # only; the live price is still used as the base for expected_change_pct
+    # below, so no freshness is lost from the user's point of view.
+    model_series, partial_bar = _drop_incomplete_bar(series, freq)
+    if len(model_series) >= MIN_SERVE_POINTS:
+        series = model_series
 
     warnings: list[str] = [
         "Forecast is an uncertain estimate based on historical patterns, "
@@ -350,7 +415,11 @@ def _predict_one(
     model.set_context(series_cache[aux_key])
     model.fit(series, steps)
     point = float(model.predict_point())
-    last_price = float(series.iloc[-1])
+    # Base for the expected move = the freshest observed price, NOT the last
+    # complete bar the model was fed. The model is anchored to complete bars
+    # (train/serve alignment above); the user's question is "how far from the
+    # price right now?", so the change is measured from the live quote.
+    last_price = float(latest["value"]) if latest else float(series.iloc[-1])
 
     cal_all = load_live_calibration(engine)
     live_cal = (cal_all.get(symbol) or {}).get(horizon)
@@ -408,7 +477,11 @@ def _predict_one(
         warnings.append(f"Model validated on only {n_folds} walk-forward folds.")
 
     predicted_at = now
-    target_time = _target_time(horizon, now)
+    target_time = (
+        _bar_aligned_target(series, steps, horizon, now)
+        if freq == "daily"
+        else _target_time(horizon, now)
+    )
     drivers = _drivers(model, series, regime)
 
     # meta-gate (meta-labeling): the system's learned self-assessment — a

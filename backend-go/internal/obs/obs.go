@@ -17,8 +17,6 @@ type Metrics struct {
 
 	HTTPDuration   *prometheus.HistogramVec
 	HTTPTotal      *prometheus.CounterVec
-	DBUp           prometheus.Gauge
-	RedisUp        prometheus.Gauge
 	JobLastSuccess *prometheus.GaugeVec
 	JobFailures    *prometheus.CounterVec
 	JobDuration    *prometheus.HistogramVec
@@ -42,14 +40,6 @@ func NewMetrics() *Metrics {
 			Name: "goldpred_http_requests_total",
 			Help: "Total HTTP requests by route, method and status code.",
 		}, []string{"route", "method", "code"}),
-		DBUp: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "goldpred_db_up",
-			Help: "1 if the last database health check succeeded.",
-		}),
-		RedisUp: prometheus.NewGauge(prometheus.GaugeOpts{
-			Name: "goldpred_redis_up",
-			Help: "1 if the last Redis health check succeeded.",
-		}),
 		JobLastSuccess: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "goldpred_job_last_success_timestamp_seconds",
 			Help: "Unix timestamp of the last successful run per scheduled job.",
@@ -59,9 +49,14 @@ func NewMetrics() *Metrics {
 			Help: "Total failed runs per scheduled job.",
 		}, []string{"job"}),
 		JobDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name:    "goldpred_job_duration_seconds",
-			Help:    "Duration of scheduled job runs.",
-			Buckets: []float64{.1, .5, 1, 5, 15, 30, 60, 120, 300},
+			Name: "goldpred_job_duration_seconds",
+			Help: "Duration of scheduled job runs.",
+			// Must span the slowest job, not the typical one: train takes
+			// 30–36 min in production and is allowed 90 (the internal-client
+			// train timeout). With the old 300s ceiling every single training
+			// run fell into +Inf, so no quantile could show a run getting
+			// slower — the one thing this histogram exists to catch.
+			Buckets: []float64{.1, .5, 1, 5, 15, 30, 60, 120, 300, 600, 1200, 1800, 2400, 3600, 5400},
 		}, []string{"job"}),
 		LastPriceTimestamp: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "goldpred_api_last_price_timestamp_seconds",

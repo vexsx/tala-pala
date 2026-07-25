@@ -261,3 +261,44 @@ def test_fold_metrics_reports_mase_and_nullable_coverage():
     m = fold_metrics(naive_like)
     assert m["mase"] == pytest.approx(1.0)      # exactly naive performance
     assert m["interval_coverage"] is None       # too few folds to score honestly
+
+
+def test_degenerate_candidate_cannot_win():
+    """A model that merely reproduced naive on most folds was never exercised;
+    its sMAPE describes naive, not the model that would ship refit on all data."""
+    from app.models.training import degenerate_share
+
+    naive = [Fold(i, _t(i), 100.0, 100.0, 101.0) for i in range(20)]
+    # identical on 15/20 folds -> 75% degenerate
+    cand = [
+        Fold(i, _t(i), 100.0, 100.0 if i < 15 else 100.5, 101.0)
+        for i in range(20)
+    ]
+    assert degenerate_share(cand, naive) == pytest.approx(0.75)
+
+    results = {
+        "naive": {"metrics": {"smape": 1.0}, "sel_metrics": {"smape": 1.0},
+                  "holdout_metrics": {"smape": 1.0}, "folds": naive},
+        "rf": {"metrics": {"smape": 0.5}, "sel_metrics": {"smape": 0.5},
+               "holdout_metrics": {"smape": 0.5}, "folds": cand},
+    }
+    assert select_winner(results) == "naive"
+    assert "not exercised" in results["rf"]["rejection_reason"]
+
+
+def test_drop_incomplete_bar_removes_still_filling_bucket():
+    """The newest daily bucket is a stub until its UTC day ends."""
+    from app.models.predicting import _drop_incomplete_bar
+    from app.db import utcnow
+
+    now = utcnow()
+    idx = pd.date_range(end=now.replace(hour=0, minute=0, second=0, microsecond=0),
+                        periods=40, freq="D", tz="UTC")
+    series = pd.Series(range(40), index=idx, dtype=float)
+    trimmed, dropped = _drop_incomplete_bar(series, "daily")
+    assert dropped == 39.0                      # today's stub removed
+    assert len(trimmed) == 39
+    # a series whose last bar is a completed past day is untouched
+    old = series.iloc[:-1]
+    trimmed2, dropped2 = _drop_incomplete_bar(old, "daily")
+    assert dropped2 is None and len(trimmed2) == len(old)
