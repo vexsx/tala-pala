@@ -19,6 +19,7 @@ from . import __version__
 from .backtest.engine import run_and_store as run_backtest_and_store
 from .config import Settings, get_settings
 from .db import create_db_engine, db_ok
+from .jobs.backfill import coverage_report, run_backfill
 from .jobs.cleanup import run_cleanup
 from .jobs.collect import run_collect
 from .jobs.evaluate import run_evaluate
@@ -48,6 +49,13 @@ class CustomPredictRequest(BaseModel):
     fee_pct: Optional[float] = None
     spread_pct: Optional[float] = None
     slippage_pct: Optional[float] = None
+
+
+class BackfillRequest(BaseModel):
+    """Historical backfill of exogenous daily history (empty = macro default)."""
+
+    symbols: list[str] = Field(default_factory=list)
+    range: str = "5y"
 
 
 class BacktestRequest(BaseModel):
@@ -167,6 +175,19 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
     @app.post("/internal/maintenance/cleanup")
     def maintenance_cleanup() -> dict:
         return run_cleanup(engine, settings)
+
+    @app.post("/internal/backfill/history")
+    def backfill_history(body: BackfillRequest) -> dict:
+        """Idempotent multi-year backfill of exogenous daily history.
+
+        Manual/occasional job (not scheduled): it exists so macro features have
+        enough history to be trained and ablated honestly.
+        """
+        return run_backfill(engine, settings, body.symbols or None, body.range)
+
+    @app.get("/internal/data/coverage")
+    def data_coverage() -> dict:
+        return {"coverage": coverage_report(engine)}
 
     return app
 
