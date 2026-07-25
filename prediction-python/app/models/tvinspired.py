@@ -197,13 +197,26 @@ MC_SEED = 42           # deterministic: same inputs -> same probabilities
 
 
 def mc_probabilities(
-    series: pd.Series, horizon: int, cost_pct: float
+    series: pd.Series,
+    horizon: int,
+    cost_pct: float,
+    expected_change_pct: Optional[float] = None,
 ) -> Optional[dict]:
     """Bootstrap Monte Carlo outcome probabilities for an h-step horizon.
 
     Moving-block bootstrap (block=5) over historical log returns preserves
     short-range volatility clustering; 2000 paths of ``horizon`` steps give
-    the distribution of cumulative returns, reported as:
+    the distribution of cumulative returns.
+
+    ``expected_change_pct`` (the model's point forecast) RECENTERS the
+    simulated distribution: the bootstrap supplies the *shape* (volatility,
+    tails, clustering) while the model supplies the *center*. Without this the
+    odds were identical whether the model forecast +5% or -5% — they carried
+    only the historical drift of the series — yet the UI presented them as the
+    forecast's odds. Pass ``None`` to keep the unconditional historical view
+    (used where no forecast exists).
+
+    Reported as:
 
     * ``p_up`` — P(cumulative return > 0)
     * ``p_gain_over_cost`` — P(return > cost_pct), i.e. a buy round-trip pays
@@ -228,6 +241,12 @@ def mc_probabilities(
     idx = (starts[:, :, None] + np.arange(block)[None, None, :]).reshape(MC_PATHS, -1)
     cum = returns[idx[:, :horizon]].sum(axis=1)
 
+    conditional = expected_change_pct is not None and np.isfinite(expected_change_pct)
+    if conditional:
+        # Recenter on the model's expected move, preserving simulated spread.
+        target = float(np.log1p(float(expected_change_pct) / 100.0))
+        cum = cum - float(np.mean(cum)) + target
+
     cost = float(cost_pct) / 100.0
     # thresholds in log-return space; log1p(-cost) requires cost < 1 (always
     # true for percent trading costs)
@@ -245,4 +264,7 @@ def mc_probabilities(
         "sim_median_pct": to_pct(float(np.quantile(cum, 0.5))),
         "sim_p95_pct": to_pct(float(np.quantile(cum, 0.95))),
         "n_paths": MC_PATHS,
+        # Makes the semantics explicit for the UI and for any future reader:
+        # conditional odds answer "given the forecast, how likely is X?".
+        "conditional_on_forecast": bool(conditional),
     }

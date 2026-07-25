@@ -43,6 +43,7 @@ class SignalInputs:
     """Everything the scorer needs; assembled by the signals job."""
 
     expected_change_pct: dict[str, float] = field(default_factory=dict)  # per horizon
+    round_trip_cost_basis: str = "assumed"  # 'observed_spread' when live
     confidence: dict[str, float] = field(default_factory=dict)           # per horizon
     last_price: Optional[float] = None
     sma20: Optional[float] = None
@@ -94,14 +95,19 @@ def compute_signal(inputs: SignalInputs, now: Optional[datetime] = None) -> dict
         changes = np.array([chg for _, chg in horizon_items])
         weighted_exp = float(np.average(changes, weights=weights))
         cost = inputs.round_trip_cost_pct
+        # Contribution is the cost-ADJUSTED edge, scored monotonically and
+        # continuously in `weighted_exp`. The previous piecewise form was
+        # non-monotonic (a +0.30% forecast scored WORSE than -0.30%) and had a
+        # ~12-point cliff at the cost threshold, so a 0.02pp drift could flip
+        # hold -> near-buy. Deadband: moves inside +/- cost earn nothing,
+        # because they cannot pay for the round trip in either direction.
         if weighted_exp > cost:
-            # clears the cost hurdle: bullish in proportion to the excess
-            contribution = float(np.clip((weighted_exp - cost / 2.0) * 8.0, 0.0, 25.0))
-        elif weighted_exp > 0:
-            # positive but under the cost hurdle: mild hold bias, not a sell
-            contribution = -3.0
+            edge = weighted_exp - cost
+        elif weighted_exp < -cost:
+            edge = weighted_exp + cost
         else:
-            contribution = float(np.clip(weighted_exp * 8.0, -25.0, 0.0))
+            edge = 0.0
+        contribution = float(np.clip(edge * 8.0, -25.0, 25.0))
         score += contribution
         if weighted_exp > inputs.round_trip_cost_pct:
             supporting.append(
@@ -118,12 +124,24 @@ def compute_signal(inputs: SignalInputs, now: Optional[datetime] = None) -> dict
 
     # --- model confidence ---------------------------------------------------
     confidences = [c for c in inputs.confidence.values() if c is not None]
-    mean_conf = float(np.mean(confidences)) if confidences else 0.5
-    score += (mean_conf - 0.5) * 20.0
-    if mean_conf >= 0.6:
-        supporting.append(f"Average model confidence is {mean_conf:.0%}.")
-    elif mean_conf < 0.45:
-        conflicting.append(f"Model confidence is low ({mean_conf:.0%}).")
+    if confidences:
+        mean_conf = float(np.mean(confidences))
+        score += (mean_conf - 0.5) * 20.0
+        if mean_conf >= 0.6:
+            supporting.append(f"Average model confidence is {mean_conf:.0%}.")
+        elif mean_conf < 0.45:
+            conflicting.append(f"Model confidence is low ({mean_conf:.0%}).")
+    else:
+        # No forecasts at all (predict job down / no active models). Previously
+        # this silently defaulted to 0.5 and the UI rendered a technical-only
+        # score as if models backed it. Say so, and pull the score toward hold.
+        mean_conf = 0.3
+        score = 50.0 + (score - 50.0) * 0.5
+        risks.append(
+            "No model forecasts were available: this reading is technical-only "
+            "(trend, momentum, premium) and carries no model evidence."
+        )
+        conflicting.append("No model forecast available for any horizon.")
 
     # --- agreement across horizons -----------------------------------------
     if len(horizon_items) >= 2:
@@ -270,6 +288,7 @@ def compute_signal(inputs: SignalInputs, now: Optional[datetime] = None) -> dict
             "regime": inputs.regime,
             "market_closed": inputs.market_closed,
             "round_trip_cost_pct": inputs.round_trip_cost_pct,
+            "round_trip_cost_basis": getattr(inputs, "round_trip_cost_basis", "assumed"),
         },
     }
 
@@ -339,6 +358,14 @@ def generate_signal(engine, settings) -> dict:
     df = pd.DataFrame(rows, columns=["symbol", "observed_at", "value"])
 
     inputs = SignalInputs()
+    # Use the SAME hurdle the UI shows (live dealer spread when observed).
+    # Previously this stayed at the 2.2% default forever, so the headline
+    # signal and the on-page planner contradicted each other.
+    from ..core.costs import round_trip_cost_pct
+
+    cost_pct, cost_basis = round_trip_cost_pct(engine)
+    inputs.round_trip_cost_pct = cost_pct
+    inputs.round_trip_cost_basis = cost_basis
     latest_preds = _load_latest_predictions(engine)
     inputs.expected_change_pct = {
         h: p["expected_change_pct"] for h, p in latest_preds.items()

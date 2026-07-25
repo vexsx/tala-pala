@@ -71,12 +71,19 @@ def predict_custom(
     if not isinstance(days, int) or not (MIN_DAYS <= days <= MAX_DAYS):
         raise ValueError(f"days must be an integer between {MIN_DAYS} and {MAX_DAYS}")
 
-    fee = DEFAULT_FEE_PCT if fee_pct is None else float(fee_pct)
-    spread = DEFAULT_SPREAD_PCT if spread_pct is None else float(spread_pct)
-    slippage = DEFAULT_SLIPPAGE_PCT if slippage_pct is None else float(slippage_pct)
-    # Mirror app/backtest + signals exactly: fee and slippage are paid on
-    # BOTH sides of the round trip; the spread is paid once.
-    round_trip_cost_pct = 2.0 * fee + spread + 2.0 * slippage
+    # Cost basis: explicit caller overrides win; otherwise the observed dealer
+    # spread (same number the signal and the UI use), else the assumption.
+    if fee_pct is None and spread_pct is None and slippage_pct is None:
+        from ..core.costs import round_trip_cost_pct as _resolve_cost
+
+        round_trip_cost_pct, cost_basis = _resolve_cost(engine)
+    else:
+        fee = DEFAULT_FEE_PCT if fee_pct is None else float(fee_pct)
+        spread = DEFAULT_SPREAD_PCT if spread_pct is None else float(spread_pct)
+        slippage = DEFAULT_SLIPPAGE_PCT if slippage_pct is None else float(slippage_pct)
+        # fee and slippage are paid on BOTH sides; the spread once.
+        round_trip_cost_pct = 2.0 * fee + spread + 2.0 * slippage
+        cost_basis = "caller"
 
     series = load_series(engine, "IR_GOLD_18K", "daily")
     if len(series) < MIN_DAILY_POINTS + days:
@@ -164,7 +171,9 @@ def predict_custom(
     # the honest answer to "how often would a move like this clear costs?"
     from .tvinspired import mc_probabilities
 
-    monte_carlo = mc_probabilities(series, days, round_trip_cost_pct)
+    monte_carlo = mc_probabilities(
+        series, days, round_trip_cost_pct, expected_change_pct=expected_change_pct
+    )
 
     # Decision lean vs round-trip costs. Conservative: a "buy" lean requires
     # the expected move to clear costs, a "confident buy" additionally needs
