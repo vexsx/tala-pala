@@ -22,7 +22,13 @@ import (
 // comfortably exceed that (the caller's context must be at least as long —
 // see scheduler job timeouts — because once() takes the tighter of the two).
 const (
-	TrainTimeout   = 90 * time.Minute
+	// Raised from 90m after the Addendum-15 exogenous backfill: multi-year
+	// DXY/Brent/silver/US10Y history gives the exog-aware candidates far more
+	// data, and an observed run went from ~40m to >75m. A train timeout that
+	// fires mid-run is worse than a slow run: the handler keeps computing
+	// (sync def in a threadpool), so the job is recorded failed while the work
+	// continues, and the next tick can overlap it.
+	TrainTimeout   = 180 * time.Minute
 	CollectTimeout = 60 * time.Second
 	DefaultTimeout = 60 * time.Second
 )
