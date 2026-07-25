@@ -250,31 +250,35 @@ def _measure_dispersion(
     Reads ONLY responses already in ``fetch_cache``: dispersion must never
     cost an extra request, or measuring it would quietly spend the daily
     budget of the request-billed providers (``tse_funds`` / ``brsapi``, both
-    ``max_attempts == 1``).  Peers are classified by the same rules as
-    canonical values and only ``ok`` ones enter the summary — an unconfirmed
-    suspect is not evidence of disagreement, it is an unverified quote.
+    ``max_attempts == 1``).
+
+    Peers are gated on UNIT SANITY only, deliberately NOT on the winner's
+    recent-value window. Running ``classify_observation`` against the price
+    this very cycle just wrote censors exactly what is being measured: a peer
+    more than MAX_JUMP_PCT (15%) away is dropped as "suspect", so the largest
+    disagreements vanish and the summary collapses to ``None`` precisely when
+    dispersion matters most; and a provider with a persistent structural
+    offset (retail vs wholesale) exceeds the winner's ~1.2% MAD threshold
+    every cycle and is excluded forever, biasing ``spread_pct`` toward zero.
+    A peer can never reach ``prices`` (``canonical=False``), so the only real
+    risk is a unit mix-up, which the sanity band catches.
     """
     for symbol in sorted(symbols):
-        recent: Optional[list[float]] = None
         for code in sorted(fetch_cache):
             if (code, symbol) in handled:
                 continue  # already stored by the fallback pass
             for obs in fetch_cache[code]:
                 if obs.symbol != symbol:
                     continue
-                if recent is None:
-                    recent = _recent_values(engine, symbol)
-                quality, reason = validation.classify_observation(
-                    symbol, obs.value, recent, recent[0] if recent else None
-                )
-                _store(engine, obs, quality, canonical=False)
+                sane = validation.sanity_ok(symbol, float(obs.value))
+                _store(engine, obs, "ok" if sane else "outlier", canonical=False)
                 handled.add((code, symbol))
-                if quality == "ok":
+                if sane:
                     cycle_values.setdefault(symbol, {})[code] = float(obs.value)
                 else:
                     # a peer never blocked the job, so it is a log line, not a
                     # collection error the operator has to triage
-                    log.debug("peer %s/%s unusable: %s", code, symbol, reason)
+                    log.debug("peer %s/%s failed the unit sanity band", code, symbol)
         summary = validation.dispersion_summary(cycle_values.get(symbol, {}))
         winner = winners.get(symbol)
         # No winner means no canonical row was written this cycle (every source

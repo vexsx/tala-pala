@@ -128,6 +128,10 @@ def dispersion_summary(
         "median": round(med, 6),
         "spread_abs": round(spread, 6),
         "spread_pct": round(spread / ref * 100.0, 4) if ref > 0 else None,
+        # Headline alias: feature consumers read a single scalar under "pct"
+        # (see app/features/microstructure.DISPERSION_VALUE_KEYS). Without it
+        # the dispersion features are silently all-NaN.
+        "pct": round(spread / ref * 100.0, 4) if ref > 0 else None,
         "mad": round(mad, 6),
         "mad_pct": round(mad / ref * 100.0, 4) if ref > 0 else None,
         "tolerance_pct": tolerance_pct,
