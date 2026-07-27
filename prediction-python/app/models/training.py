@@ -461,6 +461,34 @@ def _drop_duplicate_members(
     return kept
 
 
+# Explicit, persisted activation states (Addendum 16). "naive won" is a
+# legitimate outcome and must stay visible with its reason.
+ACTIVATION_CONFIRMED = "confirmed"
+ACTIVATION_INSUFFICIENT_HOLDOUT = "insufficient_holdout"
+ACTIVATION_REJECTED_HOLDOUT = "rejected_by_holdout"
+ACTIVATION_REJECTED_MASE = "rejected_by_mase"
+ACTIVATION_REJECTED_MATERIALITY = "rejected_by_materiality"
+ACTIVATION_REJECTED_INSTABILITY = "rejected_by_instability"
+ACTIVATION_CANDIDATE_FAILED = "candidate_failed"
+ACTIVATION_NAIVE_NO_EDGE = "naive_no_proven_edge"
+
+
+def _state_for(reasons: list[str]) -> str:
+    """Map the first (most fundamental) rejection reason to a state code."""
+    joined = "; ".join(reasons)
+    if "no embargoed holdout" in joined:
+        return ACTIVATION_INSUFFICIENT_HOLDOUT
+    if "MASE" in joined:
+        return ACTIVATION_REJECTED_MASE
+    if "holdout edge" in joined:
+        return ACTIVATION_REJECTED_HOLDOUT
+    if "bootstrap" in joined or "merely reproduced naive" in joined:
+        return ACTIVATION_REJECTED_INSTABILITY
+    if "edge" in joined:
+        return ACTIVATION_REJECTED_MATERIALITY
+    return ACTIVATION_NAIVE_NO_EDGE
+
+
 def select_winner(results: dict[str, dict]) -> str:
     """Significance-gated selection (see MIN_EDGE_PCT block above).
 
@@ -485,9 +513,11 @@ def select_winner(results: dict[str, dict]) -> str:
 
     reasons: list[str] = []
     # 0) the candidate must actually have been exercised on the selection folds
-    share = degenerate_share(
-        results[best_name].get("folds", []), results["naive"].get("folds", [])
-    )
+    # Selection folds only — the comment always claimed this but the code
+    # passed every fold, letting holdout behavior influence the gate.
+    best_sel = results[best_name].get("sel_folds") or results[best_name].get("folds", [])
+    naive_sel_folds = results["naive"].get("sel_folds") or results["naive"].get("folds", [])
+    share = degenerate_share(best_sel, naive_sel_folds)
     if share > MAX_DEGENERATE_SHARE:
         reasons.append(f"{share:.0%} of folds merely reproduced naive (model not exercised)")
     # 1) material edge on selection folds
@@ -496,9 +526,7 @@ def select_winner(results: dict[str, dict]) -> str:
             f"edge {(naive_sel - best_smape) / naive_sel:.3%} < {MIN_EDGE_PCT:.0%}"
         )
     # 2) paired bootstrap on the same selection folds
-    sig = bootstrap_beats(
-        results[best_name].get("folds", []), results["naive"].get("folds", [])
-    )
+    sig = bootstrap_beats(best_sel, naive_sel_folds)
     if sig is False:
         reasons.append("bootstrap CI includes no improvement")
     # 3) embargoed holdout confirmation, held to the SAME materiality bar as
@@ -508,7 +536,15 @@ def select_winner(results: dict[str, dict]) -> str:
     #    a rounding difference is not evidence of skill.
     winner_hold = results[best_name].get("holdout_metrics")
     naive_hold = results["naive"].get("holdout_metrics")
-    if winner_hold and naive_hold:
+    if not (winner_hold and naive_hold):
+        # No embargoed holdout means no out-of-sample confirmation exists.
+        # Activating here would ship a model certified only on the folds that
+        # selected it — exactly the optimism the holdout was added to remove.
+        reasons.append(
+            f"no embargoed holdout (needs >= {HOLDOUT_MIN_TOTAL} folds); "
+            "cannot confirm out-of-sample"
+        )
+    else:
         nh = naive_hold["smape"]
         edge = (nh - winner_hold["smape"]) / nh if nh > 0 else 0.0
         if edge < MIN_EDGE_PCT:
@@ -521,7 +557,9 @@ def select_winner(results: dict[str, dict]) -> str:
     if reasons:
         log.info("candidate %s rejected -> naive (%s)", best_name, "; ".join(reasons))
         results[best_name]["rejection_reason"] = "; ".join(reasons)
+        results[best_name]["activation_state"] = _state_for(reasons)
         return "naive"
+    results[best_name]["activation_state"] = ACTIVATION_CONFIRMED
     return best_name
 
 
@@ -704,7 +742,14 @@ def train_all(
                     winner_id = None
                     for name, r in results.items():
                         params: dict = {"horizon_steps": steps, "freq": freq,
-                                        "holdout_scored": r.get("holdout_metrics") is not None}
+                                        "holdout_scored": r.get("holdout_metrics") is not None,
+                                        "n_folds_total": len(r.get("folds", [])),
+                                        "n_folds_selection": len(r.get("sel_folds", [])),
+                                        "n_folds_holdout": len(r.get("hold_folds", []))}
+                        if r.get("activation_state"):
+                            params["activation_state"] = r["activation_state"]
+                        if r.get("rejection_reason"):
+                            params["rejection_reason"] = r["rejection_reason"]
                         if name == "ensemble":
                             params["weights"] = r["weights"]
                         row_id = conn.execute(

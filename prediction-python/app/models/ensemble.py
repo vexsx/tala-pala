@@ -7,6 +7,8 @@ the prediction pass can re-weight members by real-world accuracy instead.
 """
 from __future__ import annotations
 
+import logging
+
 from typing import Optional, Sequence
 
 from datetime import timedelta
@@ -18,6 +20,8 @@ from sqlalchemy.engine import Engine
 
 from ..db import predictions, utcnow
 from .base import ForecastModel, ModelUnavailable
+
+log = logging.getLogger(__name__)
 
 MIN_LIVE_MATURED = 20   # matured predictions required per member
 LIVE_SMAPE_WINDOW = 60  # most recent matured predictions considered
@@ -106,6 +110,27 @@ class EnsembleModel(ForecastModel):
     def set_context(self, context) -> "EnsembleModel":
         for model in self.members.values():
             model.set_context(context)
+        return self
+
+    def prepare_params(self, series: pd.Series, horizon: int) -> "EnsembleModel":
+        """Freeze each member's hyperparameters using selection data ONLY.
+
+        Without this the ensemble was the last holdout leak in the pipeline:
+        `_build_final_model` calls `prepare_params` on the winner, but the
+        ensemble had none, so self-tuning members (hist_gb_tuned) re-selected
+        their configuration inside `fit(full_series)` — using the very
+        embargoed holdout the ensemble's shipped metrics were measured on.
+        Members without tuning simply have no `prepare_params` and are
+        unaffected.
+        """
+        for name, model in self.members.items():
+            prepare = getattr(model, "prepare_params", None)
+            if not callable(prepare):
+                continue
+            try:
+                prepare(series, horizon)
+            except Exception as exc:  # noqa: BLE001 — tuning must never sink a run
+                log.warning("ensemble member %s prepare_params failed: %s", name, exc)
         return self
 
     def fit(self, series: pd.Series, horizon: int) -> "EnsembleModel":

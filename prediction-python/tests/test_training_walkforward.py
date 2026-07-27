@@ -325,3 +325,68 @@ def test_holdout_mase_at_or_above_one_is_rejected():
     }
     assert select_winner(results) == "naive"
     assert "MASE" in results["rf"]["rejection_reason"]
+
+
+# --- Addendum 16: activation states + ensemble holdout isolation -------------
+
+def test_missing_holdout_blocks_activation():
+    """Below HOLDOUT_MIN_TOTAL folds there is no out-of-sample confirmation,
+    so a candidate may not activate however good its selection metrics look."""
+    from app.models.training import (ACTIVATION_INSUFFICIENT_HOLDOUT,
+                                     select_winner)
+    results = {
+        "naive": {"metrics": {"smape": 1.0}, "sel_metrics": {"smape": 1.0},
+                  "holdout_metrics": None, "folds": [], "sel_folds": []},
+        "gbr": {"metrics": {"smape": 0.5}, "sel_metrics": {"smape": 0.5},
+                "holdout_metrics": None, "folds": [], "sel_folds": []},
+    }
+    assert select_winner(results) == "naive"
+    assert results["gbr"]["activation_state"] == ACTIVATION_INSUFFICIENT_HOLDOUT
+    assert "no embargoed holdout" in results["gbr"]["rejection_reason"]
+
+
+def test_activation_states_are_specific():
+    from app.models.training import (ACTIVATION_CONFIRMED,
+                                     ACTIVATION_REJECTED_MASE, select_winner)
+    good = {
+        "naive": {"metrics": {"smape": 1.0}, "sel_metrics": {"smape": 1.0},
+                  "holdout_metrics": {"smape": 1.0, "mase": 1.0},
+                  "folds": [], "sel_folds": []},
+        "gbr": {"metrics": {"smape": 0.5}, "sel_metrics": {"smape": 0.5},
+                "holdout_metrics": {"smape": 0.5, "mase": 0.8},
+                "folds": [], "sel_folds": []},
+    }
+    assert select_winner(good) == "gbr"
+    assert good["gbr"]["activation_state"] == ACTIVATION_CONFIRMED
+
+    bad = {k: {**v} for k, v in good.items()}
+    bad["gbr"]["holdout_metrics"] = {"smape": 0.5, "mase": 1.02}
+    assert select_winner(bad) == "naive"
+    assert bad["gbr"]["activation_state"] == ACTIVATION_REJECTED_MASE
+
+
+def test_ensemble_freezes_member_params_from_selection_data_only():
+    """Changing ONLY the holdout tail must not change the tuned parameters the
+    ensemble ships — the last holdout leak in the pipeline."""
+    import numpy as np
+    import pandas as pd
+    from app.models.base import make
+    from app.models.ensemble import EnsembleModel
+
+    idx = pd.date_range("2025-01-01", periods=260, freq="D", tz="UTC")
+    rng = np.random.default_rng(7)
+    base = pd.Series(1_000_000 + np.cumsum(rng.normal(0, 900, len(idx))), index=idx)
+
+    sel_end = 200
+    selection = base.iloc[: sel_end + 1]
+
+    def tuned_params(full: pd.Series) -> dict:
+        ens = EnsembleModel({"hist_gb_tuned": make("hist_gb_tuned")},
+                            {"hist_gb_tuned": 1.0})
+        ens.prepare_params(selection, 3)      # selection prefix only
+        ens.fit(full, 3)                       # full series incl. holdout
+        return dict(ens.members["hist_gb_tuned"]._tuned_params or {})
+
+    altered = base.copy()
+    altered.iloc[sel_end + 1:] *= 1.35        # violent holdout-only change
+    assert tuned_params(base) == tuned_params(altered)
