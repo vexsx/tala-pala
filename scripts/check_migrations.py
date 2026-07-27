@@ -64,12 +64,18 @@ class Migration:
         return f"{self.version:04d}"
 
 
-def _strip_sql_comments(sql: str) -> str:
-    """Remove -- and /* */ comments, leaving string literals untouched.
+DOLLAR_TAG_RE = re.compile(r"\$[A-Za-z_]\w*\$|\$\$")
 
-    Migration files carry long explanatory headers that name tables and
-    indexes in prose; without this, a commented-out or merely described
-    statement would be read as one the database actually executes.
+
+def _executable_sql(sql: str) -> str:
+    """Statement text only: comments removed, string-literal bodies blanked.
+
+    Migration files carry long explanatory headers that name tables in prose
+    and quote superseded DDL, and they seed rows whose values are free text.
+    Without this, a commented-out statement or a table name inside a quoted
+    value would be read as an object the database actually creates. Quotes and
+    delimiters are kept so an emptiness check can still tell a file that runs
+    nothing from a file that runs a statement with an empty literal in it.
     """
     out: list[str] = []
     i, n = 0, len(sql)
@@ -86,13 +92,12 @@ def _strip_sql_comments(sql: str) -> str:
                 block_comment = False
                 i += 1
         elif in_string:
-            out.append(ch)
             if ch == "'":
                 if nxt == "'":          # escaped quote inside the literal
-                    out.append(nxt)
                     i += 1
                 else:
                     in_string = False
+                    out.append(ch)
         elif ch == "-" and nxt == "-":
             line_comment = True
             i += 1
@@ -102,6 +107,13 @@ def _strip_sql_comments(sql: str) -> str:
         elif ch == "'":
             in_string = True
             out.append(ch)
+        elif ch == "$" and DOLLAR_TAG_RE.match(sql, i):
+            # Dollar-quoted body (function/procedure source): opaque, and it
+            # may legitimately contain DDL that is not run at migration time.
+            tag = DOLLAR_TAG_RE.match(sql, i).group(0)
+            end = sql.find(tag, i + len(tag))
+            i = (end + len(tag) - 1) if end != -1 else n
+            out.append(tag + tag)
         else:
             out.append(ch)
         i += 1
