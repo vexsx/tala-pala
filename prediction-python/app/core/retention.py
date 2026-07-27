@@ -189,22 +189,29 @@ def run_retention(engine: Engine, settings: Settings, dry_run: bool = False) -> 
     pred_days = days("prediction_retention_days", 730)
     floor, reason = protected_prediction_cutoff(engine)
     cutoff = now - timedelta(days=pred_days)
-    if floor is None:
-        # No matured rows: no loop depends on anything yet, but there is also
-        # nothing to protect against — fall back to the policy cutoff alone.
-        r = _delete_batched(engine, "predictions", "predicted_at < :cutoff",
-                            {"cutoff": cutoff}, dry_run)
-    else:
-        # `floor` is the target_time of the OLDEST row still inside a live
-        # window, so the row at exactly `floor` must survive. Comparing
-        # target_time strictly below it excludes every protected row without
-        # an off-by-one (an earlier version compared predicted_at and deleted
-        # the boundary row).
-        r = _delete_batched(
-            engine, "predictions",
-            "predicted_at < :cutoff AND target_time < :floor",
-            {"cutoff": cutoff, "floor": floor}, dry_run,
-        )
+    # Protect by IDENTITY, not by a comparison against a floor timestamp.
+    # Re-binding a parsed floor is unsafe on SQLite (timestamps are stored as
+    # strings and a "+00:00" suffix breaks the lexicographic comparison), and
+    # a floor comparison also has an off-by-one at the boundary row. Selecting
+    # the protected ids inside SQL keeps every comparison in the database's
+    # own storage type on both drivers.
+    protected = (
+        "id IN (SELECT id FROM predictions WHERE actual_value IS NOT NULL "
+        f"       ORDER BY target_time DESC LIMIT {META_GATE_SAMPLES}) "
+        "OR id IN (SELECT p.id FROM predictions p WHERE p.actual_value IS NOT NULL "
+        "          AND (SELECT count(*) FROM predictions q "
+        "               WHERE q.symbol = p.symbol AND q.horizon = p.horizon "
+        "                 AND q.actual_value IS NOT NULL "
+        f"                 AND q.target_time > p.target_time) < {LIVE_CAL_WINDOW}) "
+        "OR target_time >= :ens_floor"
+    )
+    r = _delete_batched(
+        engine, "predictions",
+        f"predicted_at < :cutoff AND NOT ({protected})",
+        {"cutoff": cutoff,
+         "ens_floor": now - timedelta(days=ENSEMBLE_WINDOW_DAYS)},
+        dry_run,
+    )
     r.floor_reason = reason
     out.tables.append(r)
 
