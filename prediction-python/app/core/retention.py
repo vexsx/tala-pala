@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import func, select, text
@@ -77,6 +77,19 @@ class RetentionResult:
             ],
             "total_deleted": sum(t.deleted for t in self.tables),
         }
+
+
+def _as_datetime(value) -> Optional[datetime]:
+    """Coerce a driver-returned timestamp to an aware UTC datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _count(engine: Engine, sql: str, params: dict) -> int:
@@ -148,7 +161,13 @@ def protected_prediction_cutoff(engine: Engine) -> tuple[Optional[object], str]:
             "     ORDER BY target_time DESC LIMIT :w) x) AS t "
             "FROM (SELECT DISTINCT symbol, horizon FROM predictions) p1) y"
         ), {"w": LIVE_CAL_WINDOW}).scalar()
-    floors = [f for f in (gate_floor, cal_floor, ensemble_floor) if f is not None]
+    # Drivers differ: Postgres hands back datetimes, SQLite hands back strings.
+    # Comparing the two raises TypeError, so coerce before taking the minimum.
+    floors = [
+        _as_datetime(f) for f in (gate_floor, cal_floor, ensemble_floor)
+        if f is not None
+    ]
+    floors = [f for f in floors if f is not None]
     if not floors:
         return None, "no matured predictions yet: nothing is eligible"
     floor = min(floors)
