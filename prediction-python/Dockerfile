@@ -15,6 +15,12 @@ RUN apt-get update \
     && groupadd -r goldpred && useradd -r -g goldpred -d /app goldpred
 
 COPY --from=builder /opt/venv /opt/venv
+# Stamped at build time so /internal/health can prove WHICH commit is
+# running. A repo that has been git-pulled but not rebuilt is a silent
+# and dangerous state: tests pass against the working tree while the
+# service still executes the old image.
+ARG GIT_COMMIT=unknown
+ENV BUILD_COMMIT=$GIT_COMMIT
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

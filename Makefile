@@ -69,4 +69,14 @@ smoke: ## Docker Compose smoke test
 	bash scripts/smoke_test.sh
 
 update: ## Pull latest code, rebuild, restart (run from git checkout)
-	git pull --ff-only && $(COMPOSE) up -d --build && $(COMPOSE) ps
+	git pull --ff-only && GIT_COMMIT=$$(git rev-parse --short HEAD) $(COMPOSE) up -d --build && $(COMPOSE) ps
+	@$(MAKE) --no-print-directory verify-deploy
+
+verify-deploy: ## Fail if the running prediction-service predates the repo HEAD
+	@repo=$$(git rev-parse --short HEAD); \
+	running=$$($(COMPOSE) exec -T prediction-service sh -c 'echo $$BUILD_COMMIT' 2>/dev/null | tr -d "\r\n"); \
+	if [ "$$repo" = "$$running" ]; then \
+	  echo "deploy OK: prediction-service runs $$running"; \
+	else \
+	  echo "DEPLOY MISMATCH: repo=$$repo running=$${running:-unknown} — run: make update" >&2; exit 1; \
+	fi

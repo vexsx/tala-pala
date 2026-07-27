@@ -81,6 +81,8 @@ services:
   prediction-service:
     build:
       context: ./prediction-python
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
       dockerfile: Dockerfile
     restart: unless-stopped
     logging: *default-logging

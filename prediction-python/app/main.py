@@ -8,6 +8,7 @@ the Docker-internal network and only the Go API talks to it.
 from __future__ import annotations
 
 import hmac
+import os
 import logging
 from typing import Optional
 
@@ -105,7 +106,7 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
 
     @app.get("/internal/health")
     def health() -> dict:
-        return {"status": "ok", "db": db_ok(engine), "version": __version__}
+        return {"status": "ok", "db": db_ok(engine), "version": __version__, "build_commit": os.environ.get("BUILD_COMMIT", "unknown")}
 
     @app.get("/internal/metrics")
     def metrics() -> Response:
