@@ -136,3 +136,39 @@ def round_trip_cost_pct(engine: Engine) -> tuple[float, str]:
     """``(cost_pct, basis)`` where basis is ``observed_spread`` or ``assumed``."""
     res = resolve_cost(engine)
     return res.cost_pct, res.basis
+
+
+# --- Decision policy: ONE backend-owned contract (Addendum 16) ---------------
+# The frontend previously implemented its own rules and diverged from Python on
+# three axes: fallback cost (1.5% vs 2.2%), sell threshold (half cost vs full
+# cost) and the confidence gate (55% hard requirement vs none). The UI must
+# FORMAT decisions, never invent them, so the thresholds live here and are
+# published to the API.
+DECISION_POLICY_KEY = "decision_policy"
+
+# A directional call needs a move that clears the round-trip cost AND enough
+# model confidence to be worth acting on.
+MIN_CONFIDENCE_PCT = 55.0
+# Selling is judged on HALF the round-trip cost, deliberately: a holder who
+# sells pays only the exit leg, whereas buy-then-sell pays both. This
+# asymmetry is real, not an oversight — it is preserved here so that moving
+# the rule server-side changes WHERE it is defined, not WHAT it decides.
+SELL_THRESHOLD_MULTIPLE = 0.5
+
+
+def decision_policy(engine: Engine) -> dict:
+    """The complete, serializable decision contract used by every surface."""
+    res = resolve_cost(engine)
+    return {
+        "cost_pct": round(res.cost_pct, 4),
+        "cost_basis": res.basis,
+        "cost_source": res.source,
+        "cost_observed_at": res.observed_at.isoformat() if res.observed_at else None,
+        "cost_age_hours": res.age_hours,
+        "cost_reason": res.reason,
+        "buy_threshold_pct": round(res.cost_pct, 4),
+        "sell_threshold_pct": round(res.cost_pct * SELL_THRESHOLD_MULTIPLE, 4),
+        "min_confidence_pct": MIN_CONFIDENCE_PCT,
+        "fallback_cost_pct": FALLBACK_ROUND_TRIP_COST_PCT,
+        "policy_version": 1,
+    }

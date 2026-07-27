@@ -18,10 +18,15 @@ condition.  ``review_at`` is six hours out.
 """
 from __future__ import annotations
 
+import logging
+
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+log = logging.getLogger(__name__)
+
 
 import numpy as np
 
@@ -361,8 +366,15 @@ def generate_signal(engine, settings) -> dict:
     # Use the SAME hurdle the UI shows (live dealer spread when observed).
     # Previously this stayed at the 2.2% default forever, so the headline
     # signal and the on-page planner contradicted each other.
-    from ..core.costs import round_trip_cost_pct
+    from ..core.costs import DECISION_POLICY_KEY, decision_policy, round_trip_cost_pct
+    from ..jobs.evaluate import upsert_setting
 
+    policy = decision_policy(engine)
+    # Publish the contract so Go/UI read the same numbers Python decided on.
+    try:
+        upsert_setting(engine, DECISION_POLICY_KEY, policy)
+    except Exception as exc:  # noqa: BLE001 — never sink signal generation
+        log.warning("decision policy persist failed: %s", exc)
     cost_pct, cost_basis = round_trip_cost_pct(engine)
     inputs.round_trip_cost_pct = cost_pct
     inputs.round_trip_cost_basis = cost_basis

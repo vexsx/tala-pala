@@ -429,6 +429,20 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 		out["trading_cost_age_hours"] = nil
 	}
 
+	// Decision policy: the single backend-owned contract (thresholds + cost
+	// basis) that Python persists during signal generation. The UI formats
+	// these numbers; it must never re-derive its own rules.
+	var policyRaw []byte
+	if err := h.Pool.QueryRow(ctx,
+		`SELECT value FROM app_settings WHERE key = 'decision_policy'`).Scan(&policyRaw); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			h.Log.Error("summary_decision_policy", "error", err)
+		}
+		out["decision_policy"] = nil
+	} else {
+		out["decision_policy"] = json.RawMessage(policyRaw)
+	}
+
 	// Provider health.
 	provRows, err := h.Pool.Query(ctx, `
 		SELECT code, name, category, enabled, priority, last_success_at,

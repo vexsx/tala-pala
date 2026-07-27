@@ -78,8 +78,49 @@ export function tiltPhrase(tilt: Tilt): string {
   }
 }
 
-/** Confidence (percent) a tilt needs before making a directional call. */
+/** Confidence (percent) a tilt needs before making a directional call.
+ *  Fallback only — the authoritative value arrives in `decision_policy`. */
 export const TILT_CONFIDENCE_MIN = 55
+
+/**
+ * The backend-owned decision contract (market summary `decision_policy`).
+ * Python computes it in app/core/costs.py and persists it; the UI formats
+ * these numbers and must not invent its own rules. Everything is optional so
+ * an older API payload degrades to the local fallbacks.
+ */
+export interface DecisionPolicy {
+  cost_pct?: number
+  cost_basis?: 'observed_spread' | 'assumed'
+  cost_source?: string | null
+  cost_observed_at?: string | null
+  cost_age_hours?: number | null
+  cost_reason?: string
+  buy_threshold_pct?: number
+  sell_threshold_pct?: number
+  min_confidence_pct?: number
+  fallback_cost_pct?: number
+  policy_version?: number
+}
+
+/** Resolve the effective thresholds, preferring the server contract. */
+export function resolvePolicy(
+  policy: DecisionPolicy | null | undefined,
+  liveSpreadPct?: number | null
+): { costPct: number; buyPct: number; sellPct: number; minConf: number; basis: string } {
+  const costPct =
+    typeof policy?.cost_pct === 'number' && Number.isFinite(policy.cost_pct)
+      ? policy.cost_pct
+      : effectiveCostPct(liveSpreadPct)
+  return {
+    costPct,
+    buyPct: policy?.buy_threshold_pct ?? costPct,
+    // Half the round-trip cost by contract: a holder selling pays only the
+    // exit leg. Server-owned; the local fallback mirrors it.
+    sellPct: policy?.sell_threshold_pct ?? costPct / 2,
+    minConf: policy?.min_confidence_pct ?? TILT_CONFIDENCE_MIN,
+    basis: policy?.cost_basis ?? 'assumed'
+  }
+}
 
 /**
  * Cost-aware tilt for a single horizon prediction:
@@ -89,14 +130,24 @@ export const TILT_CONFIDENCE_MIN = 55
  * - |expected move| within the cost → 'favors-waiting';
  * - anything else → 'unclear'.
  */
-export function horizonTilt(p: Prediction, costPct: number = ROUND_TRIP_COST_PCT): Tilt {
+export function horizonTilt(
+  p: Prediction,
+  costPct: number = ROUND_TRIP_COST_PCT,
+  policy?: DecisionPolicy | null
+): Tilt {
   if (p.data_fresh === false) return 'no-call'
   const pct = p.expected_change_pct
   if (!Number.isFinite(pct)) return 'unclear'
   const conf = confidencePct(p.confidence) ?? 0
-  if (pct > costPct && conf >= TILT_CONFIDENCE_MIN) return 'favors-buying'
-  if (pct < -costPct / 2 && conf >= TILT_CONFIDENCE_MIN) return 'favors-selling'
-  if (Math.abs(pct) <= costPct) return 'favors-waiting'
+  const buy = policy?.buy_threshold_pct ?? costPct
+  const sell = policy?.sell_threshold_pct ?? costPct / 2
+  const minConf = policy?.min_confidence_pct ?? TILT_CONFIDENCE_MIN
+  if (pct > buy && conf >= minConf) return 'favors-buying'
+  if (pct < -sell && conf >= minConf) return 'favors-selling'
+  // The sell branch above already claimed the deeper drops, so the waiting
+  // band is symmetric around the BUY bar. Using min(buy, sell) here would
+  // shrink it and mislabel small positive moves as "unclear".
+  if (Math.abs(pct) <= buy) return 'favors-waiting'
   return 'unclear'
 }
 
@@ -122,8 +173,8 @@ export function tiltReason(p: Prediction, costPct: number = ROUND_TRIP_COST_PCT)
       return `Projected ${move} clears the ${cost} with ${conf.toFixed(0)}% confidence.`
     case 'favors-selling':
       return (
-        `Projected drop ${move} exceeds half the ${cost} (the sell side only pays the ` +
-        `exit leg) with ${conf.toFixed(0)}% confidence.`
+        `Projected drop ${move} exceeds half the ${cost} (a holder selling pays ` +
+        `only the exit leg) with ${conf.toFixed(0)}% confidence.`
       )
     case 'favors-waiting':
       if (pct === 0) {
