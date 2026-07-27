@@ -77,6 +77,25 @@ class Settings:
         default_factory=lambda: int(_env("ALERT_EVENT_RETENTION_DAYS", "180")))
     audit_retention_days: int = field(
         default_factory=lambda: int(_env("AUDIT_RETENTION_DAYS", "730")))
+    # News/intelligence flags (Addendum 18). Four INDEPENDENT switches so the
+    # subsystem can be observed without being trusted: collection can run while
+    # the UI is hidden, or the UI can show history while collection is paused.
+    # NEWS_ML_ENABLED gates the only one that can change a forecast, and it
+    # stays false until chronological evidence justifies otherwise.
+    news_collection_enabled: bool = field(
+        default_factory=lambda: _env("NEWS_COLLECTION_ENABLED", "false").lower() == "true")
+    news_api_enabled: bool = field(
+        default_factory=lambda: _env("NEWS_API_ENABLED", "true").lower() == "true")
+    news_ui_enabled: bool = field(
+        default_factory=lambda: _env("NEWS_UI_ENABLED", "true").lower() == "true")
+    news_ml_enabled: bool = field(
+        default_factory=lambda: _env("NEWS_ML_ENABLED", "false").lower() == "true")
+    news_llm_enabled: bool = field(
+        default_factory=lambda: _env("NEWS_LLM_ENABLED", "false").lower() == "true")
+    news_retention_days: int = field(
+        default_factory=lambda: int(_env("NEWS_RETENTION_DAYS", "540")))
+    gdelt_min_interval_seconds: float = field(
+        default_factory=lambda: float(_env("GDELT_MIN_INTERVAL_SECONDS", "5")))
     stale_minutes: int = field(default_factory=lambda: int(_env("STALE_MINUTES", "30")))
     navasan_api_key: str = field(default_factory=lambda: _env("NAVASAN_API_KEY", ""))
     metals_dev_api_key: str = field(default_factory=lambda: _env("METALS_DEV_API_KEY", ""))
