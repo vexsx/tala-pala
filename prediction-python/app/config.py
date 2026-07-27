@@ -61,6 +61,22 @@ class Settings:
         default_factory=lambda: float(_env("HTTP_TIMEOUT_SECONDS", "15"))
     )
     raw_retention_days: int = field(default_factory=lambda: int(_env("RAW_RETENTION_DAYS", "365")))
+    # Bounded retention (Addendum 17). Conservative defaults: these tables are
+    # small relative to raw_observations, and several feed live calibration —
+    # app/core/retention.py additionally floors deletions at the windows the
+    # self-learning loops actually read, whatever these are set to.
+    prediction_retention_days: int = field(
+        default_factory=lambda: int(_env("PREDICTION_RETENTION_DAYS", "730")))
+    signal_retention_days: int = field(
+        default_factory=lambda: int(_env("SIGNAL_RETENTION_DAYS", "365")))
+    training_run_keep: int = field(
+        default_factory=lambda: int(_env("TRAINING_RUN_KEEP", "200")))
+    model_version_retention_days: int = field(
+        default_factory=lambda: int(_env("MODEL_VERSION_RETENTION_DAYS", "180")))
+    alert_event_retention_days: int = field(
+        default_factory=lambda: int(_env("ALERT_EVENT_RETENTION_DAYS", "180")))
+    audit_retention_days: int = field(
+        default_factory=lambda: int(_env("AUDIT_RETENTION_DAYS", "730")))
     stale_minutes: int = field(default_factory=lambda: int(_env("STALE_MINUTES", "30")))
     navasan_api_key: str = field(default_factory=lambda: _env("NAVASAN_API_KEY", ""))
     metals_dev_api_key: str = field(default_factory=lambda: _env("METALS_DEV_API_KEY", ""))

@@ -12,6 +12,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.engine import Engine
 
 from ..config import Settings
+from ..core.retention import run_retention
 from ..db import app_issues, model_versions, raw_observations, utcnow
 from ..metrics import JOB_LAST_SUCCESS
 
@@ -60,9 +61,11 @@ def prune_model_artifacts(engine: Engine, settings: Settings) -> int:
     return removed
 
 
-def run_cleanup(engine: Engine, settings: Settings) -> dict:
+def run_cleanup(engine: Engine, settings: Settings, dry_run: bool = False) -> dict:
     cutoff = utcnow() - timedelta(days=settings.raw_retention_days)
     issue_cutoff = utcnow() - timedelta(days=ISSUE_RETENTION_DAYS)
+    if dry_run:
+        return {"dry_run": True, "retention": run_retention(engine, settings, dry_run=True)}
     with engine.begin() as conn:
         result = conn.execute(
             delete(raw_observations).where(raw_observations.c.collected_at < cutoff)
@@ -71,11 +74,20 @@ def run_cleanup(engine: Engine, settings: Settings) -> dict:
             delete(app_issues).where(app_issues.c.occurred_at < issue_cutoff)
         )
     pruned_artifacts = prune_model_artifacts(engine, settings)
+    # Bounded, calibration-aware retention for the tables that previously grew
+    # without limit. Failures are logged (and mirrored into app_issues) but
+    # never sink the cleanup job.
+    try:
+        retention = run_retention(engine, settings, dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001
+        log.error("retention pass failed: %s", exc)
+        retention = {"error": str(exc)}
     JOB_LAST_SUCCESS.labels(job="cleanup").set(time.time())
     return {
         "deleted_raw_observations": int(result.rowcount or 0),
         "deleted_app_issues": int(issues_result.rowcount or 0),
         "pruned_model_artifacts": pruned_artifacts,
+        "retention": retention,
         "cutoff": cutoff.isoformat(),
         "retention_days": settings.raw_retention_days,
     }
