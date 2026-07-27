@@ -232,7 +232,7 @@ news_source_policies = Table(
 
 news_collection_attempts = Table(
     "news_collection_attempts", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("source_code", Text, nullable=False),
     Column("started_at", _TS, nullable=False, server_default=func.now()),
     Column("finished_at", _TS),
@@ -251,7 +251,7 @@ news_collection_attempts = Table(
 
 news_source_health_snapshots = Table(
     "news_source_health_snapshots", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("source_code", Text, nullable=False),
     Column("captured_at", _TS, nullable=False, server_default=func.now()),
     Column("health", Text, nullable=False, server_default="unknown"),
@@ -278,7 +278,7 @@ news_source_queries = Table(
 
 news_raw_payloads = Table(
     "news_raw_payloads", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("source_code", Text, nullable=False),
     Column("query_id", Integer),
     Column("fetched_at", _TS, nullable=False, server_default=func.now()),
@@ -294,7 +294,7 @@ news_raw_payloads = Table(
 
 news_duplicate_groups = Table(
     "news_duplicate_groups", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("primary_article_id", BigInteger),
     Column("method", Text, nullable=False, server_default=""),
     Column("method_version", Text, nullable=False, server_default=""),
@@ -367,7 +367,7 @@ news_classifier_versions = Table(
 
 news_event_classifications = Table(
     "news_event_classifications", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("event_id", BigInteger, nullable=False),
     Column("classifier_version", Text, nullable=False),
     Column("category", Text, nullable=False),
@@ -380,7 +380,7 @@ news_event_classifications = Table(
 
 news_impact_hypotheses = Table(
     "news_impact_hypotheses", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("event_id", BigInteger, nullable=False),
     Column("classifier_version", Text, nullable=False),
     Column("channel", Text, nullable=False),
@@ -413,7 +413,7 @@ scheduled_macro_events = Table(
 
 macro_event_releases = Table(
     "macro_event_releases", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("scheduled_event_id", Integer, nullable=False),
     Column("released_at", _TS, nullable=False),
     Column("available_at", _TS, nullable=False),
@@ -428,7 +428,7 @@ macro_event_releases = Table(
 
 macro_event_revisions = Table(
     "macro_event_revisions", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("release_id", BigInteger, nullable=False),
     Column("revised_value", Float, nullable=False),
     Column("revised_at", _TS, nullable=False),
@@ -438,7 +438,7 @@ macro_event_revisions = Table(
 
 intelligence_snapshots = Table(
     "intelligence_snapshots", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("captured_at", _TS, nullable=False, server_default=func.now()),
     Column("calc_version", Text, nullable=False),
     Column("scores", JSON, nullable=False, default=dict),
@@ -462,7 +462,7 @@ intelligence_snapshot_events = Table(
 
 intelligence_deltas = Table(
     "intelligence_deltas", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("from_snapshot", BigInteger),
     Column("to_snapshot", BigInteger, nullable=False),
     Column("computed_at", _TS, nullable=False, server_default=func.now()),
@@ -474,7 +474,7 @@ intelligence_deltas = Table(
 
 event_impact_stats = Table(
     "event_impact_stats", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("computed_at", _TS, nullable=False, server_default=func.now()),
     Column("category", Text, nullable=False),
     Column("symbol", Text, nullable=False),
@@ -496,7 +496,7 @@ event_impact_stats = Table(
 
 news_feature_snapshots = Table(
     "news_feature_snapshots", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("symbol", Text, nullable=False),
     Column("as_of", _TS, nullable=False),
     Column("builder_version", Text, nullable=False),
@@ -506,7 +506,7 @@ news_feature_snapshots = Table(
 
 news_research_runs = Table(
     "news_research_runs", metadata,
-    Column("id", BigInteger, primary_key=True),
+    _big_pk(),
     Column("started_at", _TS, nullable=False, server_default=func.now()),
     Column("finished_at", _TS),
     Column("kind", Text, nullable=False),
