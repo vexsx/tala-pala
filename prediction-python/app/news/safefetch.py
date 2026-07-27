@@ -90,8 +90,11 @@ SECRET_PARAM_NAMES = (
     "passwd", "password", "private_key", "secret", "session", "sig",
     "signature", "token",
 )
+# The optional scheme word matters: "Authorization: Bearer <jwt>" must lose the
+# JWT, not just the word "Bearer".
 _SECRET_QS_RE = re.compile(
-    r"(?i)\b(" + "|".join(SECRET_PARAM_NAMES) + r")\s*[=:]\s*([^&\s\"'<>]+)"
+    r"(?i)\b(" + "|".join(SECRET_PARAM_NAMES) + r")\s*[=:]\s*"
+    r"(?:bearer\s+|basic\s+|token\s+)?([^&\s\"'<>]+)"
 )
 _USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^/@\s]+)@")
 _BEARER_RE = re.compile(r"(?i)\b(bearer|basic)\s+([A-Za-z0-9._~+/=\-]{8,})")
@@ -154,8 +157,12 @@ def redact(value: object) -> str:
     """
     text = str(value)
     text = _USERINFO_RE.sub(rf"\1{REDACTED}@", text)
-    text = _SECRET_QS_RE.sub(rf"\1={REDACTED}", text)
+    # Bearer/Basic BEFORE the query-string rule. The query-string rule matches
+    # the word "Authorization" itself and rewrites "Authorization: Bearer <tok>"
+    # into "Authorization=REDACTED <tok>" — destroying the "Bearer <tok>" shape
+    # so the bearer rule can no longer fire, and leaving the token in the log.
     text = _BEARER_RE.sub(rf"\1 {REDACTED}", text)
+    text = _SECRET_QS_RE.sub(rf"\1={REDACTED}", text)
     return text
 
 

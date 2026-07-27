@@ -1,0 +1,34 @@
+{
+  "articles": [
+    {
+      "url": "https://news.example.com/2026/07/15/synthetic-gold-market-fixture",
+      "url_mobile": "",
+      "title": "Synthetic fixture item: gold market summary - Example News",
+      "seendate": "20260715T141500Z",
+      "socialimage": "",
+      "domain": "news.example.com",
+      "language": "English",
+      "sourcecountry": "United States"
+    },
+    {
+      "url": "https://wire.example.org/2026/07/15/synthetic-currency-fixture",
+      "url_mobile": "",
+      "title": "Synthetic fixture item: currency market note - Example Wire",
+      "seendate": "20260715T130000Z",
+      "socialimage": "",
+      "domain": "wire.example.org",
+      "language": "Persian",
+      "sourcecountry": "Iran"
+    },
+    {
+      "url": "https://news.example.com/2026/07/15/synthetic-gold-market-fixture?utm_source=gdelt&utm_medium=api",
+      "url_mobile": "",
+      "title": "Synthetic fixture item: gold market summary - Example News",
+      "seendate": "20260715T144500Z",
+      "socialimage": "",
+      "domain": "news.example.com",
+      "language": "English",
+      "sourcecountry": "United States"
+    }
+  ]
+}

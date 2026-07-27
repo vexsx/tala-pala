@@ -46,9 +46,9 @@ def test_letter_variants_are_unified(raw, expected):
 
 
 def test_arabic_presentation_forms_become_ordinary_letters():
-    # NFKC first, then the letter fold: U+FEDB is a positional form of kaf.
-    assert textnorm.normalize("ﻛﺘﺎﺀ") == "کتابء"[:4] or True
-    assert textnorm.normalize("ﻛ") == "ک"
+    # NFKC runs before the letter fold, so a positional form (U+FEDB is an
+    # initial kaf) becomes a plain letter that LETTER_MAP can then map.
+    assert textnorm.normalize("ﻛﺘﺎﺏ") == "کتاب"
 
 
 # --- half-space (ZWNJ) -------------------------------------------------------
@@ -109,7 +109,8 @@ def test_tatweel_is_stripped():
 
 
 def test_bidi_and_zero_width_controls_are_removed():
-    assert textnorm.normalize("‏طلا‎﻿") == "طلا"
+    # RLM, LRM, a zero-width space and a BOM around one word.
+    assert textnorm.normalize("‏طلا​‎﻿") == "طلا"
 
 
 def test_whitespace_is_collapsed():

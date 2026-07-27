@@ -253,7 +253,9 @@ def parse_articles(
 def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, Any]:
     """Run every enabled query once, throttled, deduped across queries."""
     result = base_result(SOURCE_CODE, PARSER_VERSION, dry_run)
-    result.update(queries_run=0, queries_failed=0, cross_query_duplicates=0)
+    result.update(
+        queries_run=0, queries_failed=0, duplicates_dropped=0, cross_query_duplicates=0
+    )
     with engine.begin() as conn:
         source_row = load_source(conn, SOURCE_CODE)
         queries = load_queries(conn)
@@ -273,8 +275,10 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
 
     # Dedupe across queries within the run: two narrow queries about the same
     # topic return the same wire story, and counting it twice would make one
-    # article look like two independent sources.
-    seen_canonical: set[str] = set()
+    # article look like two independent sources.  Keyed by canonical URL to the
+    # query that first produced it, so "the same story came back twice" and
+    # "two queries overlap" stay separable.
+    seen_canonical: dict[str, int] = {}
     totals = {"items_seen": 0, "items_new": 0, "items_duplicate": 0}
 
     for query in queries:
@@ -332,7 +336,7 @@ def _run_query(
     timeout: float,
     interval: float,
     fetched_at: datetime,
-    seen_canonical: set[str],
+    seen_canonical: dict[str, int],
     totals: dict[str, int],
     dry_run: bool,
 ) -> str:
@@ -397,11 +401,14 @@ def _run_query(
     fresh: list[CollectedArticle] = []
     for article in articles:
         totals["items_seen"] += 1
-        if article.canonical in seen_canonical:
+        first_query = seen_canonical.get(article.canonical)
+        if first_query is not None:
             totals["items_duplicate"] += 1
-            result["cross_query_duplicates"] += 1
+            result["duplicates_dropped"] += 1
+            if first_query != query_id:
+                result["cross_query_duplicates"] += 1
             continue
-        seen_canonical.add(article.canonical)
+        seen_canonical[article.canonical] = query_id
         fresh.append(article)
 
     if dry_run:
