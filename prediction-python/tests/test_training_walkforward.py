@@ -69,12 +69,31 @@ def test_fold_metrics_shape():
     assert 0.0 <= metrics["directional_accuracy"] <= 1.0
 
 
-def _cand(sel: float, hold: float | None = None) -> dict:
+def _cand(sel: float, hold: float | None = None, mase: float = 0.9) -> dict:
+    """Synthetic candidate. Since Addendum 16 an embargoed holdout is REQUIRED
+    for activation, so `hold` defaults to mirroring the selection sMAPE —
+    pass hold=None explicitly to model "no holdout exists"."""
+    holdout = None
+    if hold is not None:
+        holdout = {"smape": hold, "mase": mase}
+    elif hold is None and sel is not None:
+        holdout = {"smape": sel, "mase": mase}
     return {
         "metrics": {"smape": sel},
         "sel_metrics": {"smape": sel},
-        "holdout_metrics": {"smape": hold} if hold is not None else None,
+        "holdout_metrics": holdout,
         "folds": [],  # empty -> bootstrap returns None (untestable, not a veto)
+        "sel_folds": [],
+    }
+
+
+def _cand_no_holdout(sel: float) -> dict:
+    return {
+        "metrics": {"smape": sel},
+        "sel_metrics": {"smape": sel},
+        "holdout_metrics": None,
+        "folds": [],
+        "sel_folds": [],
     }
 
 
