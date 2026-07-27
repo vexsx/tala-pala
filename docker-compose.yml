@@ -53,6 +53,8 @@ services:
     build:
       context: .
       dockerfile: backend-go/Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     restart: unless-stopped
     logging: *default-logging
     env_file: .env
@@ -112,6 +114,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
       dockerfile: Dockerfile
     restart: unless-stopped
     logging: *default-logging

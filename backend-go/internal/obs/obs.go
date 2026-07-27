@@ -19,6 +19,7 @@
 package obs
 
 import (
+	"os"
 	"context"
 	"net/http"
 	"time"
@@ -229,10 +230,18 @@ type Pinger func(ctx context.Context) error
 
 // HealthHandler always returns 200 {"status":"ok"} (process liveness).
 func HealthHandler() http.HandlerFunc {
+	// Stamped at image build time. Without it there is no way to ask a running
+	// API which commit it is, so a stale container looks identical to a fresh
+	// one — the exact failure that hid a deployed frontend change.
+	commit := os.Getenv("BUILD_COMMIT")
+	if commit == "" {
+		commit = "unknown"
+	}
+	body := []byte(`{"status":"ok","build_commit":"` + commit + `"}`)
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write(body)
 	}
 }
 

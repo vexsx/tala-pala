@@ -1560,3 +1560,14 @@ input[type='checkbox'] {
     max-width: 100%;
   }
 }
+
+/* OSINT stream: unavailable state keeps the card frame rather than vanishing */
+.osint-unavailable {
+  padding: 0.5rem 0;
+}
+.osint-state-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--warn, var(--muted));
+  margin-bottom: 0.4rem;
+}

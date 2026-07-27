@@ -15,6 +15,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./c
 
 # ---------- Runtime stage ----------
 FROM alpine:3.20
+ARG GIT_COMMIT=unknown
+ENV BUILD_COMMIT=$GIT_COMMIT
 RUN apk add --no-cache ca-certificates curl tzdata \
  && addgroup -S app && adduser -S -G app app
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import type { NewsFeedResponse, NewsItem } from '../api/types'
 import { useSettings } from '../lib/settings'
@@ -119,6 +119,12 @@ function NewsRow({ item, calendar }: { item: NewsItem; calendar: CalendarMode })
 export default function OsintStream() {
   const { calendar } = useSettings()
   const feed = useApi<NewsFeedResponse>(NEWS_UI_ENABLED ? NEWS_PATH : null)
+  // Remembered across a later failure so the error state can say how old the
+  // rows still on screen are.
+  const [lastLoadedAt, setLastLoadedAt] = useState<string | null>(null)
+  useEffect(() => {
+    if (feed.data) setLastLoadedAt(new Date().toISOString())
+  }, [feed.data])
 
   // Keep the stream live. reload() refetches without dropping what is already
   // on screen (the skeleton is gated on `!feed.data`), so rows never blink.
@@ -179,7 +185,22 @@ export default function OsintStream() {
           ))}
         </div>
       ) : feed.error ? (
-        <ErrorMessage message={feed.error} onRetry={feed.reload} />
+        // The card KEEPS its frame on failure: a vanishing card reads as
+        // "no news", which is a different and misleading claim. The last
+        // successful load is named so a stale-but-shown list is not mistaken
+        // for a live one.
+        <div className="osint-unavailable">
+          {/* ErrorMessage supplies role="alert"; a second one on the wrapper
+              would make screen readers announce the failure twice. */}
+          <div className="osint-state-title">NEWS SERVICE UNAVAILABLE</div>
+          <ErrorMessage message={feed.error} onRetry={feed.reload} />
+          {lastLoadedAt !== null && (
+            <p className="muted small">
+              Last loaded {relativeTime(lastLoadedAt)}
+              {items.length > 0 ? ` · showing ${items.length} previously loaded item(s)` : ''}
+            </p>
+          )}
+        </div>
       ) : (
         <>
           {collectionDisabled && (

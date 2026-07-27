@@ -8,7 +8,12 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY . .
-RUN npm run build
+# Build identity: the SPA is a static bundle, so without this there is no way
+# to ask a running nginx which commit it was built from.
+ARG GIT_COMMIT=unknown
+ENV VITE_BUILD_COMMIT=$GIT_COMMIT
+RUN npm run build \
+ && printf '{"service":"frontend","build_commit":"%s"}\n' "$GIT_COMMIT" > dist/build-info.json
 
 # --- Serve stage ---
 FROM nginx:1.27-alpine

@@ -72,11 +72,16 @@ update: ## Pull latest code, rebuild, restart (run from git checkout)
 	git pull --ff-only && GIT_COMMIT=$$(git rev-parse --short HEAD) $(COMPOSE) up -d --build && $(COMPOSE) ps
 	@$(MAKE) --no-print-directory verify-deploy
 
-verify-deploy: ## Fail if the running prediction-service predates the repo HEAD
-	@repo=$$(git rev-parse --short HEAD); \
-	running=$$($(COMPOSE) exec -T prediction-service sh -c 'echo $$BUILD_COMMIT' 2>/dev/null | tr -d "\r\n"); \
-	if [ "$$repo" = "$$running" ]; then \
-	  echo "deploy OK: prediction-service runs $$running"; \
-	else \
-	  echo "DEPLOY MISMATCH: repo=$$repo running=$${running:-unknown} — run: make update" >&2; exit 1; \
-	fi
+verify-deploy: ## Fail if ANY running service predates the repo HEAD
+	@repo=$$(git rev-parse --short HEAD); bad=0; \
+	pred=$$($(COMPOSE) exec -T prediction-service sh -c 'echo $$BUILD_COMMIT' 2>/dev/null | tr -d "\r\n"); \
+	api=$$($(COMPOSE) exec -T api sh -c 'echo $$BUILD_COMMIT' 2>/dev/null | tr -d "\r\n"); \
+	fe=$$($(COMPOSE) exec -T frontend sh -c 'cat /usr/share/nginx/html/build-info.json 2>/dev/null' \
+	      | sed -n 's/.*"build_commit":"\([^"]*\)".*/\1/p' | tr -d "\r\n"); \
+	for pair in "prediction-service:$$pred" "api:$$api" "frontend:$$fe"; do \
+	  svc=$${pair%%:*}; got=$${pair#*:}; \
+	  if [ "$$got" = "$$repo" ]; then echo "  ok    $$svc $$got"; \
+	  else echo "  STALE $$svc $${got:-unknown} (repo $$repo)" >&2; bad=1; fi; \
+	done; \
+	if [ $$bad -eq 0 ]; then echo "deploy OK: all services run $$repo"; \
+	else echo "DEPLOY MISMATCH - run: make update" >&2; exit 1; fi
