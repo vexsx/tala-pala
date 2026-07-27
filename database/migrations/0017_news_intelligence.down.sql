@@ -1,6 +1,30 @@
 -- Reverse of 0017. Drops only what 0017 created; the 0016 tables and their
--- data survive. Added columns are dropped last so dependent indexes go with
--- their tables.
+-- data survive.
+--
+-- ORDER MATTERS: the columns added to the 0016 tables carry foreign keys into
+-- tables created here (news_events.duplicate_group_id -> news_duplicate_groups,
+-- news_articles.raw_payload_id -> news_raw_payloads). Dropping the tables
+-- first fails on the dependent constraint, so every added column is dropped
+-- before any new table.
+
+ALTER TABLE news_events DROP COLUMN IF EXISTS conflicting;
+ALTER TABLE news_events DROP COLUMN IF EXISTS consolidation_version;
+ALTER TABLE news_events DROP COLUMN IF EXISTS consolidation_method;
+ALTER TABLE news_events DROP COLUMN IF EXISTS independent_source_count;
+ALTER TABLE news_events DROP COLUMN IF EXISTS duplicate_group_id;
+ALTER TABLE news_events DROP COLUMN IF EXISTS available_at;
+
+ALTER TABLE news_articles DROP COLUMN IF EXISTS query_id;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS relevance_score;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS body_excerpt;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS original_language;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS source_timezone;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS parser_version;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS raw_payload_id;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS effective_event_at;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS available_at;
+ALTER TABLE news_articles DROP COLUMN IF EXISTS source_updated_at;
+
 DROP TABLE IF EXISTS news_research_runs;
 DROP TABLE IF EXISTS news_feature_snapshots;
 DROP TABLE IF EXISTS event_impact_stats;
@@ -24,21 +48,3 @@ DROP TABLE IF EXISTS news_source_queries;
 DROP TABLE IF EXISTS news_source_health_snapshots;
 DROP TABLE IF EXISTS news_collection_attempts;
 DROP TABLE IF EXISTS news_source_policies;
-
-ALTER TABLE news_events DROP COLUMN IF EXISTS conflicting;
-ALTER TABLE news_events DROP COLUMN IF EXISTS consolidation_version;
-ALTER TABLE news_events DROP COLUMN IF EXISTS consolidation_method;
-ALTER TABLE news_events DROP COLUMN IF EXISTS independent_source_count;
-ALTER TABLE news_events DROP COLUMN IF EXISTS duplicate_group_id;
-ALTER TABLE news_events DROP COLUMN IF EXISTS available_at;
-
-ALTER TABLE news_articles DROP COLUMN IF EXISTS query_id;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS relevance_score;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS body_excerpt;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS original_language;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS source_timezone;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS parser_version;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS raw_payload_id;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS effective_event_at;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS available_at;
-ALTER TABLE news_articles DROP COLUMN IF EXISTS source_updated_at;
