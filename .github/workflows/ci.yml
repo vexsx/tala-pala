@@ -35,6 +35,182 @@ jobs:
         working-directory: prediction-python
         run: python -m pytest tests/
 
+  # The schema is only ever exercised by hand before a deploy, so a migration
+  # that fails on an empty database (or, worse, only on a populated one) is
+  # found in production. This job applies the real files to a real Postgres:
+  # once from nothing, and once the way a deploy does it — an already-migrated
+  # database with rows in it, receiving only the migrations added since.
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      # Disposable instance, alive only for this job. These credentials are
+      # throwaway CI values and are shared with no deployed environment; this
+      # job must never be pointed at a real database.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: migrations_ci
+          POSTGRES_PASSWORD: migrations_ci
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U migrations_ci -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: migrations_ci
+      PGPASSWORD: migrations_ci
+      PGDATABASE: postgres
+      # Schema version currently applied in production: the upgrade check
+      # replays everything above it the way the next deploy will. Bump this
+      # after a release migrates prod.
+      PRODUCTION_BASELINE: "16"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Migration file-set hygiene
+        run: python3 scripts/check_migrations.py
+
+      - name: Ensure psql client
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql-client
+          fi
+          psql --version
+
+      - name: Apply every migration to a fresh database
+        run: |
+          set -eu
+          psql -v ON_ERROR_STOP=1 -q -c 'CREATE DATABASE db_fresh'
+          for f in $(python3 scripts/check_migrations.py --list up-files); do
+            echo "  apply $f"
+            psql -v ON_ERROR_STOP=1 -q -d db_fresh -f "$f"
+          done
+
+      - name: Migrated schema matches the migrations
+        run: |
+          set -eu
+          # Expected objects are derived from the migration files themselves,
+          # so this assertion cannot drift away from what it guards.
+          python3 scripts/check_migrations.py --list tables | sort > "$RUNNER_TEMP/tables.expected"
+          psql -Atq -d db_fresh \
+            -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public'" \
+            | sort > "$RUNNER_TEMP/tables.fresh"
+          if ! diff -u "$RUNNER_TEMP/tables.expected" "$RUNNER_TEMP/tables.fresh"; then
+            echo "::error::migrated tables differ from the CREATE TABLE statements in database/migrations"
+            exit 1
+          fi
+          echo "  $(wc -l < "$RUNNER_TEMP/tables.fresh") tables, all accounted for"
+
+          # Subset, not equality: Postgres also lists the indexes it builds
+          # behind PRIMARY KEY / UNIQUE constraints, which no migration names.
+          python3 scripts/check_migrations.py --list indexes | sort > "$RUNNER_TEMP/indexes.expected"
+          psql -Atq -d db_fresh \
+            -c "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'" \
+            | sort > "$RUNNER_TEMP/indexes.fresh"
+          missing=$(comm -23 "$RUNNER_TEMP/indexes.expected" "$RUNNER_TEMP/indexes.fresh")
+          if [ -n "$missing" ]; then
+            echo "::error::indexes created by migrations are absent from the migrated database:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "  $(wc -l < "$RUNNER_TEMP/indexes.expected") named indexes present"
+
+      - name: Hot-path indexes exist
+        run: |
+          set -eu
+          # 0014: without these, the dashboard's latest-spread read, the funds
+          # panel, retention cleanup and every symbol-filtered prediction query
+          # fall back to sequential scans on the two largest tables.
+          for idx in idx_raw_obs_provider_time \
+                     idx_raw_obs_collected_at \
+                     idx_predictions_symbol_horizon_predicted \
+                     idx_predictions_symbol_horizon_target \
+                     idx_prices_symbol_time \
+                     idx_predictions_horizon_time; do
+            found=$(psql -Atq -d db_fresh \
+              -c "SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND indexname = '$idx'")
+            if [ "$found" != "$idx" ]; then
+              echo "::error::hot-path index $idx is missing"
+              exit 1
+            fi
+            echo "  ok $idx"
+          done
+
+      - name: Upgrade path — production baseline, then newer migrations
+        run: |
+          set -eu
+          latest=$(python3 scripts/check_migrations.py --list versions | tail -n 1 | sed 's/^0*//')
+          baseline=$PRODUCTION_BASELINE
+          # Hold one migration back if the pin has caught up with the tip, so
+          # the incremental stage is never a no-op that passes for free.
+          if [ "$baseline" -ge "$latest" ]; then
+            baseline=$((latest - 1))
+          fi
+          echo "baseline=$baseline latest=$latest"
+
+          psql -v ON_ERROR_STOP=1 -q -c 'CREATE DATABASE db_upgrade'
+          for f in $(python3 scripts/check_migrations.py --list up-files --max-version "$baseline"); do
+            echo "  baseline $f"
+            psql -v ON_ERROR_STOP=1 -q -d db_upgrade -f "$f"
+          done
+
+          # Rows first: a column added NOT NULL without a default, or a new
+          # constraint an existing row violates, only fails on a populated
+          # database — which is the only kind production has.
+          psql -v ON_ERROR_STOP=1 -q -d db_upgrade <<'SQL'
+          INSERT INTO raw_observations (provider_code, symbol, raw_value, unit, currency, observed_at, dedupe_key)
+          VALUES ('ci', 'IR_GOLD_18K', 10000000, 'IRR/gram', 'IRR', now(), 'ci-upgrade-1');
+          INSERT INTO prices (symbol, value, currency, unit, source, observed_at)
+          VALUES ('IR_GOLD_18K', 1000000, 'IRT', 'gram', 'ci', now());
+          INSERT INTO model_versions (horizon, model_name, version)
+          VALUES ('1d', 'naive', 'ci-baseline');
+          INSERT INTO predictions (horizon, model_name, predicted_at, target_time,
+                                   point_forecast, lower_bound, upper_bound,
+                                   expected_change_pct, direction, confidence)
+          VALUES ('1d', 'naive', now(), now() + interval '1 day',
+                  1000000, 990000, 1010000, 0.5, 'up', 0.5);
+          SQL
+
+          for f in $(python3 scripts/check_migrations.py --list up-files --min-version "$((baseline + 1))"); do
+            echo "  upgrade $f"
+            psql -v ON_ERROR_STOP=1 -q -d db_upgrade -f "$f"
+          done
+
+          # An upgraded database must be indistinguishable from a fresh one.
+          psql -Atq -d db_upgrade \
+            -c "SELECT tablename FROM pg_tables WHERE schemaname = 'public'" \
+            | sort > "$RUNNER_TEMP/tables.upgrade"
+          if ! diff -u "$RUNNER_TEMP/tables.fresh" "$RUNNER_TEMP/tables.upgrade"; then
+            echo "::error::upgraded database has a different table set than a freshly migrated one"
+            exit 1
+          fi
+          psql -Atq -d db_upgrade \
+            -c "SELECT indexname FROM pg_indexes WHERE schemaname = 'public'" \
+            | sort > "$RUNNER_TEMP/indexes.upgrade"
+          if ! diff -u "$RUNNER_TEMP/indexes.fresh" "$RUNNER_TEMP/indexes.upgrade"; then
+            echo "::error::upgraded database has a different index set than a freshly migrated one"
+            exit 1
+          fi
+
+          # And it must still hold the rows it had before the upgrade.
+          for table in raw_observations prices model_versions predictions; do
+            rows=$(psql -Atq -d db_upgrade -c "SELECT count(*) FROM $table")
+            if [ "$rows" != "1" ]; then
+              echo "::error::upgrade changed pre-existing $table rows (expected 1, found $rows)"
+              exit 1
+            fi
+          done
+          echo "  upgrade from ${baseline} to ${latest} clean, pre-existing rows intact"
+
   frontend:
     runs-on: ubuntu-latest
     steps:
