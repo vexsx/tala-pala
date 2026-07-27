@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"sync"
@@ -11,6 +12,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/config"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/internalclient"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/obs"
 )
 
@@ -153,5 +156,38 @@ func TestRunWithLockRecordsMissedRunWhenRedisIsDown(t *testing.T) {
 	}
 	if records[0].Level < slog.LevelWarn {
 		t.Fatalf("level = %v, want WARN or above", records[0].Level)
+	}
+}
+
+// The news job must exist as its OWN cron entry. Folding news collection into
+// the collect job would let a failing feed delay or fail price collection,
+// which is the one thing news must never do.
+func TestNewsJobIsRegisteredSeparatelyWithItsOwnTimeout(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Crons.Collect = "*/10 * * * *"
+	cfg.Crons.Predict = "5 * * * *"
+	cfg.Crons.Signals = "10 * * * *"
+	cfg.Crons.Evaluate = "20 * * * *"
+	cfg.Crons.Train = "30 2 * * *"
+	cfg.Crons.Alerts = "*/5 * * * *"
+	cfg.Crons.Cleanup = "0 4 * * *"
+	cfg.Crons.News = "*/15 * * * *"
+
+	s, err := New(cfg, nil, nil, nil, obs.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// One entry per job: collect, predict, signals, evaluate, train, alerts,
+	// cleanup, news.
+	if got := len(s.cron.Entries()); got != 8 {
+		t.Fatalf("registered %d cron entries, want 8 (news missing?)", got)
+	}
+	if internalclient.NewsTimeout <= 0 {
+		t.Fatal("news job must declare a positive timeout")
+	}
+	// GDELT spaces requests >=5s apart and retries inside that budget, so the
+	// news job needs more headroom than the 60s per-call default.
+	if internalclient.NewsTimeout < time.Minute {
+		t.Fatalf("NewsTimeout %v is too short for a throttled multi-query pass", internalclient.NewsTimeout)
 	}
 }

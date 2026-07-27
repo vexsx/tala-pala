@@ -110,6 +110,14 @@ func New(cfg *config.Config, rdb *redis.Client, client *internalclient.Client,
 			_, err := client.Cleanup(ctx)
 			return err
 		}},
+		// News collection is deliberately its own job: a failing feed must not
+		// touch price collection, predictions or training. Per-source failures
+		// are isolated inside the Python handler, so this only errors when the
+		// whole call fails.
+		{"news", cfg.Crons.News, internalclient.NewsTimeout, func(ctx context.Context) error {
+			_, err := client.NewsCollect(ctx)
+			return err
+		}},
 	}
 
 	for _, j := range jobs {

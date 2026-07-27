@@ -20,6 +20,7 @@ type CronConfig struct {
 	Train    string
 	Alerts   string
 	Cleanup  string
+	News     string
 }
 
 // Config is the fully-parsed application configuration.
@@ -144,6 +145,10 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 			Train:    get("SCHEDULE_TRAIN_CRON", "30 2 * * *"),
 			Alerts:   get("SCHEDULE_ALERTS_CRON", "*/5 * * * *"),
 			Cleanup:  get("SCHEDULE_CLEANUP_CRON", "0 4 * * *"),
+			// Quarter-hourly is well inside every approved source's courtesy
+			// interval; the Python side additionally refuses to poll a source
+			// before its own min_interval_seconds has elapsed.
+			News:     get("SCHEDULE_NEWS_CRON", "*/15 * * * *"),
 		},
 	}
 

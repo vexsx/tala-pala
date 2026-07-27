@@ -30,6 +30,9 @@ const (
 	// continues, and the next tick can overlap it.
 	TrainTimeout   = 180 * time.Minute
 	CollectTimeout = 60 * time.Second
+	// News collection walks several sources; GDELT alone spaces its requests
+	// >=5s apart and retries inside that budget.
+	NewsTimeout = 5 * time.Minute
 	DefaultTimeout = 60 * time.Second
 )
 
@@ -220,4 +223,13 @@ func (c *Client) Evaluate(ctx context.Context) (json.RawMessage, error) {
 
 func (c *Client) Cleanup(ctx context.Context) (json.RawMessage, error) {
 	return c.Post(ctx, "/internal/maintenance/cleanup", nil, DefaultTimeout)
+}
+
+// NewsCollect polls the approved news sources. The Python side is a no-op
+// unless NEWS_COLLECTION_ENABLED is set, so scheduling this job is safe even
+// while collection is switched off. GDELT enforces a >=5s inter-request
+// throttle internally, so a pass over several queries can outlast the default
+// budget — hence its own timeout rather than DefaultTimeout.
+func (c *Client) NewsCollect(ctx context.Context) (json.RawMessage, error) {
+	return c.Post(ctx, "/internal/news/collect", nil, NewsTimeout)
 }
