@@ -133,10 +133,47 @@ services:
         limits:
           memory: 128m
 
+  # Optional metrics stack — NOT part of the production five. Because it
+  # declares a profile, plain `docker compose up -d` ignores it entirely; it
+  # only starts with `docker compose --profile observability up -d`.
+  # No published port on purpose: the UI is reachable through an SSH tunnel
+  # (see docs/observability.md), so a single-host deployment does not grow an
+  # unauthenticated admin surface on the public interface.
+  prometheus:
+    image: prom/prometheus:v3.5.0   # LTS line
+    profiles: [observability]
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # 90 days covers a full retrain/evaluation cycle plus quarter-over-quarter
+      # comparison; the size cap is the real guard — this box also holds Postgres
+      # and its backups, so the TSDB must never be what fills the disk.
+      - --storage.tsdb.retention.time=90d
+      - --storage.tsdb.retention.size=2GB
+      - --web.enable-lifecycle
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - promdata:/prometheus
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
 volumes:
   pgdata:
   redisdata:
   models:
+  promdata:
 
 networks:
   internal:

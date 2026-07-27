@@ -207,7 +207,7 @@ def check_migrations(directory: str = DEFAULT_MIGRATIONS_DIR) -> list[str]:
                 problems.append(
                     f"{filename} is empty — it would apply cleanly and change nothing, "
                     f"silently marking the version as done")
-            elif not _strip_sql_comments(content).strip():
+            elif not _executable_sql(content).strip():
                 problems.append(
                     f"{filename} contains only comments — no SQL statement to run")
 
@@ -239,7 +239,7 @@ def derive_schema(directory: str = DEFAULT_MIGRATIONS_DIR) -> tuple[set[str], se
     indexes: set[str] = set()
     for path in up_files(directory):
         with open(path, "r", encoding="utf-8") as handle:
-            sql = _strip_sql_comments(handle.read())
+            sql = _executable_sql(handle.read())
         for match in CREATE_TABLE_RE.finditer(sql):
             tables.add(_unqualify(match.group(1)))
         for match in CREATE_INDEX_RE.finditer(sql):
