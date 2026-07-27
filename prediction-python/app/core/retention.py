@@ -189,13 +189,22 @@ def run_retention(engine: Engine, settings: Settings, dry_run: bool = False) -> 
     pred_days = days("prediction_retention_days", 730)
     floor, reason = protected_prediction_cutoff(engine)
     cutoff = now - timedelta(days=pred_days)
-    if floor is not None and floor < cutoff:
-        cutoff = floor  # the loops need more history than the policy would keep
-    r = _delete_batched(
-        engine, "predictions",
-        "predicted_at < :cutoff AND target_time < :cutoff", {"cutoff": cutoff},
-        dry_run,
-    )
+    if floor is None:
+        # No matured rows: no loop depends on anything yet, but there is also
+        # nothing to protect against — fall back to the policy cutoff alone.
+        r = _delete_batched(engine, "predictions", "predicted_at < :cutoff",
+                            {"cutoff": cutoff}, dry_run)
+    else:
+        # `floor` is the target_time of the OLDEST row still inside a live
+        # window, so the row at exactly `floor` must survive. Comparing
+        # target_time strictly below it excludes every protected row without
+        # an off-by-one (an earlier version compared predicted_at and deleted
+        # the boundary row).
+        r = _delete_batched(
+            engine, "predictions",
+            "predicted_at < :cutoff AND target_time < :floor",
+            {"cutoff": cutoff, "floor": floor}, dry_run,
+        )
     r.floor_reason = reason
     out.tables.append(r)
 
