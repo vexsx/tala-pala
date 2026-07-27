@@ -397,17 +397,37 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 	// so this is the honest cost basis for net-of-cost tilts. Null when the
 	// spread has not been observed recently; the UI then falls back to a
 	// conservative fixed assumption.
+	// Mirrors prediction-python/app/core/costs.py resolve_cost: only
+	// quality='ok' rows are eligible (a MAD-rejected quote must never set the
+	// hurdle that gates guidance), the value must be inside the sane band, and
+	// an older good quote beats giving up on the first bad row.
 	var costPct *float64
+	var costObservedAt *time.Time
 	err = h.Pool.QueryRow(ctx, `
-		SELECT (raw_payload->>'spread_pct')::float8
+		SELECT (raw_payload->>'spread_pct')::float8, observed_at
 		FROM raw_observations
-		WHERE provider_code = 'hamrahgold' AND raw_payload ? 'spread_pct'
+		WHERE provider_code = 'hamrahgold'
+		  AND quality = 'ok'
+		  AND raw_payload ? 'spread_pct'
+		  AND (raw_payload->>'spread_pct')::float8 BETWEEN 0.1 AND 10.0
 		  AND observed_at > now() - interval '3 days'
-		ORDER BY observed_at DESC LIMIT 1`).Scan(&costPct)
+		ORDER BY observed_at DESC LIMIT 1`).Scan(&costPct, &costObservedAt)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		h.Log.Error("summary_trading_cost", "error", err)
 	}
 	out["trading_cost_pct"] = costPct
+	// Provenance so the UI can label the basis and its age honestly.
+	if costPct != nil && costObservedAt != nil {
+		out["trading_cost_basis"] = "observed_spread"
+		out["trading_cost_source"] = "hamrahgold"
+		out["trading_cost_observed_at"] = costObservedAt.UTC()
+		out["trading_cost_age_hours"] = fp(now.Sub(*costObservedAt).Hours())
+	} else {
+		out["trading_cost_basis"] = "assumed"
+		out["trading_cost_source"] = nil
+		out["trading_cost_observed_at"] = nil
+		out["trading_cost_age_hours"] = nil
+	}
 
 	// Provider health.
 	provRows, err := h.Pool.Query(ctx, `

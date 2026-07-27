@@ -153,7 +153,12 @@ func run() error {
 		Addr:              ":" + cfg.APIPort,
 		Handler:           router,
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		// Slow-body clients (slowloris) were previously only bounded on
+		// headers. WriteTimeout must exceed the slowest legitimate handler:
+		// /predictions/custom proxies a live Python computation.
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 120 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	serverErr := make(chan error, 1)

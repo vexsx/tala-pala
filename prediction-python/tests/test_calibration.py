@@ -272,3 +272,58 @@ def test_signal_predictions_are_symbol_scoped(engine):
             )
     latest = _load_latest_predictions(engine)
     assert latest["1d"]["expected_change_pct"] == pytest.approx(1.5)
+
+
+# --- Addendum 16: spread quality gating -------------------------------------
+
+def _raw_spread(engine, spread, hours_ago, quality="ok", provider="hamrahgold"):
+    from datetime import timedelta
+    from app.db import raw_observations, utcnow
+    at = utcnow() - timedelta(hours=hours_ago)
+    with engine.begin() as conn:
+        conn.execute(raw_observations.insert().values(
+            provider_code=provider, symbol="IR_GOLD_18K", raw_value=1.0,
+            unit="gram", currency="IRR", observed_at=at, quality=quality,
+            dedupe_key=f"{provider}-{hours_ago}-{quality}-{spread}",
+            raw_payload=None if spread is None else {"spread_pct": spread},
+        ))
+
+
+def test_suspect_newest_spread_is_skipped_for_older_valid_one(engine):
+    """Newest quote is suspect; an older GOOD quote must be used instead of
+    falling back to the blanket assumption."""
+    from app.core.costs import resolve_cost
+    _raw_spread(engine, 7.7, hours_ago=1, quality="suspect")
+    _raw_spread(engine, 0.52, hours_ago=5, quality="ok")
+    res = resolve_cost(engine)
+    assert res.basis == "observed_spread"
+    assert res.cost_pct == pytest.approx(0.52)
+    assert res.source == "hamrahgold"
+    assert 4.5 < res.age_hours < 5.5
+
+
+def test_outlier_and_malformed_spreads_never_set_the_hurdle(engine):
+    from app.core.costs import FALLBACK_ROUND_TRIP_COST_PCT, resolve_cost
+    _raw_spread(engine, 0.51, hours_ago=1, quality="outlier")
+    _raw_spread(engine, 99.0, hours_ago=2, quality="ok")
+    _raw_spread(engine, None, hours_ago=3, quality="ok")
+    res = resolve_cost(engine)
+    assert res.basis == "assumed"
+    assert res.cost_pct == pytest.approx(FALLBACK_ROUND_TRIP_COST_PCT)
+    assert res.rejected >= 2
+    assert res.source is None
+
+
+def test_stale_spread_beyond_max_age_is_not_used(engine):
+    from app.core.costs import MAX_AGE_HOURS, resolve_cost
+    _raw_spread(engine, 0.5, hours_ago=MAX_AGE_HOURS + 5, quality="ok")
+    res = resolve_cost(engine)
+    assert res.basis == "assumed"
+    assert "no usable" in res.reason
+
+
+def test_legacy_tuple_api_still_agrees_with_resolver(engine):
+    from app.core.costs import resolve_cost, round_trip_cost_pct
+    _raw_spread(engine, 0.48, hours_ago=1, quality="ok")
+    res = resolve_cost(engine)
+    assert round_trip_cost_pct(engine) == (res.cost_pct, res.basis)

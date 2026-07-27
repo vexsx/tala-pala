@@ -4,6 +4,8 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"log/slog"
 	"time"
 
@@ -175,7 +177,20 @@ func (s *Scheduler) runWithLock(name string, timeout time.Duration, fn func(ctx 
 
 	start := time.Now()
 	s.log.Info("job_started", slog.String("job", name))
-	err = fn(ctx)
+	// A panic inside a cron job would otherwise unwind through robfig/cron's
+	// goroutine and kill the whole API process (middleware.Recoverer only
+	// covers HTTP). Convert it into a normal job failure.
+	err = func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic: %v", r)
+				s.log.Error("job_panic", slog.String("job", name),
+					slog.String("panic", fmt.Sprint(r)),
+					slog.String("stack", string(debug.Stack())))
+			}
+		}()
+		return fn(ctx)
+	}()
 	dur := time.Since(start)
 	s.metrics.JobDuration.WithLabelValues(name).Observe(dur.Seconds())
 	if err != nil {
