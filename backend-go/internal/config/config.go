@@ -52,6 +52,15 @@ type Config struct {
 	MarketTehranOpen  string
 	MarketTehranClose string
 
+	// News switches (Addendum 18), read the same way as the Python service so
+	// one .env drives both. NewsAPIEnabled gates the read endpoint only;
+	// NewsCollectionEnabled is not acted on here — it is reported to the UI so
+	// an empty news list can be explained as "collection is off" rather than
+	// as "nothing happened". Neither flag can reach a model: that is
+	// NEWS_ML_ENABLED, which this service does not read at all.
+	NewsAPIEnabled        bool
+	NewsCollectionEnabled bool
+
 	Crons CronConfig
 }
 
@@ -136,6 +145,12 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 
 		MarketTehranOpen:  get("MARKET_TEHRAN_OPEN", "12:00"),
 		MarketTehranClose: get("MARKET_TEHRAN_CLOSE", "20:00"),
+
+		// Defaults match prediction-python/app/config.py: reading the archive
+		// is safe and on, fetching from the outside world is off until each
+		// source's policy status has been reviewed.
+		NewsAPIEnabled:        getBool("NEWS_API_ENABLED", true),
+		NewsCollectionEnabled: getBool("NEWS_COLLECTION_ENABLED", false),
 
 		Crons: CronConfig{
 			Collect:  get("SCHEDULE_COLLECT_CRON", "*/10 * * * *"),

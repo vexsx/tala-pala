@@ -1376,3 +1376,187 @@ input[type='checkbox'] {
 .brief-paragraph:last-child {
   margin-bottom: 0;
 }
+
+/* --- OSINT stream -----------------------------------------------------------
+   Fixed-height headline feed with its own scroll, so the card never grows with
+   the number of items. Colours come from the shared palette only; urgent rows
+   get a restrained left accent instead of a loud background. */
+
+.osint-head {
+  align-items: baseline;
+  gap: 8px;
+}
+
+.osint-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.osint-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.osint-list:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.osint-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px 10px;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--border);
+}
+
+.osint-row:last-child {
+  border-bottom: none;
+}
+
+.osint-row-urgent {
+  border-left-color: var(--neg);
+  background: var(--bg-2);
+}
+
+.osint-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.osint-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+
+.osint-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.osint-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.osint-chip {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 1px 7px;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.osint-link {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+
+.osint-link:hover .osint-title,
+.osint-link:focus-visible .osint-title {
+  text-decoration: underline;
+}
+
+.osint-link:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.osint-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1.45;
+  /* Persian/Arabic headlines are RTL runs inside this LTR card. */
+  unicode-bidi: isolate;
+}
+
+.osint-ext {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.osint-skeleton {
+  height: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 10px;
+}
+
+.osint-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.osint-skeleton-bar {
+  height: 10px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  animation: osint-pulse 1.4s ease-in-out infinite;
+}
+
+.osint-skeleton-meta {
+  width: 40%;
+}
+
+.osint-skeleton-short {
+  width: 65%;
+}
+
+@keyframes osint-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+@media (max-width: 640px) {
+  .osint-list,
+  .osint-skeleton {
+    height: 260px;
+  }
+
+  .osint-source {
+    max-width: 100%;
+  }
+
+  .osint-time {
+    margin-left: 0;
+  }
+
+  .osint-chip {
+    max-width: 100%;
+  }
+}

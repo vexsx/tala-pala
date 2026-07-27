@@ -22,6 +22,7 @@ import (
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/auth"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/config"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/httpserver"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/intelligence"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/internalclient"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/issues"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/models"
@@ -132,6 +133,11 @@ func run() error {
 		Alerts:      &alerts.Handler{Pool: pool, Audit: auditLog, Log: logger},
 		Admin:       &admin.Handler{Pool: pool, Client: pyClient, Audit: auditLog, Log: logger},
 		Issues:      &issues.Handler{Pool: pool, Recorder: issueRecorder, Log: logger},
+		Intelligence: &intelligence.Handler{
+			Pool: pool, Log: logger,
+			NewsAPIEnabled:        cfg.NewsAPIEnabled,
+			NewsCollectionEnabled: cfg.NewsCollectionEnabled,
+		},
 
 		GlobalLimiter: globalLimiter,
 		LoginLimiter:  loginLimiter,

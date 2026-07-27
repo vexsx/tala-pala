@@ -81,6 +81,10 @@ type IssueHandlers interface {
 	Report(http.ResponseWriter, *http.Request)
 }
 
+type IntelligenceHandlers interface {
+	News(http.ResponseWriter, *http.Request)
+}
+
 // Deps bundles everything the router needs.
 type Deps struct {
 	Logger  *slog.Logger
@@ -90,15 +94,16 @@ type Deps struct {
 	Health    http.HandlerFunc
 	Readiness http.HandlerFunc
 
-	Auth        AuthHandlers
-	Prices      PriceHandlers
-	Predictions PredictionHandlers
-	Signals     SignalHandlers
-	Models      ModelHandlers
-	Portfolio   PortfolioHandlers
-	Alerts      AlertHandlers
-	Admin       AdminHandlers
-	Issues      IssueHandlers
+	Auth         AuthHandlers
+	Prices       PriceHandlers
+	Predictions  PredictionHandlers
+	Signals      SignalHandlers
+	Models       ModelHandlers
+	Portfolio    PortfolioHandlers
+	Alerts       AlertHandlers
+	Admin        AdminHandlers
+	Issues       IssueHandlers
+	Intelligence IntelligenceHandlers
 
 	// Limiters are created by the caller so it can Stop() them on shutdown.
 	GlobalLimiter *RateLimiter
@@ -161,6 +166,10 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 
 			r.Get("/api/v1/models", d.Models.List)
 			r.Get("/api/v1/models/performance", d.Models.Performance)
+
+			// Read-only news view; gated by NEWS_API_ENABLED inside the handler
+			// so an operator can turn it off without a redeploy of the router.
+			r.Get("/api/v1/intelligence/news", d.Intelligence.News)
 
 			r.Get("/api/v1/portfolio", d.Portfolio.Get)
 			r.Post("/api/v1/portfolio/transactions", d.Portfolio.CreateTransaction)

@@ -639,3 +639,47 @@ export interface AlertEvent {
   created_at?: string
   acknowledged?: boolean
 }
+
+// ---------- OSINT news ----------
+
+/** Urgent = the article is linked to a high-severity event; everything else is normal. */
+export type NewsUrgency = 'urgent' | 'normal'
+
+/**
+ * One row of GET /intelligence/news. The API deliberately withholds raw
+ * payloads, article bodies, content hashes, classifier confidences and rule
+ * ids — this is a read-only headline view, never model input.
+ */
+export interface NewsItem {
+  id: number
+  source_code: string
+  source_name: string
+  /** Plain text — render as text, never as HTML. */
+  title: string
+  /** Canonical URL when known, else the collected URL; '' when the source gave none. */
+  url: string
+  /** null when the source published no timestamp. */
+  published_at: string | null
+  published_at_estimated: boolean
+  /** When the collector stored the article — never null. */
+  available_at: string
+  urgency: NewsUrgency
+  /** Persisted classification categories of the linked events. */
+  tags: string[]
+  /** Entity display names. */
+  entities: string[]
+  independent_source_count: number
+  duplicate_count: number
+}
+
+/** GET /intelligence/news — urgent first, then available_at DESC, then id DESC. */
+export interface NewsFeedResponse {
+  items: NewsItem[]
+  count: number
+  urgent_count: number
+  /** Mirrors NEWS_COLLECTION_ENABLED so the UI can explain an empty feed. */
+  collection_enabled: boolean
+  /** available_at of the newest item; null when the feed is empty. */
+  newest_available_at: string | null
+  as_of: string
+}

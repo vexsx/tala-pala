@@ -59,6 +59,13 @@ class BackfillRequest(BaseModel):
     range: str = "5y"
 
 
+class NewsCollectRequest(BaseModel):
+    """Optional narrowing of a news collection pass (empty = every collector)."""
+
+    sources: list[str] = Field(default_factory=list)
+    dry_run: bool = False
+
+
 class BacktestRequest(BaseModel):
     horizon: str = "1d"
     fee_pct: float = 0.5
@@ -197,6 +204,23 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
         from .jobs.news import run_news_ingest
 
         return run_news_ingest(engine, settings, body.symbols or None)
+
+    @app.post("/internal/news/collect")
+    def news_collect(req: Optional[NewsCollectRequest] = None) -> dict:
+        """Run one pass over the Addendum 18 collectors (fed, OFAC, GDELT).
+
+        A no-op unless NEWS_COLLECTION_ENABLED is true, and even then only over
+        sources the policy table approves. Distinct from /internal/news/ingest,
+        which drives the older provider path in app/jobs/news.py.
+        """
+        from .jobs.news_collect import run_news_collection
+
+        return run_news_collection(
+            engine,
+            settings,
+            sources=(req.sources or None) if req else None,
+            dry_run=bool(req.dry_run) if req else False,
+        )
 
     @app.get("/internal/data/coverage")
     def data_coverage() -> dict:

@@ -26,6 +26,7 @@ import DataFreshness from '../components/DataFreshness'
 import ProviderStatus from '../components/ProviderStatus'
 import ProviderGapCard from '../components/ProviderGapCard'
 import GoldFundsPanel from '../components/GoldFundsPanel'
+import OsintStream from '../components/OsintStream'
 import AdvisorPanel from '../components/AdvisorCard'
 import ActionPlannerPanel from '../components/ActionPlanner'
 import PriceChart, { type ChartPoint } from '../components/PriceChart'
@@ -252,6 +253,7 @@ export default function Overview() {
           <div className="card-title">Gold funds — Tehran exchange (Ayar &amp; peers)</div>
           <GoldFundsPanel state={funds} />
         </div>
+        <OsintStream />
       </div>
 
       <div className="grid grid-wide">
