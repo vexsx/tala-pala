@@ -1,0 +1,65 @@
+# Prometheus configuration for the optional `observability` compose profile.
+#
+# Both application targets sit on the compose-internal network and expose
+# metrics without authentication, which is safe precisely because neither
+# publishes a port to the host. Prometheus therefore reaches them by service
+# name; nothing else can.
+#
+# There is no `alerting:` block: no Alertmanager is deployed, so rules in
+# alerts.yml evaluate and become visible under /alerts and via the HTTP API,
+# but nothing routes them to a human yet. Wiring an Alertmanager is the one
+# change needed to turn these into pages — see docs/observability.md.
+
+global:
+  # 30s is a deliberate mismatch with the workload: the fastest producer is the
+  # collect cron at 10 min, so a tighter interval would only inflate the TSDB.
+  # It stays this low so job-failure counters and process restarts are still
+  # caught promptly.
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+  external_labels:
+    stack: tala-pala
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # honor_labels on both application targets is not optional here. Both
+  # services label their scheduler metrics with `job` (job="collect",
+  # job="train", ...), which is also the target label Prometheus attaches from
+  # job_name. With the default honor_labels: false the application's value is
+  # renamed to `exported_job` and every rule matching on job="collect" silently
+  # matches nothing. Setting it true lets the exposed value win; the scrape
+  # target is still identifiable through `instance` and the explicit `service`
+  # label below, and label spoofing is not a concern because both targets are
+  # our own processes on a network with no published ports.
+
+  # Go API. Port 8080 is API_PORT's default; /metrics is public on the internal
+  # network (internal/httpserver/router.go).
+  - job_name: api
+    metrics_path: /metrics
+    honor_labels: true
+    static_configs:
+      - targets: ["api:8080"]
+        labels:
+          service: api
+
+  # Python prediction service. /internal/metrics is one of the two token-exempt
+  # paths (app/main.py TOKEN_EXEMPT_PATHS) so no credential is needed here.
+  - job_name: prediction-service
+    metrics_path: /internal/metrics
+    honor_labels: true
+    static_configs:
+      - targets: ["prediction-service:8500"]
+        labels:
+          service: prediction
+
+  # Self-scrape: without it, `up` and rule-evaluation health for Prometheus
+  # itself are invisible, and the alerting rules below cannot tell "target
+  # down" from "Prometheus down".
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+        labels:
+          service: prometheus

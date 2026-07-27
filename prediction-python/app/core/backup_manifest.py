@@ -62,13 +62,15 @@ REQUIRED_ARTIFACT_FIELDS = (
     "sha256",
 )
 
+# Kept byte-identical to RESTORE_TEXT in scripts/backup.sh: a bundle found by
+# an operator who has never read the docs must still say how to restore it.
 RESTORE_INSTRUCTIONS = (
     "Verify: sh scripts/backup.sh verify <bundle>. "
     "Preview: sh scripts/restore.sh --dry-run <bundle>. "
-    "Apply: sh scripts/restore.sh --confirm <bundle> — stops the api, "
-    "pg_restore --clean --if-exists --no-owner of db.dump, then writes each "
-    "artifacts/<stored_name> back to its source_path in the prediction "
-    "service. See docs/backup-restore.md."
+    "Apply: sh scripts/restore.sh --confirm <bundle> "
+    "(pg_restore --clean --if-exists --no-owner of db.dump, then every "
+    "artifacts/<stored_name> back to its source_path). "
+    "See docs/backup-restore.md."
 )
 
 # Key names that must never appear in a manifest, at any depth.

@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SYNTHETIC fixture, snapshot A.  Shaped like the published OFAC SDN XML
+  (default namespace, misspelled <publshInformation>, program/aka/address/id
+  lists) but every entry is invented for testing: the uids are outside the
+  published range and every name is marked SYNTHETIC.  Not OFAC data.
+
+  Paired with ofac_sdn_b.xml so the diff has one added, one removed, one
+  modified and one unchanged entry.
+-->
+<sdnList xmlns="http://tempuri.org/sdnList.xsd">
+  <publshInformation>
+    <Publish_Date>07/14/2026</Publish_Date>
+    <Record_Count>3</Record_Count>
+  </publshInformation>
+  <sdnEntry>
+    <uid>900001</uid>
+    <lastName>SYNTHETIC ALPHA SHIPPING COMPANY</lastName>
+    <sdnType>Entity</sdnType>
+    <programList>
+      <program>IRAN</program>
+      <program>IFSR</program>
+    </programList>
+    <akaList>
+      <aka>
+        <uid>910001</uid>
+        <type>a.k.a.</type>
+        <category>strong</category>
+        <lastName>SYNTHETIC ALPHA LINES</lastName>
+      </aka>
+    </akaList>
+    <addressList>
+      <address>
+        <uid>920001</uid>
+        <address1>1 Fixture Street</address1>
+        <city>Tehran</city>
+        <country>Iran</country>
+      </address>
+    </addressList>
+    <idList>
+      <id>
+        <uid>930001</uid>
+        <idType>Vessel Registration Identification</idType>
+        <idNumber>IMO 9000001</idNumber>
+      </id>
+    </idList>
+    <remarks>Synthetic fixture entry. Vessel operator in the test dataset.</remarks>
+  </sdnEntry>
+  <sdnEntry>
+    <uid>900002</uid>
+    <lastName>SYNTHETIC BETA TRADING LLC</lastName>
+    <sdnType>Entity</sdnType>
+    <programList>
+      <program>NPWMD</program>
+    </programList>
+    <addressList>
+      <address>
+        <uid>920002</uid>
+        <address1>2 Fixture Road</address1>
+        <city>Dubai</city>
+        <country>United Arab Emirates</country>
+      </address>
+    </addressList>
+    <remarks>Synthetic fixture entry. Procurement agent acting for Tehran-based end users.</remarks>
+  </sdnEntry>
+  <sdnEntry>
+    <uid>900003</uid>
+    <lastName>SYNTHETIC GAMMA MINERALS</lastName>
+    <sdnType>Entity</sdnType>
+    <programList>
+      <program>DPRK</program>
+      <program>NPWMD</program>
+    </programList>
+    <addressList>
+      <address>
+        <uid>920003</uid>
+        <address1>3 Fixture Avenue</address1>
+        <city>Pyongyang</city>
+        <country>Korea, North</country>
+      </address>
+    </addressList>
+    <nationalityList>
+      <nationality>
+        <uid>940003</uid>
+        <country>Korea, North</country>
+      </nationality>
+    </nationalityList>
+    <remarks>Synthetic fixture entry. Minerals trader in the test dataset.</remarks>
+  </sdnEntry>
+</sdnList>

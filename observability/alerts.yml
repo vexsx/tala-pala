@@ -1,0 +1,288 @@
+# Alerting rules for the tala-pala stack.
+#
+# All expressions use the service-namespaced metric names (talapala_api_* from
+# the Go API, talapala_prediction_* from the Python service). The legacy
+# goldpred_* series are still exported but are deprecated and must not be used
+# in new rules.
+#
+# Two deliberate design choices run through the file:
+#
+# 1. Market calendars are encoded in the expressions. Tehran trades Sat–Wed
+#    (Thursday and Friday are closed) and USD_IRT only inside the session
+#    window; global metals close Friday evening UTC and reopen Sunday night.
+#    Without those guards every staleness rule would fire every weekend and be
+#    muted within a month. day_of_week()/hour() are evaluated against
+#    time() + 12600 (UTC+3:30) where a Tehran-local calendar is needed.
+#
+# 2. "Job stopped succeeding" and "job is failing" are separate rules, because
+#    they fail in opposite directions. The last-success gauges live in process
+#    memory, so after a restart a job that never succeeds again also never
+#    publishes a series — staleness alone would stay silent forever. The
+#    failure counters appear on the first failure and cover exactly that gap.
+#
+# Rules marked PENDING INSTRUMENTATION reference metrics that nothing writes
+# yet; they evaluate to an empty vector and stay silent until the named
+# producer is added. See docs/observability.md for the list.
+
+groups:
+  - name: tala-pala-freshness
+    interval: 1m
+    rules:
+      # Freshness is read from the Go gauges rather than the Python ones: the
+      # Go freshness job re-reads max(observed_at) from Postgres every 5
+      # minutes, so the series survives a restart and reflects what is actually
+      # stored. The Python gauge is only set by a successful collect pass.
+      - alert: IranGold18kPriceStale
+        expr: |
+          (time() - talapala_api_last_price_timestamp_seconds{symbol="IR_GOLD_18K"} > 2700)
+            and on()
+          (day_of_week(vector(time() + 12600)) < 4 or day_of_week(vector(time() + 12600)) > 5)
+        for: 15m
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "IR_GOLD_18K has not been priced for {{ $value | humanizeDuration }}"
+          description: >-
+            The headline symbol is stale on a Tehran trading day (it trades 24h
+            Sat–Wed). Collection runs every 10 minutes, so 45 minutes means the
+            chain is broken. Check `docker compose logs prediction-service |
+            grep -i collect`, then GET /internal/providers/health on the
+            prediction service — the 18k providers (hamrahgold, milligold,
+            tgju) fail over by priority, so all of them are down or the collect
+            job itself is not running.
+
+      - alert: UsdIrtPriceStale
+        expr: |
+          (time() - talapala_api_last_price_timestamp_seconds{symbol="USD_IRT"} > 2700)
+            and on()
+          (day_of_week(vector(time() + 12600)) < 4 or day_of_week(vector(time() + 12600)) > 5)
+            and on()
+          (hour(vector(time() + 12600)) >= 13 < 20)
+        for: 15m
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "USD_IRT has not been priced for {{ $value | humanizeDuration }}"
+          description: >-
+            USD_IRT is stale during the Tehran session (MARKET_TEHRAN_OPEN..
+            CLOSE, default 12:00–20:00 local; the rule waits until 13:00 local
+            so it cannot trip on the first tick after open). Every IRT-quoted
+            forecast depends on this rate. Check the fx providers via
+            GET /internal/providers/health and the collect job logs.
+
+      - alert: GlobalGoldPriceStale
+        expr: |
+          (time() - talapala_api_last_price_timestamp_seconds{symbol="XAUUSD"} > 10800)
+            and on()
+          (day_of_week() > 0 < 6)
+        for: 20m
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "XAUUSD has not been priced for {{ $value | humanizeDuration }}"
+          description: >-
+            Global gold is a model input, not a served price, hence warning.
+            The 3h threshold is what keeps the Friday 21:00 UTC close from
+            tripping the rule before the Saturday/Sunday suppression takes
+            over — do not lower it without adding a proper session guard.
+            Check the global_gold providers (GET /internal/providers/health);
+            TGJU's 'ons' quote is the fallback and lags 30–60 minutes.
+
+      - alert: MetricsTargetDown
+        expr: up{job=~"api|prediction-service"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: "{{ $labels.job }}"
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }}"
+          description: >-
+            Every other rule in this file goes silent when its target stops
+            being scraped, so this is the rule that prevents a blind spot.
+            Check `docker compose ps` and the container's healthcheck; if the
+            service is up, confirm it still answers /metrics (api:8080) or
+            /internal/metrics (prediction-service:8500) on the internal network.
+
+  - name: tala-pala-jobs
+    interval: 1m
+    rules:
+      - alert: ScheduledJobFailing
+        expr: increase(talapala_api_job_failure_total{job=~"collect|predict|train|cleanup"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "Scheduled job {{ $labels.job }} failed in the last 30 minutes"
+          description: >-
+            Counts real failures, timeouts and runs skipped because the Redis
+            lock could not be taken. Check `docker compose logs api | grep -E
+            'job_failed|job_lock'` and the Issues tab in the UI (WARN+ logs are
+            mirrored into app_issues). A lock_held reason on a single-replica
+            deployment means a previous run was killed and its lock is still
+            counting down.
+
+      - alert: CollectJobNotSucceeding
+        expr: time() - talapala_api_job_last_success_timestamp_seconds{job="collect"} > 2700
+        for: 15m
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "collect has not succeeded for {{ $value | humanizeDuration }}"
+          description: >-
+            The collect cron runs every 10 minutes (SCHEDULE_COLLECT_CRON), so
+            45 minutes without a success means the prediction service is
+            rejecting the call or every provider is failing. Check
+            `docker compose logs api | grep job_failed` and the reachability of
+            prediction-service:8500 from the api container.
+
+      - alert: PredictJobNotSucceeding
+        expr: time() - talapala_api_job_last_success_timestamp_seconds{job="predict"} > 10800
+        for: 30m
+        labels:
+          severity: critical
+          service: api
+        annotations:
+          summary: "predict has not succeeded for {{ $value | humanizeDuration }}"
+          description: >-
+            The predict cron runs hourly (SCHEDULE_PREDICT_CRON) and covers
+            feature generation plus the prediction pass, so the served forecast
+            is going stale. Check `docker compose logs api | grep job_failed`;
+            a feature-generation failure usually points at missing recent
+            prices, so verify the freshness alerts above first.
+
+      - alert: TrainJobNotSucceeding
+        expr: time() - talapala_api_job_last_success_timestamp_seconds{job="train"} > 108000
+        for: 1h
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "train has not succeeded for {{ $value | humanizeDuration }}"
+          description: >-
+            Training runs nightly at 02:30 UTC (SCHEDULE_TRAIN_CRON) and takes
+            30–36 minutes; 30 hours means at least one night was missed and the
+            active models are drifting away from the current regime. Check
+            `docker compose logs api | grep -E 'train|job_failed'` — a run
+            exceeding the 90-minute internal-client timeout shows up as a
+            failure here while Python is still working.
+
+      - alert: CleanupJobNotSucceeding
+        expr: time() - talapala_api_job_last_success_timestamp_seconds{job="cleanup"} > 108000
+        for: 1h
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "cleanup has not succeeded for {{ $value | humanizeDuration }}"
+          description: >-
+            Retention runs nightly at 04:00 UTC (SCHEDULE_CLEANUP_CRON). While
+            it is down, raw_observations and predictions grow without bound and
+            the disk shared with Postgres fills. Check
+            `docker compose logs api | grep job_failed` and current table sizes.
+
+      # PENDING INSTRUMENTATION — scripts/backup.sh is a host cron outside the
+      # compose network and reports success to nothing. This rule stays silent
+      # until the script publishes a timestamp (node_exporter textfile
+      # collector or a Pushgateway); a silent rule is the correct interim
+      # state, an absent()-based one would fire forever and train the operator
+      # to ignore it.
+      - alert: DatabaseBackupStale
+        expr: time() - talapala_backup_last_success_timestamp_seconds > 108000
+        for: 30m
+        labels:
+          severity: critical
+          service: backup
+        annotations:
+          summary: "No successful database backup for {{ $value | humanizeDuration }}"
+          description: >-
+            The nightly pg_dump has not reported success in over 30 hours.
+            Check /var/log/tala-pala-backup.log on the host, that the cron entry
+            in /etc/cron.d/ still exists, and that BACKUP_RSYNC_TARGET is
+            reachable — an off-host copy is the only one that survives the host.
+
+  - name: tala-pala-models
+    interval: 1m
+    rules:
+      # PENDING INSTRUMENTATION — needs a per (symbol, horizon) gauge set to 1
+      # when the active model_versions row has a readable artifact under
+      # MODELS_DIR and 0 when it does not.
+      - alert: ActiveModelArtifactMissing
+        expr: talapala_prediction_active_model_artifact == 0
+        for: 15m
+        labels:
+          severity: critical
+          service: prediction
+        annotations:
+          summary: "No usable artifact for the active model {{ $labels.symbol }}/{{ $labels.horizon }}"
+          description: >-
+            The database marks a model version active but its artifact cannot
+            be loaded, so predictions for that horizon fall back or fail. Check
+            that the `models` volume is mounted at MODELS_DIR in the
+            prediction-service container and that the file the active
+            model_versions row points at exists; if not, trigger a retrain
+            (`make train`).
+
+      # PENDING INSTRUMENTATION — needs a gauge carrying the live interval
+      # coverage that jobs/evaluate.py already writes to
+      # app_settings['live_calibration'], labelled by horizon.
+      - alert: PredictionIntervalCoverageDegraded
+        expr: talapala_prediction_interval_coverage < 0.75
+        for: 2h
+        labels:
+          severity: warning
+          service: prediction
+        annotations:
+          summary: "Live interval coverage for {{ $labels.horizon }} is {{ $value | humanizePercentage }}"
+          description: >-
+            Realized coverage of the nominal 90% interval has fallen below the
+            0.75 floor (COVERAGE_FLOOR in models/predicting.py), so published
+            intervals are too narrow for the current regime. The system widens
+            them automatically up to 1.5x — this alert means that cap is
+            probably being hit. Check the evaluate job is running, then compare
+            recent sMAPE (talapala_prediction_model_smape) against the last
+            training run: a regime change usually needs a retrain, not a wider
+            interval.
+
+  - name: tala-pala-news
+    interval: 1m
+    rules:
+      # Self-gating: JOB_LAST_SUCCESS{job="news"} only exists once a news run
+      # has succeeded, so deployments running with NEWS_COLLECTION_ENABLED=false
+      # (the default) never produce a series and never alert.
+      - alert: NewsCollectionFailing
+        expr: time() - talapala_prediction_job_last_success_timestamp_seconds{job="news"} > 21600
+        for: 30m
+        labels:
+          severity: warning
+          service: prediction
+        annotations:
+          summary: "News ingestion has not succeeded for {{ $value | humanizeDuration }}"
+          description: >-
+            News ingestion is not scheduled by the Go cron — it is driven by
+            POST /internal/news/ingest — so this fires either because whatever
+            calls that endpoint stopped, or because every approved source is
+            failing. Check `docker compose logs prediction-service | grep -i
+            news` and the consecutive_failures column in news_sources.
+
+      # PENDING INSTRUMENTATION — needs a gauge per source code carrying
+      # news_sources.last_success_at (the column jobs/news.py already updates).
+      - alert: NewsSourceStale
+        expr: time() - talapala_prediction_news_source_last_success_timestamp_seconds > 86400
+        for: 1h
+        labels:
+          severity: warning
+          service: prediction
+        annotations:
+          summary: "News source {{ $labels.source }} has not delivered for {{ $value | humanizeDuration }}"
+          description: >-
+            One approved source has been silent for a day while others keep
+            working, which usually means a feed URL moved, a robots/policy
+            change, or repeated fetch errors. Check consecutive_failures and
+            policy_status for that code in news_sources; a source disabled on
+            purpose should be marked enabled=false so it stops being scraped
+            and stops alerting.

@@ -33,7 +33,17 @@
 #   30 3 * * * root cd /opt/tala-pala && sh scripts/backup.sh >> /var/log/tala-pala-backup.log 2>&1
 set -eu
 
+# An explicitly given path is resolved against the caller's directory, not the
+# repo root we are about to move into (docker compose needs to run from there).
+ORIG_PWD=$(pwd)
 cd "$(dirname "$0")/.."
+
+abs_path() {
+  case "$1" in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$ORIG_PWD" "$1" ;;
+  esac
+}
 
 TAB=$(printf '\t')
 STAGE=""
@@ -44,7 +54,9 @@ cleanup() {
   [ -n "$WORK" ] && [ -d "$WORK" ] && rm -rf "$WORK"
   return 0
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 fail() {
   echo "backup FAILED: $*" >&2
@@ -175,12 +187,12 @@ WORK=$(mktemp -d)
 
 if [ "${1:-}" = "verify" ]; then
   [ -n "${2:-}" ] || fail "usage: scripts/backup.sh verify BUNDLE_DIR"
-  verify_bundle "$2"
-  exit $?
+  if verify_bundle "$(abs_path "${2%/}")"; then exit 0; else exit 1; fi
 fi
 
 # ---------------------------------------------------------------- create ----
-BACKUP_DIR="${1:-./backups}"
+BACKUP_DIR="./backups"
+if [ -n "${1:-}" ]; then BACKUP_DIR=$(abs_path "${1%/}"); fi
 KEEP="${BACKUP_KEEP:-14}"
 case "$KEEP" in
   ''|*[!0-9]*) fail "BACKUP_KEEP must be a whole number (got '$KEEP')" ;;
@@ -194,7 +206,7 @@ BUNDLE="$BACKUP_DIR/goldpred-$STAMP"
 # which is atomic: a reader either sees a complete bundle or no bundle at all.
 STAGE="$BACKUP_DIR/.staging-$STAMP-$$"
 
-[ -e "$BUNDLE" ] && fail "bundle $BUNDLE already exists"
+if [ -e "$BUNDLE" ]; then fail "bundle $BUNDLE already exists"; fi
 mkdir -p "$STAGE/artifacts"
 
 docker compose exec -T postgres sh -c \
@@ -327,10 +339,11 @@ mv "$STAGE" "$BUNDLE"
 STAGE=""
 
 # Retention. Bundle names are UTC timestamps, so a reverse lexical sort is a
-# reverse chronological sort. The bundle just written is passed in as
-# protected: whatever KEEP says, the newest known-good bundle is never the one
-# that gets deleted.
-find "$BACKUP_DIR" -maxdepth 1 -type d -name 'goldpred-*' 2>/dev/null \
+# reverse chronological sort. Whatever KEEP says, the bundle just written — the
+# newest one known to be good, because it was verified above — is skipped.
+# -mindepth 1 so a BACKUP_DIR whose own name starts with goldpred- can never
+# match itself and be deleted.
+find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name 'goldpred-*' 2>/dev/null \
   | sort -r > "$WORK/bundles"
 KEPT=0
 while read -r OLD; do
@@ -344,7 +357,7 @@ done < "$WORK/bundles"
 
 # Staging directories from a run that was killed mid-backup (>1 day old, so
 # never a concurrent run's).
-find "$BACKUP_DIR" -maxdepth 1 -type d -name '.staging-*' -mtime +0 \
+find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '.staging-*' -mtime +0 \
   -exec rm -rf {} + 2>/dev/null || true
 
 echo "backup OK: $BUNDLE (db $(du -h "$BUNDLE/db.dump" | cut -f1), $ARTIFACT_COUNT artifact(s), migration $MIGRATION)"
