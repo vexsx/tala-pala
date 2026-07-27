@@ -23,6 +23,11 @@ happens once, in :func:`store_articles`, next to the flag that records it.
 moment we could first have acted on the item, which is the later of publication
 and ingestion.  See ``database/migrations/0017_news_intelligence.up.sql``.
 
+All network access goes through :func:`safe_get`, a thin adapter over
+:mod:`app.news.safefetch` that gives the collectors back a status code instead
+of an exception and defaults to a single attempt — see its docstring for why
+both matter.
+
 Nothing in this package reaches a model.  Collection is gated on
 ``NEWS_COLLECTION_ENABLED`` (default off) and ``NEWS_ML_ENABLED`` remains false;
 these tables are not read by ``app/features`` or ``app/models``.
@@ -31,7 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Iterable, Mapping, Optional
@@ -40,7 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import Connection
 
 from ...config import Settings
-from ...db import ensure_utc, insert_ignore
+from ...db import ensure_utc, insert_ignore, utcnow
 from .. import (
     news_articles,
     news_collection_attempts,
@@ -48,7 +53,13 @@ from .. import (
     news_sources,
 )
 from ..dedupe import canonical_url, content_hash, normalize_title
-from ..safefetch import parse_json_safely, parse_xml_safely
+from ..safefetch import (
+    DEFAULT_POLICY,
+    FetchHTTPError,
+    fetch,
+    parse_json_safely,
+    parse_xml_safely,
+)
 
 log = logging.getLogger(__name__)
 
@@ -156,30 +167,103 @@ def available_from(
     return max(source_published_at, fetched_at)
 
 
-# --- safefetch wrappers -------------------------------------------------------
+# --- safefetch adapter --------------------------------------------------------
 
 
-def parse_xml(text: str, *, source_code: str):
+@dataclass(frozen=True)
+class FetchOutcome:
+    """What a collector needs back from one request.
+
+    Deliberately narrower than :class:`app.news.safefetch.FetchResult`: the
+    collectors branch on the status code and store the body, and everything
+    else about the transfer belongs to the fetch layer.
+    """
+
+    status_code: Optional[int]
+    text: str
+    content_type: str = ""
+    fetched_at: Optional[datetime] = None
+
+
+def safe_get(
+    url: str,
+    *,
+    allow_hosts,
+    max_bytes: int,
+    timeout: float,
+    max_attempts: int = 1,
+) -> FetchOutcome:
+    """Fetch one URL under the source's own caps.
+
+    Two translations of ``safefetch.fetch`` happen here, and both matter:
+
+    *A non-success status is returned, not raised.*  A status is an answer
+    about the source and every collector records it on the attempt row; GDELT
+    additionally has to SEE a 429 to stop its pass, which an exception that
+    unwinds past the loop would prevent.  Failures with no status — blocked
+    target, oversized body, timeout — still propagate, because they say nothing
+    about what the source published.
+
+    *Retries default to one attempt.*  safefetch retries 429/5xx internally,
+    which would put requests on the wire that this package's own throttle never
+    sees.  A collector that wants retries asks for them explicitly and keeps
+    each one inside its own spacing guard.
+    """
+    policy = replace(
+        DEFAULT_POLICY,
+        read_timeout=timeout,
+        connect_timeout=min(float(timeout), DEFAULT_POLICY.connect_timeout),
+        max_bytes=max_bytes,
+        max_decompressed_bytes=max(max_bytes, DEFAULT_POLICY.max_decompressed_bytes),
+        max_attempts=max_attempts,
+    )
+    try:
+        result = fetch(url, allowed_hosts=allow_hosts, policy=policy)
+    except FetchHTTPError as exc:
+        if exc.status_code is None:  # transport failure: no answer to record
+            raise
+        return FetchOutcome(status_code=exc.status_code, text="")
+    return FetchOutcome(
+        status_code=result.status_code,
+        text=result.text,
+        content_type=result.content_type,
+        fetched_at=result.fetched_at,
+    )
+
+
+def received_at_of(response: Any) -> datetime:
+    """When the body arrived.
+
+    safefetch stamps the moment the response was accepted; falling back to now
+    keeps the ingest clock from ever predating the moment we held the text.
+    """
+    return ensure_utc(getattr(response, "fetched_at", None)) or utcnow()
+
+
+def parse_xml(text: str, *, source_code: str, max_bytes: int):
     """Parsed XML root, or None when the body is not a usable document.
 
-    ``safefetch`` may signal a malformed document by returning nothing or by
-    raising; both mean the same thing here, and neither may sink a collection
-    pass.  The result is compared against None explicitly by callers — an
-    ``Element`` with no children is falsy, so truthiness would silently discard
-    an empty-but-valid document.
+    A malformed document — however safefetch signals it — means the same thing
+    here, and none of those signals may sink a collection pass.  The result is
+    compared against None explicitly by callers: an ``Element`` with no children
+    is falsy, so truthiness would silently discard an empty-but-valid document.
+
+    ``max_bytes`` is the collector's own cap.  safefetch defaults it to the
+    shared decompressed limit, which is well under what a sanctions list
+    legitimately weighs.
     """
     try:
-        root = parse_xml_safely(text)
+        root = parse_xml_safely(text, max_bytes=max_bytes)
     except Exception as exc:  # parser boundary: any failure is "no document"
         log.warning("%s: unparseable XML body: %s", source_code, exc)
         return None
     return root
 
 
-def parse_json(text: str, *, source_code: str) -> Optional[Any]:
+def parse_json(text: str, *, source_code: str, max_bytes: int) -> Optional[Any]:
     """Parsed JSON document, or None when the body is not usable JSON."""
     try:
-        doc = parse_json_safely(text)
+        doc = parse_json_safely(text, max_bytes=max_bytes)
     except Exception as exc:  # parser boundary: any failure is "no document"
         log.warning("%s: unparseable JSON body: %s", source_code, exc)
         return None
@@ -353,12 +437,12 @@ def latest_raw_payload(
 
 # --- normalized rows ----------------------------------------------------------
 
-# Columns 0017 ALTERs onto the table 0016 created.  The SQLAlchemy mirror in
+# available_at, raw_payload_id, parser_version and query_id are columns 0017
+# ALTERs onto the table 0016 created.  The SQLAlchemy mirror in
 # app/news/__init__.py is hand-maintained and can lag a migration, so a value
 # whose column is absent is dropped instead of crashing the pass — every one of
 # them is also written into ``raw_payload``, which always exists, so a lagging
 # mirror costs the indexed projection of the provenance, never the provenance.
-_ADDENDUM_18_COLUMNS = ("available_at", "raw_payload_id", "parser_version", "query_id")
 _WARNED_MISSING: set[str] = set()
 
 
@@ -405,9 +489,10 @@ def store_articles(
             continue
         seen_in_batch.add(key)
 
-        # published_at is NOT NULL in 0016.  When the source stated no time we
-        # store the moment we could first act on it, and the estimated flag
-        # says so; source_published_at stays absent from the provenance.
+        # published_at is NOT NULL in 0016, so it holds the only defensible
+        # substitute — the moment we could first act — with the estimated flag
+        # set.  The provenance still records source_published_at as null, so
+        # "not stated" stays distinguishable from "stated, and it was then".
         published_at = article.source_published_at or article.available_at
         provenance = dict(article.provenance)
         provenance.update(
@@ -479,12 +564,8 @@ def base_result(source_code: str, parser_version: str, dry_run: bool) -> dict[st
 
 
 def content_type_of(response: Any) -> str:
-    """``content-type`` header of a safefetch response, '' when it carries none."""
-    headers = getattr(response, "headers", None) or {}
-    try:
-        return str(headers.get("content-type", "") or "")
-    except AttributeError:
-        return ""
+    """Media type of a fetch outcome, '' when it carries none."""
+    return str(getattr(response, "content_type", "") or "")
 
 
 def record_failure(
@@ -511,7 +592,7 @@ def record_failure(
     log.warning("%s: collection failed (%s): %s", source_code, error_class, detail)
     if dry_run:
         return result
-    finished_at = datetime.now(timezone.utc)
+    finished_at = utcnow()
     with engine.begin() as conn:
         record_attempt(
             conn,
@@ -537,6 +618,7 @@ __all__ = [
     "OUTCOME_SKIPPED",
     "OUTCOME_THROTTLED",
     "CollectedArticle",
+    "FetchOutcome",
     "available_from",
     "base_result",
     "canonical_url",
@@ -550,8 +632,10 @@ __all__ = [
     "parse_rfc822",
     "parse_xml",
     "poll_gate",
+    "received_at_of",
     "record_attempt",
     "record_failure",
+    "safe_get",
     "sha256_text",
     "store_articles",
     "store_raw_payload",

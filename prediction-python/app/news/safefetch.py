@@ -555,12 +555,21 @@ def _attempt(
                     redact(f"{current}: HTTP {status}"), status_code=status
                 )
 
-            media_type, header_charset = _split_content_type(
-                response.headers.get("content-type", "")
-            )
-            _check_content_type(media_type, policy, current)
-            content = _read_capped(response, policy, current)
-            wire_bytes = response.num_bytes_downloaded or len(content)
+            if status == 304:
+                # Answer to a conditional GET: "unchanged", no body, no
+                # Content-Type.  A normal outcome for a poller, so it returns a
+                # result with empty content rather than an error; the caller
+                # distinguishes it by ``status_code``.
+                media_type, header_charset = "", ""
+                content = b""
+                wire_bytes = response.num_bytes_downloaded
+            else:
+                media_type, header_charset = _split_content_type(
+                    response.headers.get("content-type", "")
+                )
+                _check_content_type(media_type, policy, current)
+                content = _read_capped(response, policy, current)
+                wire_bytes = response.num_bytes_downloaded or len(content)
 
         charset = _declared_charset(content, header_charset)
         text = _decode_strictly(content, charset, current)
@@ -669,6 +678,11 @@ def fetch(
 # is legal) is a stronger guard than any parser setting, and it is the guard
 # that still holds when defusedxml is not installed.
 _PROLOG_END_RE = re.compile(r"<[A-Za-z_]")
+
+
+def _size_label(data: bytes | str) -> str:
+    """``len`` counts bytes for bytes and characters for str — say which."""
+    return f"{len(data)} {'bytes' if isinstance(data, bytes) else 'characters'}"
 _DOCTYPE_RE = re.compile(r"<!\s*DOCTYPE", re.IGNORECASE)
 _ENTITY_DECL_RE = re.compile(r"<!\s*ENTITY", re.IGNORECASE)
 
@@ -718,7 +732,7 @@ def parse_xml_safely(
     exactly that hole, and it runs on both branches so the two behave alike.
     """
     if len(data) > max_bytes:
-        raise FetchTooLarge(f"XML payload of {len(data)} bytes exceeds {max_bytes}")
+        raise FetchTooLarge(f"XML payload of {_size_label(data)} exceeds {max_bytes}")
     payload, text = _prepare_xml_bytes(data)
     _reject_doctype(text, "XML")
     try:
@@ -779,7 +793,7 @@ def parse_json_safely(
 ) -> Any:
     """Parse JSON with size and nesting limits, and no NaN/Infinity."""
     if len(data) > max_bytes:
-        raise FetchTooLarge(f"JSON payload of {len(data)} bytes exceeds {max_bytes}")
+        raise FetchTooLarge(f"JSON payload of {_size_label(data)} exceeds {max_bytes}")
     text = data.decode("utf-8", "strict") if isinstance(data, bytes) else data
     if not _json_depth_ok(text, max_depth):
         raise FetchBlocked(f"JSON nesting exceeds max_depth={max_depth}")

@@ -39,7 +39,6 @@ from typing import Any, Mapping, Optional, Sequence
 
 from ...config import Settings
 from ...db import utcnow
-from ..safefetch import safe_get
 from . import (
     OUTCOME_EMPTY,
     OUTCOME_OK,
@@ -51,8 +50,10 @@ from . import (
     mark_polled,
     parse_xml,
     poll_gate,
+    received_at_of,
     record_attempt,
     record_failure,
+    safe_get,
     sha256_text,
     store_articles,
     store_raw_payload,
@@ -211,7 +212,7 @@ def parse_sdn(xml_text: str) -> tuple[dict[str, dict], dict[str, Any]]:
     Returns empty structures rather than raising: an unusable body must be
     recorded as a collection failure, not thrown through the caller.
     """
-    root = parse_xml(xml_text, source_code=SOURCE_CODE)
+    root = parse_xml(xml_text, source_code=SOURCE_CODE, max_bytes=MAX_FETCH_BYTES)
     if root is None:
         return {}, {}
 
@@ -381,8 +382,11 @@ def diff_snapshots(
         )
     for uid in current.keys() & previous.keys():
         before, after = previous[uid], current[uid]
+        # Sorted, not in COMPARED_FIELDS order: this list is persisted and read
+        # by people, and a stable alphabetical order is one less thing that can
+        # change when the constant is extended.
         changed = tuple(
-            name for name in COMPARED_FIELDS if before.get(name) != after.get(name)
+            sorted(name for name in COMPARED_FIELDS if before.get(name) != after.get(name))
         )
         if changed:
             changes.append(
@@ -507,6 +511,9 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
         )
         status = getattr(response, "status_code", None)
         body = getattr(response, "text", "") or ""
+        # The ingest clock is when the snapshot ARRIVED: a change becomes
+        # actionable when we hold the document, not when we asked for it.
+        received_at = received_at_of(response)
     except Exception as exc:
         return record_failure(
             engine,
@@ -604,7 +611,7 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
             source_code=SOURCE_CODE,
             request_url=list_url,
             body=body,
-            fetched_at=started_at,
+            fetched_at=received_at,
             parser_version=PARSER_VERSION,
             http_status=status,
             content_type=content_type_of(response),
@@ -620,7 +627,7 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
         previous_sha256=previous_sha,
         list_url=list_url,
         list_meta=meta,
-        fetched_at=started_at,
+        fetched_at=received_at,
     )
     with engine.begin() as conn:
         counts = store_articles(
@@ -628,7 +635,7 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
             articles,
             raw_payload_id=raw_payload_id,
             parser_version=PARSER_VERSION,
-            fetched_at=started_at,
+            fetched_at=received_at,
         )
     # items_seen stays the number of ENTRIES read; the change counts are the
     # normalized output and are reported separately.

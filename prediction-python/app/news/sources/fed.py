@@ -31,7 +31,6 @@ from typing import Any, Optional
 
 from ...config import Settings
 from ...db import utcnow
-from ..safefetch import safe_get
 from . import (
     OUTCOME_EMPTY,
     OUTCOME_OK,
@@ -46,8 +45,10 @@ from . import (
     parse_rfc822,
     parse_xml,
     poll_gate,
+    received_at_of,
     record_attempt,
     record_failure,
+    safe_get,
     store_articles,
     store_raw_payload,
 )
@@ -169,7 +170,7 @@ def parse_releases(
     caller records it as a source problem rather than an exception that sinks
     the pass.
     """
-    root = parse_xml(xml_text, source_code=source_code)
+    root = parse_xml(xml_text, source_code=source_code, max_bytes=MAX_FETCH_BYTES)
     if root is None:
         return []
 
@@ -253,6 +254,9 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
         )
         status = getattr(response, "status_code", None)
         body = getattr(response, "text", "") or ""
+        # The ingest clock is when the body ARRIVED, not when we asked for it:
+        # available_at must never be earlier than the moment we held the text.
+        received_at = received_at_of(response)
     except Exception as exc:
         return record_failure(
             engine,
@@ -277,7 +281,7 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
         )
 
     if dry_run:
-        articles = parse_releases(body, fetched_at=started_at)
+        articles = parse_releases(body, fetched_at=received_at)
         result["status"] = OUTCOME_OK if articles else OUTCOME_EMPTY
         result["items_seen"] = len(articles)
         result["reason"] = "dry_run"
@@ -291,7 +295,7 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
             source_code=SOURCE_CODE,
             request_url=feed_url,
             body=body,
-            fetched_at=started_at,
+            fetched_at=received_at,
             parser_version=PARSER_VERSION,
             http_status=status,
             content_type=content_type_of(response),
@@ -299,7 +303,7 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
         )
     result["raw_payload_id"] = raw_payload_id
 
-    articles = parse_releases(body, fetched_at=started_at)
+    articles = parse_releases(body, fetched_at=received_at)
     finished_at = utcnow()
     with engine.begin() as conn:
         counts = store_articles(
@@ -307,7 +311,7 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
             articles,
             raw_payload_id=raw_payload_id,
             parser_version=PARSER_VERSION,
-            fetched_at=started_at,
+            fetched_at=received_at,
         )
         result.update(counts)
         empty = not articles

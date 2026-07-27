@@ -300,8 +300,8 @@ def should_attempt(
     if source.last_polled_at is not None and interval > 0:
         due_at = source.last_polled_at + timedelta(seconds=interval)
         if now < due_at:
-            return False, f"polled {int((now - source.last_polled_at).total_seconds())}s ago; " \
-                          f"min interval {interval}s"
+            age = int((now - source.last_polled_at).total_seconds())
+            return False, f"polled {age}s ago; min interval {interval}s"
     return True, ""
 
 

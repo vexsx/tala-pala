@@ -28,10 +28,10 @@ which language reported it.
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional
 
+from . import textnorm
 from .dedupe import normalize_text
 
 # Bumped whenever the gazetteer or the matching rule changes, and stored on
@@ -54,23 +54,6 @@ KINDS: tuple[str, ...] = (
     KIND_COMMODITY, KIND_CURRENCY, KIND_INDICATOR, KIND_SANCTIONS_PROGRAM,
     KIND_MARKET,
 )
-
-# Persian text arrives with three kinds of orthographic noise that would
-# otherwise fork one entity into several: Arabic forms of letters that Persian
-# writes differently (ي/ك), Arabic-Indic and Persian digit sets, and optional
-# diacritics.  Folding both the corpus and the aliases through the same table
-# makes the match orthography-independent.
-_ARABIC_FOLD = str.maketrans(
-    {
-        "ي": "ی", "ك": "ک", "ة": "ه", "ۀ": "ه", "أ": "ا", "إ": "ا", "آ": "ا",
-        "ؤ": "و", "ئ": "ی", "ى": "ی",
-        "٠": "0", "١": "1", "٢": "2", "٣": "3", "٤": "4",
-        "٥": "5", "٦": "6", "٧": "7", "٨": "8", "٩": "9",
-        "۰": "0", "۱": "1", "۲": "2", "۳": "3", "۴": "4",
-        "۵": "5", "۶": "6", "۷": "7", "۸": "8", "۹": "9",
-    }
-)
-_DIACRITICS_RE = re.compile(r"[ً-ْٰـ]")
 
 
 @dataclass(frozen=True)
@@ -253,15 +236,17 @@ GAZETTEER: tuple[Entity, ...] = (
 def fold(value: str) -> str:
     """Orthography-independent, punctuation-free, casefolded text.
 
-    Composes the shared :func:`app.news.dedupe.normalize_text` (so hashing,
-    title comparison and entity matching can never disagree about what the text
-    says) with the Persian-specific folding described in the module docstring.
+    Both existing normalizers, composed rather than reimplemented:
+    :func:`app.news.textnorm.normalize` unifies Arabic letter forms, digits,
+    diacritics and the half-space, and :func:`app.news.dedupe.normalize_text`
+    casefolds and strips punctuation.  Aliases and article text go through the
+    same function, which is what makes a match orthography-independent — and
+    reusing these two means entity matching can never disagree with hashing or
+    title comparison about what a string says.
     """
     if not value:
         return ""
-    text = str(value).translate(_ARABIC_FOLD)
-    text = _DIACRITICS_RE.sub("", text)
-    return normalize_text(text)
+    return normalize_text(textnorm.normalize(value))
 
 
 def _build_index() -> tuple[dict[str, Entity], dict[str, tuple[Entity, str]]]:

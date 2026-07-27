@@ -636,6 +636,22 @@ def test_default_user_agent_is_the_honest_project_string():
     assert "IranGoldPredictor" in FAST.user_agent
 
 
+def test_not_modified_is_an_empty_result_not_an_error():
+    """A conditional GET answered 304 has no body and no Content-Type."""
+    recorder = Recorder(lambda request: httpx.Response(304))
+    result = safefetch.fetch(
+        URL,
+        allowed_hosts=ALLOWED,
+        policy=FAST,
+        headers={"If-None-Match": '"etag-1"'},
+        resolver=public_resolver,
+        transport=recorder.transport,
+    )
+    assert result.status_code == 304
+    assert result.content == b""
+    assert result.text == ""
+
+
 def test_fetch_without_an_allowlist_is_refused():
     with pytest.raises(FetchBlocked, match="no allowed hosts"):
         safefetch.fetch(URL, allowed_hosts=(), policy=FAST, resolver=public_resolver)

@@ -41,7 +41,6 @@ from sqlalchemy import select
 from ...config import Settings
 from ...db import utcnow
 from .. import news_source_queries
-from ..safefetch import safe_get
 from . import (
     OUTCOME_EMPTY,
     OUTCOME_OK,
@@ -55,7 +54,9 @@ from . import (
     parse_compact_utc,
     parse_json,
     poll_gate,
+    received_at_of,
     record_attempt,
+    safe_get,
     store_articles,
     store_raw_payload,
 )
@@ -174,8 +175,14 @@ def load_queries(conn) -> list[Mapping[str, Any]]:
 def _request(url: str, *, timeout: float, min_interval: float):
     """Every outbound GDELT request goes through here, retries included."""
     THROTTLE.wait(min_interval)
+    # max_attempts=1: retrying inside the fetch layer would put a request on
+    # the wire that this throttle never saw.  Retries belong to _run_query.
     return safe_get(
-        url, allow_hosts=ALLOW_HOSTS, max_bytes=MAX_FETCH_BYTES, timeout=timeout
+        url,
+        allow_hosts=ALLOW_HOSTS,
+        max_bytes=MAX_FETCH_BYTES,
+        timeout=timeout,
+        max_attempts=1,
     )
 
 
@@ -292,14 +299,12 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
         )
         outcome = _run_query(
             engine,
-            settings,
             result=result,
             query_id=query_id,
             query_text=query_text,
             request_url=request_url,
             timeout=timeout,
             interval=interval,
-            fetched_at=started_at,
             seen_canonical=seen_canonical,
             totals=totals,
             dry_run=dry_run,
@@ -327,7 +332,6 @@ def collect(engine, settings: Settings, *, dry_run: bool = False) -> dict[str, A
 
 def _run_query(
     engine,
-    settings: Settings,
     *,
     result: dict[str, Any],
     query_id: int,
@@ -335,7 +339,6 @@ def _run_query(
     request_url: str,
     timeout: float,
     interval: float,
-    fetched_at: datetime,
     seen_canonical: dict[str, int],
     totals: dict[str, int],
     dry_run: bool,
@@ -346,12 +349,17 @@ def _run_query(
     body = ""
     status: Optional[int] = None
     last_error = ""
+    # Per query, not per pass: queries are 5s apart by construction, and an
+    # available_at borrowed from the start of the pass would claim we held a
+    # later query's results before we did.
+    received_at = attempt_started
 
     for attempt in range(1, MAX_ATTEMPTS_PER_QUERY + 1):
         try:
             response = _request(request_url, timeout=timeout, min_interval=interval)
             status = getattr(response, "status_code", None)
             body = getattr(response, "text", "") or ""
+            received_at = received_at_of(response)
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             response = None
@@ -393,9 +401,9 @@ def _run_query(
         return "error"
 
     result["http_status"] = status
-    document = parse_json(body, source_code=SOURCE_CODE)
+    document = parse_json(body, source_code=SOURCE_CODE, max_bytes=MAX_FETCH_BYTES)
     articles = parse_articles(
-        document, query_text=query_text, query_id=query_id, fetched_at=fetched_at
+        document, query_text=query_text, query_id=query_id, fetched_at=received_at
     )
 
     fresh: list[CollectedArticle] = []
@@ -420,7 +428,7 @@ def _run_query(
             source_code=SOURCE_CODE,
             request_url=request_url,
             body=body,
-            fetched_at=fetched_at,
+            fetched_at=received_at,
             parser_version=PARSER_VERSION,
             http_status=status,
             content_type=content_type_of(response),
@@ -435,7 +443,7 @@ def _run_query(
             fresh,
             raw_payload_id=raw_payload_id,
             parser_version=PARSER_VERSION,
-            fetched_at=fetched_at,
+            fetched_at=received_at,
         )
         totals["items_new"] += counts["items_new"]
         totals["items_duplicate"] += counts["items_duplicate"]
