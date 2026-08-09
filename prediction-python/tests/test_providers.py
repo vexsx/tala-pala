@@ -834,3 +834,62 @@ def test_dispersion_summary_needs_two_sources():
     oscillating = validation.dispersion_summary({"a": 1.0, "b": -1.0})
     assert oscillating["spread_pct"] is None and oscillating["mad_pct"] is None
     assert oscillating["mad"] == pytest.approx(1.0)
+
+
+# --- Addendum 19: provider circuit breaker -----------------------------------
+
+def test_breaker_stays_closed_below_threshold():
+    from app.providers.registry import BREAKER_THRESHOLD, breaker_cooldown_minutes
+    for fails in range(BREAKER_THRESHOLD):
+        assert breaker_cooldown_minutes(fails) == 0.0
+
+
+def test_breaker_cooldown_backs_off_and_caps():
+    from app.providers.registry import (BREAKER_MAX_MINUTES, BREAKER_THRESHOLD,
+                                        breaker_cooldown_minutes)
+    first = breaker_cooldown_minutes(BREAKER_THRESHOLD)
+    second = breaker_cooldown_minutes(BREAKER_THRESHOLD + 1)
+    assert 0 < first < second
+    # tgju reached 1945 consecutive failures; the cooldown must not run away.
+    assert breaker_cooldown_minutes(1945) == BREAKER_MAX_MINUTES
+
+
+def test_breaker_opens_during_cooldown_and_closes_after():
+    from datetime import timedelta
+
+    from app.db import utcnow
+    from app.providers.registry import BREAKER_THRESHOLD, breaker_open
+    now = utcnow()
+    row = {"code": "tgju", "consecutive_failures": BREAKER_THRESHOLD + 3,
+           "last_error_at": now - timedelta(minutes=1)}
+    assert breaker_open(row, now) is True
+    # Once the cooldown elapses the provider is retried: the breaker delays,
+    # it never disables permanently.
+    row["last_error_at"] = now - timedelta(hours=3)
+    assert breaker_open(row, now) is False
+
+
+def test_breaker_never_blocks_a_provider_with_no_recorded_error():
+    from app.providers.registry import breaker_open
+    assert breaker_open({"code": "x", "consecutive_failures": 999}) is False
+
+
+def test_load_provider_rows_drops_broken_providers(engine):
+    """A blocked provider must not spend the collect budget the healthy
+    fallbacks behind it still need."""
+    from datetime import timedelta
+
+    from app.db import data_providers, utcnow
+    from app.providers.registry import load_provider_rows
+    now = utcnow()
+    with engine.begin() as conn:
+        conn.execute(data_providers.insert().values(
+            code="broken", name="Broken", category="iran_gold", priority=1,
+            enabled=True, consecutive_failures=50, last_error_at=now - timedelta(seconds=30),
+            last_error="access denied"))
+        conn.execute(data_providers.insert().values(
+            code="healthy", name="Healthy", category="iran_gold", priority=5,
+            enabled=True, consecutive_failures=0))
+    codes = [r["code"] for r in load_provider_rows(engine, ["iran_gold"])]
+    assert "broken" not in codes
+    assert "healthy" in codes

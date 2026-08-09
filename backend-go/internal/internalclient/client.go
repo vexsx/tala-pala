@@ -29,7 +29,10 @@ const (
 	// (sync def in a threadpool), so the job is recorded failed while the work
 	// continues, and the next tick can overlap it.
 	TrainTimeout   = 180 * time.Minute
-	CollectTimeout = 60 * time.Second
+	// A healthy sequential pass over every provider measured ~49s in
+	// production, so a 60s budget failed on any network variance. The circuit
+	// breaker removes the persistent time sinks; this headroom covers the rest.
+	CollectTimeout = 150 * time.Second
 	// News collection walks several sources; GDELT alone spaces its requests
 	// >=5s apart and retries inside that budget.
 	NewsTimeout = 5 * time.Minute

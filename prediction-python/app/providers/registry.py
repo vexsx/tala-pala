@@ -93,16 +93,70 @@ def build_provider(code: str, settings: Settings) -> Optional[Provider]:
     return None
 
 
+# Circuit breaker (Addendum 19). A provider that has failed this many times in
+# a row is very unlikely to succeed on the next tick, but each attempt still
+# costs its full retry budget inside a sequential collect pass. tgju
+# accumulated 1945 consecutive failures over a week of "access denied" and
+# burned ~4.3s on every 10-minute cycle, pushing the whole pass past the
+# 60-second HTTP budget and failing collect outright.
+BREAKER_THRESHOLD = 5
+# Cooldown doubles per failure beyond the threshold, capped, so a provider
+# recovering after an outage is retried within the hour rather than parked.
+BREAKER_BASE_MINUTES = 5
+BREAKER_MAX_MINUTES = 60
+
+
+def breaker_cooldown_minutes(consecutive_failures: int) -> float:
+    """Minutes a provider stays skipped after ``consecutive_failures``."""
+    if consecutive_failures < BREAKER_THRESHOLD:
+        return 0.0
+    over = consecutive_failures - BREAKER_THRESHOLD
+    return float(min(BREAKER_BASE_MINUTES * (2 ** min(over, 10)), BREAKER_MAX_MINUTES))
+
+
+def breaker_open(row: dict, now=None) -> bool:
+    """True when the provider should be skipped this tick.
+
+    Open only while the cooldown since the LAST error is still running: the
+    breaker delays retries, it never disables a provider permanently. A row
+    with no recorded error time is always tried.
+    """
+    fails = int(row.get("consecutive_failures") or 0)
+    cooldown = breaker_cooldown_minutes(fails)
+    if cooldown <= 0:
+        return False
+    last_error = row.get("last_error_at") or row.get("updated_at")
+    if last_error is None:
+        return False
+    now = ensure_utc(now or utcnow())
+    return (now - ensure_utc(last_error)).total_seconds() < cooldown * 60
+
+
 def load_provider_rows(
     engine: Engine, categories: Optional[Iterable[str]] = None
 ) -> list[dict]:
-    """Enabled provider rows ordered by (priority, code) — lower priority first."""
+    """Enabled provider rows ordered by (priority, code) — lower priority first.
+
+    Rows whose circuit breaker is open are dropped: a persistently failing
+    provider must not spend the collect budget that the healthy fallbacks
+    behind it still need.
+    """
     stmt = select(data_providers).where(data_providers.c.enabled.is_(True))
     if categories:
         stmt = stmt.where(data_providers.c.category.in_(list(categories)))
     stmt = stmt.order_by(data_providers.c.priority, data_providers.c.code)
     with engine.connect() as conn:
-        return [dict(row._mapping) for row in conn.execute(stmt)]
+        rows = [dict(row._mapping) for row in conn.execute(stmt)]
+    kept = []
+    for row in rows:
+        if breaker_open(row):
+            log.info(
+                "provider %s skipped: circuit breaker open (%s consecutive failures)",
+                row.get("code"), row.get("consecutive_failures"),
+            )
+            continue
+        kept.append(row)
+    return kept
 
 
 def record_success(engine: Engine, code: str) -> None:
