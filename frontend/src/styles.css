@@ -1571,3 +1571,13 @@ input[type='checkbox'] {
   color: var(--warn, var(--muted));
   margin-bottom: 0.4rem;
 }
+
+/* Short-term desk */
+.std-sentence {
+  margin: 0.5rem 0 0.75rem;
+  line-height: 1.6;
+}
+.std-basis {
+  margin-top: 0.6rem;
+  line-height: 1.55;
+}

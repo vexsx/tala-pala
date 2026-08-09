@@ -27,6 +27,7 @@ import ProviderStatus from '../components/ProviderStatus'
 import ProviderGapCard from '../components/ProviderGapCard'
 import GoldFundsPanel from '../components/GoldFundsPanel'
 import OsintStream from '../components/OsintStream'
+import ShortTermDesk from '../components/ShortTermDesk'
 import AdvisorPanel from '../components/AdvisorCard'
 import ActionPlannerPanel from '../components/ActionPlanner'
 import PriceChart, { type ChartPoint } from '../components/PriceChart'
@@ -200,6 +201,8 @@ export default function Overview() {
         loading={summary.loading}
         portfolio={portfolio.data}
       />
+
+      <ShortTermDesk />
 
       <ActionPlannerPanel
         predictions={predictions}
