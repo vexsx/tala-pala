@@ -285,12 +285,10 @@ def _upsert_state(
     the symbol was before it got here. ``state_version`` counts real changes
     for the same reason.
     """
-    changed = stored is None or stored["alignment"] != result.alignment
-    previous = (
-        stored["alignment"]
-        if (stored is not None and changed)
-        else (stored or {}).get("previous_alignment")
-    )
+    stored = stored or {}
+    changed = not stored or stored["alignment"] != result.alignment
+    previous = stored["alignment"] if (stored and changed) else stored.get("previous_alignment")
+    version = max(1, int(stored.get("state_version") or 0) + (1 if changed else 0))
     values: dict[str, Any] = {
         "symbol": result.symbol,
         "alignment": result.alignment,
@@ -304,14 +302,12 @@ def _upsert_state(
         "latest_1h_candle_close": identity["1h"],
         "latest_4h_candle_close": identity["4h"],
         "latest_1d_candle_close": identity["1d"],
-        "last_bullish_alert_at": (stored or {}).get("last_bullish_alert_at"),
-        "last_bearish_alert_at": (stored or {}).get("last_bearish_alert_at"),
-        "state_version": int((stored or {}).get("state_version") or 0) + (1 if changed else 0),
+        "last_bullish_alert_at": stored.get("last_bullish_alert_at"),
+        "last_bearish_alert_at": stored.get("last_bearish_alert_at"),
+        "state_version": version,
         "calculated_at": result.calculated_at,
         "updated_at": utcnow(),
     }
-    if values["state_version"] < 1:
-        values["state_version"] = 1
     if alerted_at is not None:
         key = (
             "last_bullish_alert_at"
@@ -542,10 +538,15 @@ def _evaluate_symbol(
             # An alert that cannot be written must not roll back the event:
             # the event is the record, the alert is the notification, and a
             # missing alerts table (or a deleted user) is not a reason to
-            # re-decide the transition on the next run.
+            # re-decide the transition on the next run. The SAVEPOINT is what
+            # makes that true on PostgreSQL — a raised statement aborts the
+            # whole transaction there, so without it the "contained" failure
+            # would take the state write down with it.
             try:
-                alert_event_id = _write_alert_events(conn, result, config, event_id, now)
+                with conn.begin_nested():
+                    alert_event_id = _write_alert_events(conn, result, config, event_id, now)
             except Exception as exc:  # noqa: BLE001 - see comment above
+                alert_event_id = None
                 log.warning("trend alignment alert write failed for %s: %s", symbol, exc)
             if alert_event_id is not None:
                 conn.execute(

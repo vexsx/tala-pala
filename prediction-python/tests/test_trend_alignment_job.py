@@ -68,7 +68,7 @@ def _ramp(hours: int, start: float, step: float) -> list[float]:
     return [start + step * (i + 1) for i in range(hours)]
 
 
-def _series(direction: float, base: float = 1000.0) -> list[float]:
+def _series(direction: float, base: float = 5000.0) -> list[float]:
     """Flat, then trending, then a sharp counter-move, then trending again."""
     flat = [base] * FLAT_HOURS
     trend = _ramp(TREND_HOURS, base, 4.0 * direction)
@@ -277,7 +277,7 @@ def test_unavailable_timeframe_never_produces_an_event(engine, trend_settings):
     Carrying the other two timeframes into a "full" alignment would present a
     conclusion the daily series does not support.
     """
-    seed_prices(engine, GOLD, _ramp(2 * 24, 1000.0, 4.0))
+    seed_prices(engine, GOLD, _ramp(2 * 24, 5000.0, 4.0))
     outcome = run(engine, trend_settings, at(2 * 24 - 1))["symbols"][GOLD]
 
     assert outcome["alignment"] == "not_aligned"
@@ -287,7 +287,8 @@ def test_unavailable_timeframe_never_produces_an_event(engine, trend_settings):
     assert stored["alignment"] == "not_aligned"
     assert stored["timeframes"]["1d"]["trend"] == "unavailable"
     assert stored["timeframes"]["1h"]["trend"] == "bullish"
-    assert stored["data_fresh"] is False
+    # Why it is unavailable is recorded: too little history, not a data gap.
+    assert "required for the slow MA" in stored["timeframes"]["1d"]["reason"]
 
 
 def test_disabled_flag_writes_nothing(bullish_engine, trend_settings):

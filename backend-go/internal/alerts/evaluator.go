@@ -10,11 +10,19 @@ import (
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/markethours"
 )
 
-// AlertTypes is the full set from CONTRACTS.md.
+// AlertTypes is the full set from CONTRACTS.md — what a user may subscribe to.
+//
+// "trend_alignment" is deliberately absent from Evaluate's switch below: the
+// prediction service fires it from its own job, off closed candles, because
+// only that service builds the multi-timeframe MA state. It still has to be
+// accepted here or nobody could ever create the subscription the job fans out
+// to. An unknown type falls through Evaluate to "did not trigger", so the
+// Go-side runner leaves these rows alone rather than mis-evaluating them.
 var AlertTypes = map[string]bool{
 	"price_above": true, "price_below": true, "signal_change": true,
 	"confidence_above": true, "volatility_spike": true, "premium_above": true,
 	"stale_data": true, "provider_failure": true, "model_degradation": true,
+	"trend_alignment": true,
 }
 
 // Alert is the evaluator's view of a configured alert.
