@@ -14,7 +14,11 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 
-from ..features.engineering import compute_feature_frame
+from ..features.engineering import (
+    FRAME_SPACING_KEY,
+    MIN_HISTORY_KEY,
+    compute_feature_frame,
+)
 from .base import ForecastModel, register
 
 # calendar features stay; raw price-level columns are dropped so the model
@@ -33,6 +37,14 @@ def _feature_matrix(series: pd.Series, context: Optional[dict] = None) -> pd.Dat
     Point-in-time guard: walk-forward folds pass a truncated gold series but
     the FULL exog series via context, so each exog series is cut at the last
     gold timestamp before use (same leakage policy as sarimax_exog).
+
+    Schema guard: ``series`` here is a walk-forward PREFIX, so nothing about it
+    may decide which columns exist — otherwise early folds are scored in one
+    feature space and the artifact refit on the full history ships in another.
+    The trainer states the run's bar spacing and its shortest frame through the
+    context (reserved non-series keys); a caller that does not state them gets
+    the defensive defaults in engineering.py, which are the same for every
+    prefix and so keep the schema constant anyway.
     """
     cutoff = series.index[-1] if len(series) else None
 
@@ -49,6 +61,8 @@ def _feature_matrix(series: pd.Series, context: Optional[dict] = None) -> pd.Dat
         xau_usd=_pit("xau_usd"),
         gold_fund=_pit("gold_fund"),
         fund_flow=_pit("fund_flow"),
+        bar_spacing=(context or {}).get(FRAME_SPACING_KEY),
+        min_history=(context or {}).get(MIN_HISTORY_KEY),
     )
     return frame.drop(columns=[c for c in _DROP_COLS if c in frame.columns])
 

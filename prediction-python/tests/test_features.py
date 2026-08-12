@@ -16,15 +16,16 @@ import pandas as pd
 import pytest
 
 from app.features.engineering import (
+    SPACING_DAILY,
     TREND_FAST,
     TREND_MID,
-    TREND_MID_MIN_BARS,
     TREND_SLOW,
-    TREND_SLOW_MIN_BARS,
+    WALK_FORWARD_MIN_BARS,
     build_snapshot,
     compute_feature_frame,
     daily_close,
     ema_series,
+    infer_bar_spacing,
 )
 from app.models import trend_alignment
 
@@ -37,6 +38,22 @@ STACK_COLS = (
 )
 FAST_COLS = STACK_COLS[:2]
 SLOW_COLS = STACK_COLS[2:]
+
+
+def _one_frame(series, min_history=None):
+    """A frame built by a SINGLE-frame caller (snapshot/signals shape).
+
+    Such a caller consumes the frame it just built and nothing else, so the
+    shortest frame of its "run" is that frame — which is what makes the whole
+    stack available here. A walk-forward caller declares the run's shortest
+    fold instead and gets a narrower, constant set; that is the subject of
+    tests/test_feature_frame_invariants.py, not of the content tests below.
+    """
+    return compute_feature_frame(
+        series,
+        bar_spacing=SPACING_DAILY,
+        min_history=len(series) if min_history is None else min_history,
+    )
 
 
 def _daily(n, seed=17, start=8_000_000.0, drift=0.0004, vol=0.008):
@@ -106,7 +123,7 @@ def test_ema_series_is_sma_seeded_not_pandas_ewm():
 
 
 def test_long_daily_history_gets_the_whole_stack():
-    frame = compute_feature_frame(_daily(1000))
+    frame = _one_frame(_daily(1000))
     for col in STACK_COLS:
         assert col in frame.columns, col
     state = frame["trend_stack_1d"].dropna()
@@ -117,10 +134,20 @@ def test_long_daily_history_gets_the_whole_stack():
 def test_hourly_frame_gets_no_stack_columns():
     """The 4H/1H legs are not computable — intraday history is ~23 days — so
     they are not offered. An EMA220 over hourly bars would be a 9-day intraday
-    average wearing a 1D label."""
-    frame = compute_feature_frame(_hourly(23 * 24))
-    for col in STACK_COLS:
-        assert col not in frame.columns, col
+    average wearing a 1D label.
+
+    Checked both ways round: with the caller declaring the spacing (what the
+    trainer does) and with the spacing inferred (the defensive default), and
+    with the most generous min_history there is, so only the spacing can be
+    keeping the columns out.
+    """
+    hourly = _hourly(23 * 24)
+    for spacing in (None, "intraday"):
+        frame = compute_feature_frame(
+            hourly, bar_spacing=spacing, min_history=len(hourly)
+        )
+        for col in STACK_COLS:
+            assert col not in frame.columns, (spacing, col)
 
 
 def test_gappy_daily_history_still_gets_the_stack():
@@ -133,42 +160,79 @@ def test_gappy_daily_history_still_gets_the_stack():
     keep[5::7] = False                    # weekly closure
     keep[300:340] = False                 # a long holiday/outage stretch
     gappy = series[keep]
-    assert len(gappy) >= TREND_SLOW_MIN_BARS
+    assert len(gappy) >= TREND_SLOW
 
-    frame = compute_feature_frame(gappy)
+    # the sparse frame is still a DAILY frame, inference included: closed
+    # sessions lengthen gaps, they do not turn daily bars into intraday ones
+    assert infer_bar_spacing(gappy.index) == SPACING_DAILY
+
+    frame = _one_frame(gappy)
     for col in STACK_COLS:
         assert col in frame.columns, col
     assert frame["trend_stack_1d"].notna().sum() == len(gappy) - (TREND_SLOW - 1)
 
 
-def test_each_leg_appears_only_once_its_warmup_is_affordable():
-    """Boundary check on the measured trade: the EMA48 leg costs 47 warm-up
-    rows and the EMA220 leg 219, and ml.TabularModel drops any row with a NaN,
-    so each leg waits until its warm-up is a quarter of the series or less."""
-    just_under_fast = compute_feature_frame(_daily(TREND_MID_MIN_BARS - 1))
+def test_each_leg_appears_only_once_the_shortest_frame_can_compute_it():
+    """Boundary check on the admission rule.
+
+    A leg is admitted by the SHORTEST frame the run will build, never by the
+    length of the frame in hand: an EMA_n the shortest frame cannot compute is
+    an all-NaN column there, and ml.TabularModel drops any row with a NaN, so
+    that frame trains on zero rows and silently becomes naive.
+
+    (This test previously drove the same boundaries off ``len(series)`` —
+    TREND_MID_MIN_BARS / TREND_SLOW_MIN_BARS, a quarter-of-the-series warm-up
+    budget spent per frame. That is the walk-forward defect: fold i builds its
+    frame from series[:i+1], so those thresholds handed different folds
+    different columns.)
+    """
+    series = _daily(1000)
+
+    just_under_fast = _one_frame(series, min_history=TREND_MID - 1)
     for col in STACK_COLS:
         assert col not in just_under_fast.columns, col
 
-    at_fast = compute_feature_frame(_daily(TREND_MID_MIN_BARS))
+    at_fast = _one_frame(series, min_history=TREND_MID)
     for col in FAST_COLS:
         assert col in at_fast.columns, col
     for col in SLOW_COLS:
         assert col not in at_fast.columns, col
 
-    just_under_slow = compute_feature_frame(_daily(TREND_SLOW_MIN_BARS - 1))
+    just_under_slow = _one_frame(series, min_history=TREND_SLOW - 1)
     for col in SLOW_COLS:
         assert col not in just_under_slow.columns, col
 
-    at_slow = compute_feature_frame(_daily(TREND_SLOW_MIN_BARS))
+    at_slow = _one_frame(series, min_history=TREND_SLOW)
     for col in STACK_COLS:
         assert col in at_slow.columns, col
+
+
+def test_walk_forward_default_admits_the_fast_pair_and_not_the_slow_leg():
+    """The production answer, stated once and plainly.
+
+    A caller that does not declare ``min_history`` is assumed to be one frame
+    of a walk-forward run, whose first fold trains on WALK_FORWARD_MIN_BARS
+    bars. That frame can compute an EMA48 (48 <= 60) and cannot compute an
+    EMA220 (220 > 60) — so however long the history grows, the models are
+    offered the fast pair and never the EMA220 leg or the categorical stack,
+    until the shortest FOLD is long enough. Same set at 200 bars and at 1224.
+    """
+    assert WALK_FORWARD_MIN_BARS >= TREND_MID
+    assert WALK_FORWARD_MIN_BARS < TREND_SLOW
+
+    for n in (200, 1224):
+        frame = compute_feature_frame(_daily(n), bar_spacing=SPACING_DAILY)
+        for col in FAST_COLS:
+            assert col in frame.columns, (n, col)
+        for col in SLOW_COLS:
+            assert col not in frame.columns, (n, col)
 
 
 def test_warmup_is_exactly_the_ema_period_with_no_holes():
     """The columns are NaN for exactly the bars where the EMA does not exist —
     not one row more (which would waste history) and not one row less (which
     would mean an EMA computed from too few points)."""
-    frame = compute_feature_frame(_daily(1000))
+    frame = _one_frame(_daily(1000))
     expected = {
         "close_vs_ema_26": TREND_FAST - 1,
         "ema26_vs_ema48": TREND_MID - 1,
@@ -190,7 +254,7 @@ def test_stack_state_matches_the_indicator_on_the_same_closes():
     Both are read off the SAME closes through the indicator's own ema() and
     trend_state()."""
     series = _daily(1000, seed=5)
-    frame = compute_feature_frame(series)
+    frame = _one_frame(series)
     closes = [float(v) for v in series.to_numpy()]
     label = {"bullish": 1.0, "bearish": -1.0, "neutral": 0.0}
 
@@ -206,8 +270,8 @@ def test_stack_state_matches_the_indicator_on_the_same_closes():
 
 
 def test_trending_and_flat_markets_get_the_states_they_deserve():
-    up = compute_feature_frame(_daily(1000, seed=3, drift=0.004, vol=0.001))
-    down = compute_feature_frame(_daily(1000, seed=4, drift=-0.004, vol=0.001))
+    up = _one_frame(_daily(1000, seed=3, drift=0.004, vol=0.001))
+    down = _one_frame(_daily(1000, seed=4, drift=-0.004, vol=0.001))
     assert up["trend_stack_1d"].iloc[-1] == 1.0
     assert up["close_vs_ema_26"].iloc[-1] > 0.0
     assert up["ema48_vs_ema220"].iloc[-1] > 0.0
@@ -221,13 +285,13 @@ def test_trending_and_flat_markets_get_the_states_they_deserve():
         index=pd.date_range(datetime(2023, 1, 1, tzinfo=timezone.utc), periods=1000,
                             freq="D"),
     )
-    flat_frame = compute_feature_frame(flat)
+    flat_frame = _one_frame(flat)
     assert (flat_frame["trend_stack_1d"].dropna() == 0.0).all()
     assert (flat_frame["trend_stack_run"].dropna() == 0.0).all()
 
 
 def test_stack_run_counts_consecutive_bars_and_resets_on_a_flip():
-    frame = compute_feature_frame(_daily(1000, seed=11))
+    frame = _one_frame(_daily(1000, seed=11))
     state = frame["trend_stack_1d"]
     run = frame["trend_stack_run"]
 
@@ -298,7 +362,7 @@ def test_snapshot_stack_ignores_rows_observed_after_as_of():
     assert "trend_stack_1d" in baseline
     assert "trend_stack_run" in baseline
     assert baseline["ema48_vs_ema220"] == pytest.approx(
-        float(compute_feature_frame(series.iloc[:901])["ema48_vs_ema220"].iloc[-1])
+        float(_one_frame(series.iloc[:901])["ema48_vs_ema220"].iloc[-1])
     )
 
     corrupted = prices.copy()
@@ -319,6 +383,6 @@ def test_stack_columns_survive_the_daily_close_bucketing():
         for ts, v in series.items() for h in (3, 9)
     ])
     gold = daily_close(prices, "IR_GOLD_18K")
-    frame = compute_feature_frame(gold)
+    frame = _one_frame(gold)
     for col in STACK_COLS:
         assert col in frame.columns, col

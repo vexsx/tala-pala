@@ -528,7 +528,11 @@ def generate_signal(engine, settings) -> dict:
     from ..db import prices as prices_t
     from ..db import signals as signals_t
     from ..db import utcnow
-    from ..features.engineering import compute_feature_frame, daily_close
+    from ..features.engineering import (
+        SPACING_DAILY,
+        compute_feature_frame,
+        daily_close,
+    )
     from ..metrics import JOB_LAST_SUCCESS
     from ..models.training import detect_regime
 
@@ -576,6 +580,11 @@ def generate_signal(engine, settings) -> dict:
                 gold,
                 usd if not usd.empty else None,
                 xau if not xau.empty else None,
+                # daily_close buckets by UTC day, and only this one frame is
+                # built here (its last row scores the signal), so the run's
+                # shortest frame is this frame.
+                bar_spacing=SPACING_DAILY,
+                min_history=len(gold),
             )
             last = frame.iloc[-1]
 

@@ -37,23 +37,56 @@ TREND_FAST, TREND_MID, TREND_SLOW = 26, 48, 220
 # 2026-07-19 and 5-minute ticks after it, so the intraday history is ~23 days:
 # a 4H or 1H leg would be ~23 usable rows or fabricated history, and neither is
 # a feature. The daily leg is the slowest and most decisive one anyway.
+SPACING_DAILY = "daily"
+SPACING_INTRADAY = "intraday"
 DAILY_BAR_MIN_SECONDS = 20 * 3600
 DAILY_BAR_MAX_SECONDS = 72 * 3600
+RECENT_GAP_SAMPLE = 64  # bars consulted when the spacing has to be inferred
+
+# Reserved, NON-series keys in a model's ``set_context`` dict. The trainer
+# knows which series it picked and how short its first fold is, so it states
+# both instead of leaving the feature layer to guess them from a truncated
+# fold; app/models/ml.py forwards them into compute_feature_frame.
+FRAME_SPACING_KEY = "bar_spacing"
+MIN_HISTORY_KEY = "min_history"
+
+# The shortest frame a walk-forward run ever builds: fold 0 fits on
+# ``series[:MIN_TRAIN_POINTS]``. Mirrored here rather than imported, because
+# app.models.training imports THIS module; tests/test_feature_frame_invariants
+# pins the two constants together so they cannot drift apart in silence.
+WALK_FORWARD_MIN_BARS = 60
 
 # An EMA_n does not exist before its n-th bar, and ml.TabularModel drops any
 # row holding a NaN — so an EMA's warm-up is charged to EVERY feature in the
-# matrix, not just to itself. Measured on a 1224-bucket daily frame: 1194 ->
-# 1004 usable rows at the 1d horizon (-15.9%), worth paying on a long history
-# and not on a short one. So each leg is emitted only while its warm-up stays
-# under this share of the series; below that it is OMITTED, never softened with
-# min_periods (an EMA220 seeded on 30 bars is not an EMA220, and labelling it
-# as one would be the dishonesty this feature set exists to avoid).
-# Charged to both legs, not just the slow one: with the 47-bar EMA48 warm-up
-# applied unconditionally, walk_forward's first fold (60 training bars) fell to
-# 12 clean rows, under TabularModel.min_rows, and silently degraded to naive.
-MAX_TREND_WARMUP_SHARE = 0.25
-TREND_MID_MIN_BARS = int(np.ceil((TREND_MID - 1) / MAX_TREND_WARMUP_SHARE))    # 188
-TREND_SLOW_MIN_BARS = int(np.ceil((TREND_SLOW - 1) / MAX_TREND_WARMUP_SHARE))  # 876
+# matrix, not just to itself, and a leg the frame cannot compute AT ALL is an
+# all-NaN column that deletes every row of that frame (the model then silently
+# degrades to naive). Never softened with min_periods either: an EMA220 seeded
+# on 30 bars is not an EMA220, and labelling it as one would be the dishonesty
+# this feature set exists to avoid.
+#
+# The column SET is therefore decided ONCE PER RUN, from the SHORTEST frame the
+# run will build (``min_history``) — never from the length of the frame in hand.
+# walk_forward fits fold i on series[:i+1], so a length-derived set puts
+# different columns in different folds, and model selection then scores a
+# candidate in one feature space and ships it refit in another. The invariant
+# this enforces:
+#
+#   the feature column set is identical in EVERY selection fold, EVERY holdout
+#   fold and the final refit; a column that cannot be in all of them is in none.
+#
+# A leg joins when the shortest frame can compute it (EMA period <= min_history)
+# and not before — computability, not a warm-up budget: an all-NaN column is a
+# categorical failure (zero rows, guaranteed naive) while warm-up is a cost that
+# was measured. On the production shape (1224 daily bars, fold 0 = 60 bars),
+# against the same code gated per frame:
+#   * the 60-bar fold goes 30 -> 12 clean rows, under TabularModel.min_rows, so
+#     it falls back to naive: measured 1 of 28 selection folds at h=1d (3.6%)
+#     and 2 of 27 at h=30d (7.4%), where MAX_DEGENERATE_SHARE trips at 50%;
+#   * every fold past 876 bars GAINS rows — 950 -> 1122 at a 1170-bar fold —
+#     because the EMA220 leg, which no 60-bar fold could ever compute, stops
+#     charging its 219-row warm-up to the whole matrix.
+# At MIN_TRAIN_POINTS = 60 the EMA220 leg and the categorical stack are thus not
+# offered to the models at all; they wait for a shortest frame of >= 220 bars.
 
 
 class LeakageError(AssertionError):
@@ -149,30 +182,50 @@ def ema_series(values: pd.Series, period: int) -> pd.Series:
     return pd.Series(out, index=index)
 
 
-def _is_daily_bars(index: pd.Index) -> bool:
-    """True when consecutive bars sit ~one day apart.
+def infer_bar_spacing(index: pd.Index) -> str:
+    """Spacing of ``index``: :data:`SPACING_DAILY` or :data:`SPACING_INTRADAY`.
 
-    The stack is the 1D leg by definition. Handed the hourly series (which the
-    1h/4h horizons train on), an "EMA220" would span nine days of intraday
-    history — a 1H feature wearing a 1D label.
+    A DEFENSIVE DEFAULT ONLY — every caller in this repo declares its spacing,
+    because every caller knows it (``training.load_series`` chooses the series,
+    ``daily_close``/``hourly_close`` build the buckets). Inferring it from the
+    frame in hand is guesswork about the caller, and it was wrong in exactly
+    the case that matters.
 
-    Rejecting intraday frames is the whole job, so the band is deliberately
-    loose at the top: closed sessions and Iranian holidays lengthen individual
-    gaps, and the indicator has the same shape of history (it averages the
-    daily CANDLES that exist, gaps and all — ``resample`` omits empty buckets
-    rather than inventing them). A tight upper bound would silently drop the
-    feature on a sparse year; the median already shrugs those gaps off.
+    Judged on the RECENT bars and required to be CONSISTENT. Production's
+    history is one observation per day until 2026-07-19 and 5-minute ticks
+    after it, so ``hourly_close`` emits a long daily-spaced era followed by an
+    hourly-spaced one: measured on that shape, 1793 buckets whose gaps are 1204
+    of 86400s against 588 of 3600s, median 86400s. A median over the WHOLE
+    index therefore calls that frame "daily" until the hourly era outnumbers
+    the daily one — ~50 days after the switch, while the 1h/4h horizons turn on
+    after 14 — and hands those models an "EMA220" spanning 9.1 days of hourly
+    closes: a 1H feature wearing a 1D label.
+
+    What matters is what the series is NOW, so one intraday gap in the recent
+    window settles it: ``daily_close`` buckets by UTC day, so a true daily
+    frame's gaps are whole multiples of a day and are never shorter than one.
+    The upper end stays loose, and deliberately so: closed sessions and Iranian
+    holidays lengthen individual gaps, and the indicator has the same shape of
+    history (it averages the daily CANDLES that exist, gaps and all — resample
+    omits empty buckets rather than inventing them). A tight upper bound would
+    silently drop the feature on a sparse year; the median shrugs those off.
     """
     if len(index) < 2:
-        return False
+        return SPACING_INTRADAY  # cannot be shown to be daily -> no 1D stack
     try:
         stamps = pd.DatetimeIndex(index)
     except (TypeError, ValueError):
-        return False
+        return SPACING_INTRADAY
     gaps = pd.Series(stamps).diff().dt.total_seconds().dropna()
     if gaps.empty:
-        return False
-    return DAILY_BAR_MIN_SECONDS <= float(gaps.median()) <= DAILY_BAR_MAX_SECONDS
+        return SPACING_INTRADAY
+    recent = gaps.iloc[-RECENT_GAP_SAMPLE:]
+    if float(recent.min()) < DAILY_BAR_MIN_SECONDS:
+        return SPACING_INTRADAY  # an intraday bucket exists -> not a daily frame
+    median = float(recent.median())
+    if DAILY_BAR_MIN_SECONDS <= median <= DAILY_BAR_MAX_SECONDS:
+        return SPACING_DAILY
+    return SPACING_INTRADAY
 
 
 def _stack_state(
@@ -219,21 +272,38 @@ def _stack_run(state: pd.Series) -> pd.Series:
     return pd.Series(run, index=state.index)
 
 
-def daily_trend_stack(close: pd.Series) -> dict[str, pd.Series]:
+def daily_trend_stack(
+    close: pd.Series,
+    *,
+    bar_spacing: Optional[str] = None,
+    min_history: Optional[int] = None,
+) -> dict[str, pd.Series]:
     """1D trend-alignment columns for ``close``, or fewer when unaffordable.
 
-    Returns only what the series can honestly support: nothing at all for
-    intraday bars, the two fast distances once the 47-bar EMA48 warm-up is
-    affordable, and the EMA220 leg (plus the categorical stack) once the 219-bar
-    one is — affordable meaning under :data:`MAX_TREND_WARMUP_SHARE` of the
-    rows. Every column is strictly causal: each EMA at row t is a recursion
-    over rows <= t.
+    Returns only what the RUN can honestly support: nothing at all for intraday
+    bars, the two fast distances once the shortest frame of the run can compute
+    an EMA48, and the EMA220 leg (plus the categorical stack) once it can
+    compute an EMA220. Every column is strictly causal: each EMA at row t is a
+    recursion over rows <= t.
 
-    The column SET therefore depends on how much history exists, which is
-    itself point-in-time information: a walk-forward fold fitted early sees the
-    frame that was actually buildable then, exactly as it sees fewer rows.
+    ``bar_spacing`` is the caller's declaration (:data:`SPACING_DAILY` /
+    :data:`SPACING_INTRADAY`); ``None`` falls back to :func:`infer_bar_spacing`.
+
+    ``min_history`` describes the RUN, not this frame: it is the bar count of
+    the SHORTEST frame the caller will build (a walk-forward run's first fold),
+    defaulting to :data:`WALK_FORWARD_MIN_BARS`. It is deliberately NOT clamped
+    to ``len(close)`` — a frame too short for an admitted leg gets an all-NaN
+    column rather than a narrower schema, because a schema that varies with the
+    frame's length is precisely the defect this parameter exists to prevent.
     """
-    if not _is_daily_bars(close.index) or len(close) < TREND_MID_MIN_BARS:
+    spacing = bar_spacing or infer_bar_spacing(close.index)
+    if spacing != SPACING_DAILY:
+        return {}
+    shortest = WALK_FORWARD_MIN_BARS if min_history is None else int(min_history)
+    # Both fast columns are read off the SAME two EMAs, so they are admitted as
+    # one unit: an ema26_vs_ema48 without its EMA48 is not a narrower feature
+    # set, it is a different one.
+    if shortest < TREND_MID:
         return {}
     fast = ema_series(close, TREND_FAST)
     mid = ema_series(close, TREND_MID)
@@ -241,7 +311,7 @@ def daily_trend_stack(close: pd.Series) -> dict[str, pd.Series]:
         "close_vs_ema_26": close / fast - 1.0,
         "ema26_vs_ema48": fast / mid - 1.0,
     }
-    if len(close) < TREND_SLOW_MIN_BARS:
+    if shortest < TREND_SLOW:
         return columns
     slow = ema_series(close, TREND_SLOW)
     state = _stack_state(close, fast, mid, slow)
@@ -286,10 +356,20 @@ def compute_feature_frame(
     xau_usd: Optional[pd.Series] = None,
     gold_fund: Optional[pd.Series] = None,
     fund_flow: Optional[pd.Series] = None,
+    *,
+    bar_spacing: Optional[str] = None,
+    min_history: Optional[int] = None,
 ) -> pd.DataFrame:
     """Causal feature matrix indexed like ``gold`` (a DatetimeIndex series).
 
     Every row uses ONLY information available at that row's timestamp.
+
+    ``bar_spacing`` (:data:`SPACING_DAILY` / :data:`SPACING_INTRADAY`) and
+    ``min_history`` (bars in the SHORTEST frame this run will build) are the
+    caller's honest declarations about the run; they decide which 1D
+    trend-alignment columns exist. Both fall back to a defensive default —
+    :func:`infer_bar_spacing` and :data:`WALK_FORWARD_MIN_BARS` — for callers
+    that do not declare them. See :func:`daily_trend_stack`.
     """
     gold = gold.astype(float)
     df = pd.DataFrame({"close": gold})
@@ -393,9 +473,10 @@ def compute_feature_frame(
     # The daily leg of the multi-timeframe indicator, as features: three
     # continuous MA distances (magnitude survives, unlike a bare bullish/
     # bearish label) plus the strict stack the indicator itself publishes and
-    # how long it has held.  Absent on intraday frames and on short histories —
-    # see daily_trend_stack for what each case can honestly support.
-    for name, values in daily_trend_stack(close).items():
+    # how long it has held.  Absent on intraday frames and on runs whose
+    # shortest frame is too short — see daily_trend_stack.
+    stack = daily_trend_stack(close, bar_spacing=bar_spacing, min_history=min_history)
+    for name, values in stack.items():
         df[name] = values
 
     # drawdown from the 90-day high (uses whatever history exists early on)
@@ -493,6 +574,11 @@ def build_snapshot(
         xau if not xau.empty else None,
         gold_fund=fund if not fund.empty else None,
         fund_flow=flow if not flow.empty else None,
+        # daily_close buckets by UTC day, and this snapshot is ONE frame,
+        # published as a point-in-time record (feature_snapshots) rather than
+        # fitted across folds — so the run's shortest frame is this frame.
+        bar_spacing=SPACING_DAILY,
+        min_history=len(gold),
     )
     last = frame.iloc[-1]
     features = {

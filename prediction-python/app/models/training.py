@@ -27,7 +27,14 @@ from sqlalchemy.engine import Engine
 
 from ..config import Settings
 from ..db import model_versions, prices, training_runs, utcnow
-from ..features.engineering import daily_close, hourly_close
+from ..features.engineering import (
+    FRAME_SPACING_KEY,
+    MIN_HISTORY_KEY,
+    SPACING_DAILY,
+    SPACING_INTRADAY,
+    daily_close,
+    hourly_close,
+)
 from ..metrics import MODEL_SMAPE
 from .analogue import KNNAnalogueModel  # noqa: F401  (registers 'knn_analogue')
 from .arima import ARIMAModel  # noqa: F401  (registers 'arima')
@@ -46,6 +53,13 @@ MIN_TRAIN_POINTS = 60
 MIN_DAILY_POINTS = 120
 MIN_HOURLY_DAYS = 14
 MAX_FOLDS = 40
+
+# Bar spacing per series frequency, stated to the feature layer instead of
+# left to be guessed from a fold (see engineering.infer_bar_spacing): the
+# hourly series is one bucket per DAY for the whole pre-2026-07-19 era and one
+# per hour after it, so any inference from its own timestamps calls it daily
+# for ~50 more days and grows the 1h/4h models a nine-day "EMA220".
+FRAME_SPACING: dict[str, str] = {"daily": SPACING_DAILY, "hourly": SPACING_INTRADAY}
 
 # horizon -> (series frequency, steps ahead)
 HORIZON_SPECS: dict[str, tuple[str, int]] = {
@@ -673,10 +687,19 @@ def train_all(
                     continue
 
                 if freq not in context_cache:
-                    context_cache[freq] = {
+                    ctx: dict = {
                         key: load_series(engine, ctx_sym, freq)
                         for key, ctx_sym in sym_context_map.items()
                     }
+                    # Declare what this run knows and a single fold cannot:
+                    # the bar spacing, and the shortest frame any stage will
+                    # build (fold 0 fits on series[:MIN_TRAIN_POINTS]). Both
+                    # are constant for the run, which is what keeps the feature
+                    # column set identical across selection folds, holdout
+                    # folds and the final refit.
+                    ctx[FRAME_SPACING_KEY] = FRAME_SPACING[freq]
+                    ctx[MIN_HISTORY_KEY] = MIN_TRAIN_POINTS
+                    context_cache[freq] = ctx
                 context = context_cache[freq]
 
                 results = evaluate_candidates(series, steps, context=context)
