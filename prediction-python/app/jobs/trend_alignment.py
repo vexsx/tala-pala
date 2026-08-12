@@ -35,14 +35,13 @@ own two tables plus (when a user has subscribed) one ``alert_events`` row.
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
 from prometheus_client import Counter
-from sqlalchemy import select, text, update
+from sqlalchemy import JSON, DateTime, bindparam, select, text, update
 from sqlalchemy.engine import Connection, Engine
 
 from ..config import Settings
@@ -124,6 +123,13 @@ TREND_ALERTS = Counter(
     "In-app alert_events rows written for a trend-alignment entry",
     ["symbol", "alignment"],
 )
+
+# Raw-SQL binds carry their type explicitly. Timestamps because an untyped
+# datetime reaches the DBAPI unprocessed (sqlite3's implicit datetime adapter
+# is deprecated and going away), JSON because the target column is JSONB and
+# the value must be adapted, not stringified by accident.
+_TS_PARAM = DateTime(timezone=True)
+_JSON_PARAM = JSON()
 
 
 def trend_config(settings: Settings) -> TrendConfig:
@@ -218,6 +224,8 @@ def _load_candles(
         ) recent
         ORDER BY bucket ASC
         """  # noqa: S608 - `bucket` is a dialect constant, never user input
+    ).bindparams(
+        bindparam("since", type_=_TS_PARAM), bindparam("now", type_=_TS_PARAM)
     )
     rows = conn.execute(
         sql, {"symbol": symbol, "since": since, "now": now, "limit": limit}
@@ -446,28 +454,34 @@ def _write_alert_events(
         "disclaimer": DISCLAIMER,
     }
 
+    insert_event = text(
+        "INSERT INTO alert_events (alert_id, user_id, triggered_at, message, payload) "
+        "VALUES (:alert_id, :user_id, :triggered_at, :message, :payload) "
+        "RETURNING id"
+    ).bindparams(
+        bindparam("triggered_at", type_=_TS_PARAM), bindparam("payload", type_=_JSON_PARAM)
+    )
+    touch_alert = text(
+        "UPDATE alerts SET last_triggered_at = :now, updated_at = :now WHERE id = :id"
+    ).bindparams(bindparam("now", type_=_TS_PARAM))
+
     first_id: Optional[int] = None
     for alert_id, user_id in subscribers:
         row = conn.execute(
-            text(
-                "INSERT INTO alert_events (alert_id, user_id, triggered_at, message, payload) "
-                "VALUES (:alert_id, :user_id, :triggered_at, :message, :payload) "
-                "RETURNING id"
-            ),
+            insert_event,
             {
                 "alert_id": alert_id,
                 "user_id": user_id,
                 "triggered_at": now,
                 "message": message,
-                "payload": json.dumps(payload),
+                "payload": payload,
             },
         ).first()
         if row is not None and first_id is None:
             first_id = int(row[0])
-        conn.execute(
-            text("UPDATE alerts SET last_triggered_at = :now, updated_at = :now WHERE id = :id"),
-            {"now": now, "id": alert_id},
-        )
+        # Mirrors backend-go/internal/alerts/runner.go: the subscription row
+        # records when it last fired, whichever service fired it.
+        conn.execute(touch_alert, {"now": now, "id": alert_id})
         TREND_ALERTS.labels(symbol=result.symbol, alignment=result.alignment).inc()
     return first_id
 
