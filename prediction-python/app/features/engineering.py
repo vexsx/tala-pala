@@ -38,7 +38,7 @@ TREND_FAST, TREND_MID, TREND_SLOW = 26, 48, 220
 # a 4H or 1H leg would be ~23 usable rows or fabricated history, and neither is
 # a feature. The daily leg is the slowest and most decisive one anyway.
 DAILY_BAR_MIN_SECONDS = 20 * 3600
-DAILY_BAR_MAX_SECONDS = 36 * 3600
+DAILY_BAR_MAX_SECONDS = 72 * 3600
 
 # An EMA_n does not exist before its n-th bar, and ml.TabularModel drops any
 # row holding a NaN — so an EMA's warm-up is charged to EVERY feature in the
@@ -154,8 +154,14 @@ def _is_daily_bars(index: pd.Index) -> bool:
 
     The stack is the 1D leg by definition. Handed the hourly series (which the
     1h/4h horizons train on), an "EMA220" would span nine days of intraday
-    history — a 1H feature wearing a 1D label. The median gap shrugs off
-    holidays and closed sessions, which only ever lengthen individual gaps.
+    history — a 1H feature wearing a 1D label.
+
+    Rejecting intraday frames is the whole job, so the band is deliberately
+    loose at the top: closed sessions and Iranian holidays lengthen individual
+    gaps, and the indicator has the same shape of history (it averages the
+    daily CANDLES that exist, gaps and all — ``resample`` omits empty buckets
+    rather than inventing them). A tight upper bound would silently drop the
+    feature on a sparse year; the median already shrugs those gaps off.
     """
     if len(index) < 2:
         return False

@@ -123,6 +123,24 @@ def test_hourly_frame_gets_no_stack_columns():
         assert col not in frame.columns, col
 
 
+def test_gappy_daily_history_still_gets_the_stack():
+    """Production shape: Fridays and holiday stretches are simply missing from
+    ``prices``. The indicator averages the daily candles that exist rather than
+    inventing the missing ones, and so does this — a sparse year must not
+    silently drop the feature."""
+    series = _daily(1400, seed=23)
+    keep = np.ones(len(series), dtype=bool)
+    keep[5::7] = False                    # weekly closure
+    keep[300:340] = False                 # a long holiday/outage stretch
+    gappy = series[keep]
+    assert len(gappy) >= TREND_SLOW_MIN_BARS
+
+    frame = compute_feature_frame(gappy)
+    for col in STACK_COLS:
+        assert col in frame.columns, col
+    assert frame["trend_stack_1d"].notna().sum() == len(gappy) - (TREND_SLOW - 1)
+
+
 def test_each_leg_appears_only_once_its_warmup_is_affordable():
     """Boundary check on the measured trade: the EMA48 leg costs 47 warm-up
     rows and the EMA220 leg 219, and ml.TabularModel drops any row with a NaN,
@@ -230,9 +248,11 @@ def test_stack_run_counts_consecutive_bars_and_resets_on_a_flip():
     signs = np.sign(state.dropna().to_numpy())
     assert (np.sign(live) == signs).all()          # signed, as the UI shows it
     assert np.abs(live).max() > 5.0                # runs really do accumulate
-    flips = np.flatnonzero(np.diff(state.dropna().to_numpy()) != 0)
-    assert len(flips) > 0                          # the test is not vacuous
-    assert np.abs(live[flips[0] + 1]) == 1.0       # a new state starts at 1
+    # a newly entered directional state starts its count at 1 (neutral stays 0
+    # however long it lasts — the length of a non-trend is not a trend)
+    entered = np.flatnonzero((np.diff(signs) != 0) & (signs[1:] != 0)) + 1
+    assert len(entered) > 0                        # the test is not vacuous
+    assert (np.abs(live[entered]) == 1.0).all()
 
 
 # --- causality ---------------------------------------------------------------
@@ -255,8 +275,10 @@ def test_future_spike_cannot_move_a_single_earlier_row():
     after = compute_feature_frame(spiked, usd, xau)
 
     assert list(before.columns) == list(after.columns)
+    # check_freq=False only waives the index's inferred-frequency label, which
+    # concat drops; every VALUE is compared exactly, no tolerance
     pd.testing.assert_frame_equal(
-        after.iloc[: len(before)], before, check_exact=True
+        after.iloc[: len(before)], before, check_exact=True, check_freq=False
     )
 
 
