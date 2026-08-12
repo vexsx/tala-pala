@@ -1944,3 +1944,511 @@ input[type='checkbox'] {
 }
 .trend-held { color: var(--muted); }
 .trend-points { font-weight: 600; }
+
+/* --- Trend alignment: track record (Addendum 22) -----------------------------
+   The rows in this table are NOT all the same measurement — a daily-only row is
+   the 1D leg alone, a full_mtf row is the real three-timeframe alignment — so
+   the basis has to survive a skim. It gets a badge with a word, a tinted left
+   border on the row, and the badge repeated at the head of the row's note.
+   Colour is the third cue here, never the first: TrendPerformance.tsx always
+   ships the word too, so the table still reads in greyscale. */
+
+.tp-preamble {
+  margin: 0 0 0.75rem;
+  line-height: 1.55;
+}
+
+.tp-table {
+  border-collapse: collapse;
+}
+
+/* The window column is the row's name — left aligned, not a statistic. */
+.tp-window {
+  font-weight: 600;
+}
+
+.tp-row td {
+  border-bottom: none;
+}
+
+/* Left border carries the basis, down both rows of the pair. The width is set
+   on every row so a basis change cannot shift the table's column geometry. */
+.tp-row td:first-child,
+.tp-note-row td:first-child {
+  border-left: 3px solid transparent;
+}
+
+.tp-basis-full_mtf td:first-child {
+  border-left-color: var(--info);
+}
+
+.tp-basis-daily_only td:first-child {
+  border-left-color: var(--warn);
+}
+
+.tp-basis-badge {
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* The note is part of its row, not a separate record: no hover highlight, and
+   it keeps the bottom border that visually closes the pair. */
+.tp-note-row td {
+  padding-top: 0;
+  padding-bottom: 10px;
+  white-space: normal;
+  line-height: 1.5;
+}
+
+.tp-table tbody tr.tp-note-row:hover {
+  background: transparent;
+}
+
+.tp-note-basis {
+  margin-inline-end: 4px;
+}
+
+.tp-note-dates {
+  opacity: 0.85;
+}
+
+/* A hit rate is a magnitude, not a signed number: it takes the ordinary text
+   colour so it can never read as approval. Only the forward returns are tinted,
+   and those carry their own +/− as well. */
+.tp-rate {
+  color: var(--text);
+}
+
+/* A statistic that was never measured. The em dash is the message; the tooltip
+   says why. It must never be mistaken for a measured zero, so it stays muted
+   and takes neither the positive nor the negative colour. */
+.tp-absent {
+  color: var(--muted);
+}
+
+/* Too few bars to quote a percentage — see MIN_BARS_FOR_RATE. Deliberately
+   plain lowercase text: it is an admission, not a number. */
+.tp-thin {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+/* The baseline sits beside the conditional returns and is subtly boxed off, so
+   a reader comparing "did the alignment beat holding" can find it without
+   counting columns. */
+.tp-baseline {
+  background: var(--panel-2);
+}
+
+.tp-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.tp-skeleton-bar {
+  height: 24px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  animation: trend-pulse 1.4s ease-in-out infinite;
+}
+
+/* --- Chart drawings: overlay canvas, draw menu, selection bar ----------
+   Everything the canvas itself paints reads the theme variables at repaint
+   time (see drawings/render.ts), so nothing here sets a drawing colour. */
+
+.drawing-layer {
+  position: absolute;
+  inset: 0;
+  /* The canvas is a picture, not a pointer surface. Gestures are read from the
+     chart container in the capture phase, which is what lets a drag that hits
+     no drawing fall through and pan the chart exactly as it always did. */
+  pointer-events: none;
+  z-index: 4;
+}
+
+.drawing-status {
+  position: absolute;
+  left: 8px;
+  top: 8px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: min(420px, 72%);
+  pointer-events: none;
+}
+
+.drawing-note {
+  margin: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  pointer-events: auto;
+}
+
+.drawing-note-error {
+  color: var(--neg);
+  border-color: var(--neg);
+}
+
+/* Pinned rather than following the selection: an inspector that chased the
+   drawing would have to be repositioned on every pan, which is a React render
+   per frame — the one thing the layer must never do. */
+.drawing-bar {
+  position: absolute;
+  left: 8px;
+  bottom: 32px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: calc(100% - 16px);
+  padding: 5px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.drawing-bar-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.drawing-text-input {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  min-width: 120px;
+  max-width: 200px;
+}
+
+/* Tool names are words, not 3-character timeframes, so this menu is one column
+   where the timeframe menu is a grid. */
+.drawing-menu {
+  grid-template-columns: 1fr;
+  min-width: 168px;
+  max-height: 60vh;
+  overflow-y: auto;
+  text-align: start;
+}
+
+.drawing-menu .tchart-menu-item {
+  text-align: start;
+}
+
+.drawing-snap button.active {
+  background: var(--panel-2);
+}
+
+.drawing-bar button:focus-visible,
+.drawing-menu button:focus-visible,
+.drawing-snap button:focus-visible,
+.drawing-text-input:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+/* Touch targets: a 5px-tall button is not grabbable with a thumb, and the
+   selection bar is the only way to unlock or unhide a drawing on a phone. */
+@media (max-width: 640px) {
+  .drawing-bar {
+    left: 4px;
+    right: 4px;
+    bottom: 28px;
+    max-width: none;
+  }
+
+  .drawing-bar .btn,
+  .drawing-snap button {
+    min-height: 32px;
+    padding-inline: 10px;
+  }
+
+  .drawing-status {
+    max-width: calc(100% - 16px);
+  }
+}
+
+/* --- Chart indicators: menu, legend, oscillator panes, overlays -----------
+   Colours come from the theme variables only. The two forecast colours are
+   declared here rather than reused from the indicator palette so an estimate
+   can never share a colour with a measured line. */
+
+:root {
+  --forecast: #7b61ff;
+  --forecast-band: #5a4bb8;
+}
+
+:root[data-theme='light'] {
+  --forecast: #5b3fd4;
+  --forecast-band: #8b7ae0;
+}
+
+/* The indicators dropdown is a list, not the timeframe grid. */
+.tchart-imenu {
+  grid-template-columns: 1fr;
+  min-width: 232px;
+  max-height: min(70vh, 460px);
+  overflow-y: auto;
+}
+
+.tchart-imenu-head {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 6px 8px 2px;
+}
+
+.tchart-imenu-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.tchart-imenu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+
+/* Fixed width so the labels line up whether or not a tick is present — the
+   tick is a second cue next to aria-checked, never the only one. */
+.tchart-imenu-mark {
+  width: 12px;
+  flex: none;
+  color: var(--accent);
+}
+
+.tchart-imenu-badge {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.tchart-imenu-refusal {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  color: var(--neg);
+  border-top: 1px solid var(--border);
+}
+
+/* --- Legend --- */
+.tchart-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+  font-size: 12px;
+}
+
+.tchart-legend-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tchart-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 26px;
+}
+
+/* A hidden indicator is dimmed AND its toggle glyph changes, so the state is
+   never carried by opacity alone. */
+.tchart-legend-off {
+  opacity: 0.55;
+}
+
+.tchart-legend-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.tchart-legend-value {
+  margin-left: auto;
+}
+
+.tchart-legend-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 2px 6px;
+  line-height: 1;
+}
+
+/* The swatch repeats the line's colour AND its dash pattern, so two lines of
+   the same hue are still tellable apart in the legend. */
+.tchart-swatch {
+  display: inline-block;
+  width: 18px;
+  height: 0;
+  flex: none;
+  border-top-width: 3px;
+  border-top-style: solid;
+  border-top-color: var(--muted);
+}
+
+.tchart-swatch[data-color='info'] { border-top-color: var(--info); }
+.tchart-swatch[data-color='purple'] { border-top-color: var(--purple); }
+.tchart-swatch[data-color='warn'] { border-top-color: var(--warn); }
+.tchart-swatch[data-color='accent'] { border-top-color: var(--accent); }
+.tchart-swatch[data-color='pos'] { border-top-color: var(--pos); }
+.tchart-swatch[data-color='neg'] { border-top-color: var(--neg); }
+.tchart-swatch[data-color='muted'] { border-top-color: var(--muted); }
+.tchart-swatch[data-color='forecast'] { border-top-color: var(--forecast); }
+.tchart-swatch[data-color='forecast-band'] { border-top-color: var(--forecast-band); }
+
+.tchart-swatch[data-style='dashed'],
+.tchart-swatch[data-style='largeDashed'] { border-top-style: dashed; }
+.tchart-swatch[data-style='dotted'],
+.tchart-swatch[data-style='sparse'] { border-top-style: dotted; }
+
+/* --- Settings form --- */
+.tchart-settings {
+  flex-basis: 100%;
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  margin: 4px 0;
+}
+
+.tchart-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tchart-field .tchart-select {
+  min-width: 84px;
+  min-height: 30px;
+}
+
+.tchart-settings-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.tchart-settings .tchart-imenu-refusal {
+  flex-basis: 100%;
+  border-top: none;
+  padding: 0;
+}
+
+/* --- Oscillator pane captions --- */
+.tchart-pane-legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+}
+
+.tchart-pane-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tchart-pane-name {
+  font-weight: 600;
+}
+
+.tchart-pane-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* --- Overlay blocks (forecast / events / trend alignment) --- */
+.tchart-overlay-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-left: 3px solid var(--border);
+  padding-left: 8px;
+}
+
+.tchart-overlay-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.tchart-overlay-note {
+  flex-basis: 100%;
+}
+
+.tchart-trend-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tchart-trend-row {
+  white-space: nowrap;
+}
+
+/* Focus has to stay visible on every one of these controls: the legend is a
+   row of icon buttons, and an invisible focus ring makes it unusable by
+   keyboard. */
+.tchart-legend-btn:focus-visible,
+.tchart-imenu-item:focus-visible,
+.tchart-settings :focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+@media (max-width: 640px) {
+  .tchart-imenu {
+    min-width: min(280px, calc(100vw - 32px));
+  }
+
+  .tchart-legend-value {
+    margin-left: 0;
+  }
+
+  /* Thumb-sized targets; a 20px icon button is not tappable. */
+  .tchart-legend-btn {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .tchart-menu-item {
+    min-height: 32px;
+  }
+}

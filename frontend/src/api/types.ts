@@ -808,3 +808,132 @@ export interface ChartCandlesResponse {
   resistance: number | null
   as_of: string
 }
+
+// ---------- Chart drawings ----------
+
+/**
+ * One anchor of a drawing: unix seconds (UTC) and a price in the symbol's own
+ * quote unit. The server stores `t` as whole seconds — see drawings.go — so a
+ * fractional value comes back changed.
+ */
+export interface ChartDrawingPoint {
+  t: number
+  price: number
+}
+
+/**
+ * A chart_drawings row exactly as GET/POST/PUT hand it back.
+ *
+ * `drawing_type` stays a plain string and `style` an untyped object on purpose:
+ * both are user-authored JSONB the API stores without interpreting, so widening
+ * them into the engine's own unions is validation work (model.ts's parseDrawing)
+ * rather than something a type assertion may assume.
+ */
+export interface ChartDrawing {
+  id: number
+  symbol: string
+  interval: string
+  drawing_type: string
+  points: ChartDrawingPoint[]
+  style: Record<string, unknown>
+  locked: boolean
+  visible: boolean
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * GET /chart/drawings?symbol=&interval=.
+ *
+ * `truncated` means this chart holds more drawings than one response carries and
+ * the client is looking at a prefix in id order. It is surfaced, never swallowed:
+ * silently drawing a partial set is how a user deletes work they cannot see.
+ */
+export interface ChartDrawingsResponse {
+  items: ChartDrawing[]
+  count: number
+  limit: number
+  truncated: boolean
+}
+
+// ---------- Trend alignment track record (Addendum 22) ----------
+
+/**
+ * Which measurement a track-record row actually is.
+ *
+ * `prices` holds ticks, and until 2026-07-20 there was one tick per day, so the
+ * 4H and 1H legs have weeks of history where the 1D leg has years. A row is
+ * therefore never "the alignment" in the abstract:
+ *
+ *   'full_mtf'   — the real 1D+4H+1H alignment, replayed at every 1H close.
+ *   'daily_only' — the 1D leg alone, price against its three moving averages on
+ *                  daily candles. NOT the multi-timeframe alignment.
+ *
+ * The two are different measurements and the UI must never let a reader average
+ * them together, which is why the field travels on every row.
+ */
+export type TrendPerformanceBasis = 'full_mtf' | 'daily_only'
+
+/**
+ * One replayed window — mirrors trendPerformanceItem in
+ * backend-go/internal/prices/trendalignment.go and the columns of migration
+ * 0021.
+ *
+ * The counts are NOT NULL because a count of zero IS the measurement. Every
+ * statistic is nullable because a rate over zero bars is not a measurement at
+ * all: null means "never happened in this window", which is a different fact
+ * from a measured 0.0% and must never be rendered as one.
+ *
+ * `fwd_return_*_pct` are already percentages; `hit_rate_*` are fractions in
+ * [0,1]. Both are computed by the backtest job — nothing here is derived in the
+ * browser.
+ */
+export interface TrendPerformanceItem {
+  window_days: number
+  basis: TrendPerformanceBasis
+  /** Bars whose forward window was fully covered — the denominator of the rates. */
+  samples: number
+  /** Contiguous runs of a state: N bars are not N independent trades. */
+  bullish_episodes: number
+  bearish_episodes: number
+  bullish_bars: number
+  bearish_bars: number
+  unaligned_bars: number
+  /** Mean forward 1-day return while bullish, in percent. */
+  fwd_return_bullish_pct: number | null
+  fwd_return_bearish_pct: number | null
+  /** Every bar in the window whatever the state — what holding would have paid. */
+  fwd_return_baseline_pct: number | null
+  /** Fraction in [0,1]: bullish hits on a positive forward return, bearish on a negative one. */
+  hit_rate_bullish: number | null
+  hit_rate_bearish: number | null
+  /** Bounds of the bar closes actually replayed; null when the window held no usable bar. */
+  evaluated_from: string | null
+  evaluated_to: string | null
+  computed_at: string
+  /** Plain-language limitation for THIS row: which basis, why, and how much of the window holds. */
+  note: string
+}
+
+/**
+ * GET /market/trend-alignment/performance?symbol=… — the indicator's measured
+ * track record, longest window first (90, 60, 30, 14).
+ *
+ * A replay, not a realised trading record: no position was ever taken. A symbol
+ * whose windows have not been computed yet is a 200 with an empty list.
+ */
+export interface TrendPerformanceResponse {
+  symbol: string
+  items: TrendPerformanceItem[]
+  count: number
+}
+
+// ---------- Chart indicators ----------
+
+/**
+ * Overlay arrays that carry a PRICE series, i.e. everything the chart can plot
+ * against the price scale. `supertrend_dir` is excluded deliberately: it is a
+ * +1/-1 direction flag, and plotting it as a price would draw a line at ±1
+ * toman under every candle.
+ */
+export type CandleOverlayField = Exclude<keyof CandleOverlays, 'supertrend_dir'>

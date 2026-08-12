@@ -193,8 +193,17 @@ describe('TrendAlignmentCard (Overview compact view)', () => {
     // No verdict is claimed while the read failed.
     expect(screen.queryByText(/FULL BULLISH|FULL BEARISH/)).not.toBeInTheDocument()
 
+    // Count only the trend request. The card also reads /signals/current for
+    // its score-contribution line, so a bare call count breaks whenever the
+    // card legitimately fetches something else — and it stops expressing what
+    // this test is about: that Retry re-requests the READING.
+    const trendCalls = () =>
+      apiMock.mock.calls.filter((c: unknown[]) =>
+        String(c[0]).startsWith('/market/trend-alignment')
+      ).length
+    expect(trendCalls()).toBe(1)
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
-    await waitFor(() => expect(apiMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(trendCalls()).toBe(2))
   })
 
   it('says NEVER EVALUATED rather than inventing a not-aligned read', async () => {

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import type {
-  CandleOverlays,
   ChartCandle,
   CurrentPricesResponse,
+  NewsFeedResponse,
+  NewsItem,
   Prediction,
   ProviderGapResponse,
   SignalSummary
@@ -17,14 +18,38 @@ import GaugeBar from '../components/GaugeBar'
 import Loading from '../components/Loading'
 import ErrorMessage from '../components/ErrorMessage'
 import EmptyState from '../components/EmptyState'
-import { TradingChart } from '../chart/TradingChart'
+import { TradingChart, type ChartHandle } from '../chart/TradingChart'
 import { ChartToolbar, useChartFullscreen } from '../chart/ChartToolbar'
 import { OhlcHeader } from '../chart/OhlcHeader'
 import { ChartStatusBar } from '../chart/ChartStatusBar'
 import { useCandles } from '../chart/useCandles'
+import { IndicatorMenu } from '../chart/IndicatorMenu'
+import { ChartLegend } from '../chart/ChartLegend'
+import { IndicatorPanes, PANE_HEIGHT } from '../chart/indicators/panes'
+import { useIndicatorSeries } from '../chart/indicators/series'
+import {
+  buildPlots,
+  coldInstances,
+  hasInstance,
+  loadIndicatorState,
+  saveIndicatorState,
+  serverOverlays,
+  type ChartIndicatorState
+} from '../chart/indicators/registry'
+import {
+  forecastPlots,
+  forecastPoints,
+  placeEvents,
+  useEventMarkers,
+  useTrendOverlay
+} from '../chart/overlays'
+import { DrawingToolbar } from '../chart/DrawingToolbar'
+import { DrawingLayer } from '../chart/drawings/DrawingLayer'
+import { useDrawings } from '../chart/drawings/useDrawings'
 import {
   FALLBACK_INTERVAL,
   intervalLabel,
+  intervalSeconds,
   isSupported,
   type IntervalId
 } from '../chart/intervals'
@@ -37,28 +62,11 @@ import {
   type ChartSymbol
 } from '../chart/prefs'
 
-type OverlayKey = 'sma' | 'bollinger' | 'ichimoku' | 'supertrend' | 'psar' | 'pivots'
-
-const OVERLAY_LABELS: Record<OverlayKey, string> = {
-  sma: 'SMA 20/50',
-  bollinger: 'Bollinger',
-  ichimoku: 'Ichimoku',
-  supertrend: 'SuperTrend',
-  psar: 'PSAR',
-  pivots: 'Pivots'
-}
-
-/** Which response arrays each toggle controls. 'pivots' draws price lines instead. */
-const OVERLAY_FIELDS: Record<Exclude<OverlayKey, 'pivots'>, Array<keyof CandleOverlays>> = {
-  sma: ['sma_20', 'sma_50'],
-  bollinger: ['bollinger_upper', 'bollinger_mid', 'bollinger_lower'],
-  ichimoku: ['ichimoku_tenkan', 'ichimoku_kijun', 'ichimoku_senkou_a', 'ichimoku_senkou_b'],
-  supertrend: ['supertrend'],
-  psar: ['psar']
-}
-
 /** The API's 400 for a timeframe this data source cannot bucket. */
 const UNSUPPORTED_RE = /not available for the current data source/i
+
+/** Headlines the event overlay considers; the feed is ordered urgent-first. */
+const NEWS_PATH = '/intelligence/news?limit=50'
 
 export default function TradePanel() {
   const { unit } = useSettings()
@@ -68,10 +76,28 @@ export default function TradePanel() {
   const [interval, setIntervalId] = useState<IntervalId>(() => readInterval() ?? FALLBACK_INTERVAL)
   const [notice, setNotice] = useState<string | null>(null)
   const [hovered, setHovered] = useState<ChartCandle | null>(null)
-  const [active, setActive] = useState<Set<OverlayKey>>(new Set(['sma', 'supertrend', 'pivots']))
+  const [indicators, setIndicators] = useState<ChartIndicatorState>(() => loadIndicatorState())
+  const [chart, setChart] = useState<ChartHandle | null>(null)
 
   const candles = useCandles(symbol, interval)
   const { fullscreen, toggle: toggleFullscreen } = useChartFullscreen(shellRef)
+
+  // Drawings are scoped to (symbol, interval) by the hook itself; the seconds
+  // are only what a duplicate is offset by so it does not land under the original.
+  const drawings = useDrawings(symbol, interval, { intervalSeconds: intervalSeconds(interval) })
+
+  useEffect(() => {
+    saveIndicatorState(indicators)
+  }, [indicators])
+
+  const onChartReady = useCallback((handle: ChartHandle) => setChart(handle), [])
+
+  // TradingChart unmounts — and disposes its chart — the moment the candle list
+  // empties, so the handle has to go with it. An indicator layer addressing a
+  // disposed chart is the one way this page can throw from inside an effect.
+  useEffect(() => {
+    if (candles.candles.length === 0) setChart(null)
+  }, [candles.candles.length])
 
   const current = useApi<CurrentPricesResponse>('/prices/current')
   const signal = useApi<SignalSummary>('/signals/current')
@@ -137,57 +163,78 @@ export default function TradePanel() {
     [latest.data]
   )
 
-  const visibleOverlays = useMemo(() => {
-    const all = candles.overlays
-    if (!all) return null
-    const picked: Partial<CandleOverlays> = {}
-    for (const key of Object.keys(OVERLAY_FIELDS) as Array<keyof typeof OVERLAY_FIELDS>) {
-      if (!active.has(key)) continue
-      for (const field of OVERLAY_FIELDS[key]) {
-        const values = all[field]
-        if (Array.isArray(values)) {
-          // supertrend_dir is a direction array, not a price series.
-          ;(picked as Record<string, unknown>)[field] = values
-        }
-      }
-    }
-    return picked
-  }, [candles.overlays, active])
+  // ---- indicators -------------------------------------------------------
+  // The server's own overlay arrays still travel through TradingChart's
+  // `overlays` prop; only the series the API cannot give us for an arbitrary
+  // timeframe (the EMA preset, RSI, MACD) are attached by the indicator layer.
+  const plots = useMemo(
+    () =>
+      buildPlots(indicators.instances, {
+        candles: candles.candles,
+        overlays: candles.overlays,
+        overlayTimes: candles.overlayTimes
+      }),
+    [indicators.instances, candles.candles, candles.overlays, candles.overlayTimes]
+  )
 
-  // An indicator whose every value is null has not warmed up in this window.
-  const warmupWarning = useMemo(() => {
-    const all = candles.overlays
-    if (!all) return null
-    const cold: string[] = []
-    for (const key of Object.keys(OVERLAY_FIELDS) as Array<keyof typeof OVERLAY_FIELDS>) {
-      if (!active.has(key)) continue
-      const fields = OVERLAY_FIELDS[key]
-      const anyValue = fields.some((field) => {
-        const values = all[field]
-        return Array.isArray(values) && values.some((v) => v !== null && v !== undefined)
-      })
-      if (!anyValue) cold.push(OVERLAY_LABELS[key])
-    }
-    if (cold.length === 0) return null
-    return `${cold.join(', ')} needs more history than this window holds.`
-  }, [candles.overlays, active])
+  const shownPlots = useMemo(() => {
+    const shown = new Set(indicators.instances.filter((i) => i.visible).map((i) => i.id))
+    return plots.filter((p) => shown.has(p.instanceId))
+  }, [plots, indicators.instances])
+
+  const mainPlots = useMemo(
+    () => shownPlots.filter((p) => p.owner === 'layer' && p.paneKey === null),
+    [shownPlots]
+  )
+  const panePlots = useMemo(() => shownPlots.filter((p) => p.paneKey !== null), [shownPlots])
+  const paneCount = useMemo(() => new Set(panePlots.map((p) => p.paneKey)).size, [panePlots])
+
+  const visibleOverlays = useMemo(
+    () => serverOverlays(indicators.instances, candles.overlays),
+    [indicators.instances, candles.overlays]
+  )
+
+  const cold = useMemo(() => coldInstances(indicators.instances, plots), [indicators.instances, plots])
 
   const levels = useMemo(
     () => ({
-      pivots: active.has('pivots') ? candles.pivots : null,
-      support: candles.support,
-      resistance: candles.resistance
+      pivots: hasInstance(indicators.instances, 'pivots') ? candles.pivots : null,
+      support: hasInstance(indicators.instances, 'sr') ? candles.support : null,
+      resistance: hasInstance(indicators.instances, 'sr') ? candles.resistance : null
     }),
-    [active, candles.pivots, candles.support, candles.resistance]
+    [indicators.instances, candles.pivots, candles.support, candles.resistance]
   )
 
-  const toggle = (key: OverlayKey) =>
-    setActive((prev) => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
+  // ---- overlays ---------------------------------------------------------
+  const lastCandle =
+    candles.candles.length > 0 ? candles.candles[candles.candles.length - 1] : null
+
+  const forecast = useMemo(
+    () => (indicators.overlays.forecast ? forecastPoints(predictions, lastCandle) : []),
+    [indicators.overlays.forecast, predictions, lastCandle]
+  )
+  const forecastSeries = useMemo(() => forecastPlots(forecast), [forecast])
+
+  const news = useApi<NewsFeedResponse>(indicators.overlays.events ? NEWS_PATH : null, [
+    indicators.overlays.events
+  ])
+  const eventPlacement = useMemo(
+    () =>
+      placeEvents(
+        unwrapList<NewsItem>(news.data, 'items'),
+        candles.candles,
+        intervalSeconds(interval)
+      ),
+    [news.data, candles.candles, interval]
+  )
+  const trend = useTrendOverlay(symbol, indicators.overlays.trend)
+
+  useIndicatorSeries(chart?.chart ?? null, mainPlots)
+  useIndicatorSeries(chart?.chart ?? null, forecastSeries)
+  useEventMarkers(chart?.candleSeries ?? null, eventPlacement.events, indicators.overlays.events)
+
+  const baseHeight = fullscreen ? Math.max(window.innerHeight - 260, 320) : 440
+  const chartHeight = baseHeight + PANE_HEIGHT * paneCount
 
   const quote = current.data?.prices?.[symbol]
   const gold = current.data?.prices?.IR_GOLD_18K
@@ -213,22 +260,9 @@ export default function TradePanel() {
               coverage={candles.coverage}
               fullscreen={fullscreen}
               onToggleFullscreen={toggleFullscreen}
+              indicatorsSlot={<IndicatorMenu state={indicators} onChange={setIndicators} />}
+              drawSlot={<DrawingToolbar engine={drawings} />}
             />
-
-            <div className="tchart-overlays">
-              {(Object.keys(OVERLAY_LABELS) as OverlayKey[]).map((key) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`btn btn-sm ${active.has(key) ? '' : 'btn-ghost'}`}
-                  aria-label={`${OVERLAY_LABELS[key]} overlay`}
-                  aria-pressed={active.has(key)}
-                  onClick={() => toggle(key)}
-                >
-                  {OVERLAY_LABELS[key]}
-                </button>
-              ))}
-            </div>
 
             {notice && (
               <p className="tchart-notice muted small" role="status">
@@ -262,21 +296,61 @@ export default function TradePanel() {
                   interval={interval}
                   unit={unit}
                   symbol={symbol}
-                  height={fullscreen ? Math.max(window.innerHeight - 260, 320) : 440}
+                  height={chartHeight}
                   onCrosshair={setHovered}
+                  onReady={onChartReady}
                   onLoadOlder={candles.loadOlder}
                   levels={levels}
+                >
+                  {/* Inside the chart container so the overlay canvas shares the
+                      candles' coordinate space with no extra maths. */}
+                  <DrawingLayer
+                    handle={chart}
+                    engine={drawings}
+                    symbol={symbol}
+                    interval={interval}
+                    unit={unit}
+                    candles={candles.candles}
+                  />
+                </TradingChart>
+                <IndicatorPanes
+                  chart={chart?.chart ?? null}
+                  plots={panePlots}
+                  height={chartHeight}
+                  time={hovered?.t ?? null}
+                  symbol={symbol}
+                  unit={unit}
                 />
                 {candles.loadingOlder && (
                   <p className="muted small" role="status">
                     Loading older history…
                   </p>
                 )}
-                {warmupWarning && (
-                  <p className="muted small tchart-notice">{warmupWarning}</p>
-                )}
               </>
             )}
+
+            <ChartLegend
+              state={indicators}
+              onChange={setIndicators}
+              plots={plots}
+              time={hovered?.t ?? null}
+              symbol={symbol}
+              unit={unit}
+              levels={{
+                pivots: candles.pivots,
+                support: candles.support,
+                resistance: candles.resistance
+              }}
+              cold={cold}
+              forecast={{ points: forecast, loading: latest.loading, error: latest.error }}
+              events={{
+                placement: eventPlacement,
+                loading: news.loading,
+                error: news.error,
+                collectionEnabled: news.data?.collection_enabled !== false
+              }}
+              trend={trend}
+            />
 
             <ChartStatusBar
               asOf={candles.asOf}
