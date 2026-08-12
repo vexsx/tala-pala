@@ -236,6 +236,14 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
         state/event tables, never model input, confidence, intervals or the
         buy/sell policy. Safe to call repeatedly — an unchanged closed-candle
         set produces no new event.
+
+        The same pass also refreshes the indicator's measured track record
+        (Addendum 22) and reports it per window under
+        ``symbols[<symbol>].performance``: for each of 90/60/30/14 days, the
+        basis it could honestly be computed on, the bar and episode counts, the
+        forward returns against an unconditional baseline, and the note saying
+        what the data does not support. A backtest failure is reported in
+        ``performance_error`` and leaves the live evaluation above intact.
         """
         from .jobs.trend_alignment import run_trend_alignment
 

@@ -1,16 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import {
-  CandlestickSeries,
-  ColorType,
-  LineSeries,
-  LineStyle,
-  createChart,
-  type UTCTimestamp
-} from 'lightweight-charts'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import type {
-  Candle,
-  CandlesResponse,
+  CandleOverlays,
+  ChartCandle,
   CurrentPricesResponse,
   Prediction,
   ProviderGapResponse,
@@ -19,12 +11,31 @@ import type {
 import { GOLD_FUND_SYMBOLS, HORIZON_LABELS, SYMBOL_LABELS, type Horizon } from '../api/types'
 import { unwrapList } from '../lib/unwrap'
 import { useSettings } from '../lib/settings'
-import { convertDisplay, formatPct, formatToman, pctClass, type DisplayUnit } from '../lib/format'
+import { formatPct, formatToman, pctClass } from '../lib/format'
 import DataFreshness from '../components/DataFreshness'
 import GaugeBar from '../components/GaugeBar'
 import Loading from '../components/Loading'
 import ErrorMessage from '../components/ErrorMessage'
 import EmptyState from '../components/EmptyState'
+import { TradingChart } from '../chart/TradingChart'
+import { ChartToolbar, useChartFullscreen } from '../chart/ChartToolbar'
+import { OhlcHeader } from '../chart/OhlcHeader'
+import { ChartStatusBar } from '../chart/ChartStatusBar'
+import { useCandles } from '../chart/useCandles'
+import {
+  FALLBACK_INTERVAL,
+  intervalLabel,
+  isSupported,
+  type IntervalId
+} from '../chart/intervals'
+import {
+  DEFAULT_SYMBOL,
+  readInterval,
+  readSymbol,
+  writeInterval,
+  writeSymbol,
+  type ChartSymbol
+} from '../chart/prefs'
 
 type OverlayKey = 'sma' | 'bollinger' | 'ichimoku' | 'supertrend' | 'psar' | 'pivots'
 
@@ -37,241 +48,137 @@ const OVERLAY_LABELS: Record<OverlayKey, string> = {
   pivots: 'Pivots'
 }
 
-const RANGES: Record<'daily' | 'hourly', Array<{ days: number; label: string }>> = {
-  daily: [
-    { days: 60, label: '60D' },
-    { days: 120, label: '120D' },
-    { days: 250, label: '250D' },
-    { days: 500, label: '500D' }
-  ],
-  hourly: [
-    { days: 3, label: '3D' },
-    { days: 7, label: '7D' },
-    { days: 14, label: '14D' }
-  ]
+/** Which response arrays each toggle controls. 'pivots' draws price lines instead. */
+const OVERLAY_FIELDS: Record<Exclude<OverlayKey, 'pivots'>, Array<keyof CandleOverlays>> = {
+  sma: ['sma_20', 'sma_50'],
+  bollinger: ['bollinger_upper', 'bollinger_mid', 'bollinger_lower'],
+  ichimoku: ['ichimoku_tenkan', 'ichimoku_kijun', 'ichimoku_senkou_a', 'ichimoku_senkou_b'],
+  supertrend: ['supertrend'],
+  psar: ['psar']
 }
 
-/** Resolve the current theme's CSS variables to concrete colors for the chart. */
-function chartColors() {
-  const css = getComputedStyle(document.documentElement)
-  const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback
-  return {
-    bg: v('--panel', '#131b24'),
-    text: v('--muted', '#8b98a5'),
-    border: v('--border', '#22303f'),
-    pos: v('--pos', '#2ea36b'),
-    neg: v('--neg', '#e5534b'),
-    accent: v('--accent', '#d4a017'),
-    info: v('--info', '#58a6ff'),
-    warn: v('--warn', '#d29922'),
-    purple: v('--purple', '#a371f7')
-  }
-}
-
-function lineData(candles: Candle[], values: Array<number | null>) {
-  const out: Array<{ time: UTCTimestamp; value: number }> = []
-  for (let i = 0; i < candles.length; i++) {
-    const v = values[i]
-    if (v !== null && v !== undefined) out.push({ time: candles[i].t as UTCTimestamp, value: v })
-  }
-  return out
-}
-
-function CandleChart({
-  data,
-  overlays,
-  height,
-  unit
-}: {
-  data: CandlesResponse
-  overlays: Set<OverlayKey>
-  height: number
-  unit: DisplayUnit
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const [themeTick, setThemeTick] = useState(0)
-
-  // re-render the chart when the user flips the site theme
-  useEffect(() => {
-    const observer = new MutationObserver(() => setThemeTick((t) => t + 1))
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
-    return () => observer.disconnect()
-  }, [])
-
-  useEffect(() => {
-    const el = containerRef.current
-    if (!el || data.candles.length === 0) return
-    const c = chartColors()
-
-    const chart = createChart(el, {
-      height,
-      layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: c.text,
-        attributionLogo: false
-      },
-      grid: {
-        vertLines: { color: c.border, style: LineStyle.Dotted },
-        horzLines: { color: c.border, style: LineStyle.Dotted }
-      },
-      rightPriceScale: { borderColor: c.border },
-      timeScale: {
-        borderColor: c.border,
-        timeVisible: data.interval === 'hourly',
-        secondsVisible: false
-      },
-      crosshair: { horzLine: { labelBackgroundColor: c.accent }, vertLine: { labelBackgroundColor: c.accent } },
-      localization: {
-        // honor the IRT/IRR display toggle like every table on the page
-        priceFormatter: (p: number) =>
-          Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(convertDisplay(p, unit))
-      }
-    })
-
-    const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: c.pos,
-      downColor: c.neg,
-      borderUpColor: c.pos,
-      borderDownColor: c.neg,
-      wickUpColor: c.pos,
-      wickDownColor: c.neg
-    })
-    candleSeries.setData(
-      data.candles.map((k) => ({
-        time: k.t as UTCTimestamp,
-        open: k.open,
-        high: k.high,
-        low: k.low,
-        close: k.close
-      }))
-    )
-
-    const addLine = (
-      values: Array<number | null>,
-      color: string,
-      width: 1 | 2 = 1,
-      style: LineStyle = LineStyle.Solid,
-      markersOnly = false
-    ) => {
-      const series = chart.addSeries(LineSeries, {
-        color,
-        lineWidth: width,
-        lineStyle: style,
-        priceLineVisible: false,
-        lastValueVisible: false,
-        crosshairMarkerVisible: false,
-        ...(markersOnly
-          ? { lineVisible: false, pointMarkersVisible: true, pointMarkersRadius: 2 }
-          : {})
-      })
-      series.setData(lineData(data.candles, values))
-      return series
-    }
-
-    const o = data.overlays
-    if (overlays.has('sma')) {
-      addLine(o.sma_20, c.info, 1)
-      addLine(o.sma_50, c.purple, 1)
-    }
-    if (overlays.has('bollinger')) {
-      addLine(o.bollinger_upper, c.info, 1, LineStyle.Dashed)
-      addLine(o.bollinger_mid, c.info, 1, LineStyle.Dotted)
-      addLine(o.bollinger_lower, c.info, 1, LineStyle.Dashed)
-    }
-    if (overlays.has('ichimoku')) {
-      addLine(o.ichimoku_tenkan, c.pos, 1)
-      addLine(o.ichimoku_kijun, c.neg, 1)
-      addLine(o.ichimoku_senkou_a, c.accent, 1, LineStyle.Dashed)
-      addLine(o.ichimoku_senkou_b, c.purple, 1, LineStyle.Dashed)
-    }
-    if (overlays.has('supertrend')) {
-      addLine(o.supertrend, c.warn, 2)
-    }
-    if (overlays.has('psar')) {
-      addLine(o.psar, c.accent, 1, LineStyle.Solid, true)
-    }
-    if (overlays.has('pivots') && data.pivots) {
-      const piv = data.pivots
-      const levels: Array<[number, string, string]> = [
-        [piv.r3, 'R3', c.neg],
-        [piv.r2, 'R2', c.neg],
-        [piv.r1, 'R1', c.neg],
-        [piv.p, 'P', c.text],
-        [piv.s1, 'S1', c.pos],
-        [piv.s2, 'S2', c.pos],
-        [piv.s3, 'S3', c.pos]
-      ]
-      for (const [price, title, color] of levels) {
-        candleSeries.createPriceLine({
-          price,
-          title,
-          color,
-          lineWidth: 1,
-          lineStyle: LineStyle.SparseDotted,
-          axisLabelVisible: false
-        })
-      }
-    }
-    if (data.support !== null) {
-      candleSeries.createPriceLine({
-        price: data.support,
-        title: 'support',
-        color: c.pos,
-        lineWidth: 1,
-        lineStyle: LineStyle.LargeDashed,
-        axisLabelVisible: false
-      })
-    }
-    if (data.resistance !== null) {
-      candleSeries.createPriceLine({
-        price: data.resistance,
-        title: 'resistance',
-        color: c.neg,
-        lineWidth: 1,
-        lineStyle: LineStyle.LargeDashed,
-        axisLabelVisible: false
-      })
-    }
-
-    chart.timeScale().fitContent()
-
-    const onResize = () => chart.applyOptions({ width: el.clientWidth })
-    onResize()
-    window.addEventListener('resize', onResize)
-    return () => {
-      window.removeEventListener('resize', onResize)
-      chart.remove()
-    }
-  }, [data, overlays, height, themeTick, unit])
-
-  return <div ref={containerRef} style={{ width: '100%' }} />
-}
+/** The API's 400 for a timeframe this data source cannot bucket. */
+const UNSUPPORTED_RE = /not available for the current data source/i
 
 export default function TradePanel() {
   const { unit } = useSettings()
-  const [interval, setInterval_] = useState<'daily' | 'hourly'>('daily')
-  const [days, setDays] = useState(120)
+  const shellRef = useRef<HTMLDivElement | null>(null)
+
+  const [symbol, setSymbol] = useState<ChartSymbol>(() => readSymbol())
+  const [interval, setIntervalId] = useState<IntervalId>(() => readInterval() ?? FALLBACK_INTERVAL)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [hovered, setHovered] = useState<ChartCandle | null>(null)
   const [active, setActive] = useState<Set<OverlayKey>>(new Set(['sma', 'supertrend', 'pivots']))
 
-  const candles = useApi<CandlesResponse>(`/market/candles?interval=${interval}&days=${days}`)
+  const candles = useCandles(symbol, interval)
+  const { fullscreen, toggle: toggleFullscreen } = useChartFullscreen(shellRef)
+
   const current = useApi<CurrentPricesResponse>('/prices/current')
   const signal = useApi<SignalSummary>('/signals/current')
   const latest = useApi<unknown>('/predictions')
   const gap = useApi<ProviderGapResponse>('/market/provider-gap?symbol=IR_GOLD_18K&history_days=0')
 
-  // keep the desk live: refresh quotes and candles every minute
+  // The candle store runs its own live tail poll; these side cards still need a
+  // whole-response refresh every minute.
   useEffect(() => {
     const id = window.setInterval(() => {
-      candles.reload()
       current.reload()
       gap.reload()
     }, 60_000)
     return () => window.clearInterval(id)
-  }, [candles.reload, current.reload, gap.reload]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current.reload, gap.reload]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const chooseInterval = useCallback((next: IntervalId) => {
+    setNotice(null)
+    setHovered(null)
+    setIntervalId(next)
+    writeInterval(next)
+  }, [])
+
+  const chooseSymbol = useCallback((next: ChartSymbol) => {
+    setNotice(null)
+    setHovered(null)
+    setSymbol(next)
+    writeSymbol(next)
+  }, [])
+
+  // A stored timeframe can stop being servable when coverage changes. Fall back
+  // to 1D and keep the reason on screen: silently drawing different bars than
+  // the button says would be worse than the empty chart it replaces.
+  useEffect(() => {
+    if (!candles.coverage) return
+    const support = isSupported(interval, candles.coverage)
+    if (support.ok) return
+    setNotice(
+      `${intervalLabel(interval)} is unavailable — showing ${intervalLabel(
+        FALLBACK_INTERVAL
+      )} instead. ${support.reason}`
+    )
+    setIntervalId(FALLBACK_INTERVAL)
+    writeInterval(FALLBACK_INTERVAL)
+  }, [candles.coverage, interval])
+
+  // A rejected timeframe 400s, and a 400 carries no coverage — so the guard
+  // above can never fire for it. Read the refusal itself instead.
+  useEffect(() => {
+    if (!candles.error || interval === FALLBACK_INTERVAL) return
+    if (!UNSUPPORTED_RE.test(candles.error)) return
+    setNotice(
+      `${intervalLabel(interval)} is unavailable — showing ${intervalLabel(
+        FALLBACK_INTERVAL
+      )} instead. ${candles.error}`
+    )
+    setIntervalId(FALLBACK_INTERVAL)
+    writeInterval(FALLBACK_INTERVAL)
+  }, [candles.error, interval])
 
   const predictions = useMemo(
     () => unwrapList<Prediction>(latest.data, 'items', 'predictions'),
     [latest.data]
+  )
+
+  const visibleOverlays = useMemo(() => {
+    const all = candles.overlays
+    if (!all) return null
+    const picked: Partial<CandleOverlays> = {}
+    for (const key of Object.keys(OVERLAY_FIELDS) as Array<keyof typeof OVERLAY_FIELDS>) {
+      if (!active.has(key)) continue
+      for (const field of OVERLAY_FIELDS[key]) {
+        const values = all[field]
+        if (Array.isArray(values)) {
+          // supertrend_dir is a direction array, not a price series.
+          ;(picked as Record<string, unknown>)[field] = values
+        }
+      }
+    }
+    return picked
+  }, [candles.overlays, active])
+
+  // An indicator whose every value is null has not warmed up in this window.
+  const warmupWarning = useMemo(() => {
+    const all = candles.overlays
+    if (!all) return null
+    const cold: string[] = []
+    for (const key of Object.keys(OVERLAY_FIELDS) as Array<keyof typeof OVERLAY_FIELDS>) {
+      if (!active.has(key)) continue
+      const fields = OVERLAY_FIELDS[key]
+      const anyValue = fields.some((field) => {
+        const values = all[field]
+        return Array.isArray(values) && values.some((v) => v !== null && v !== undefined)
+      })
+      if (!anyValue) cold.push(OVERLAY_LABELS[key])
+    }
+    if (cold.length === 0) return null
+    return `${cold.join(', ')} needs more history than this window holds.`
+  }, [candles.overlays, active])
+
+  const levels = useMemo(
+    () => ({
+      pivots: active.has('pivots') ? candles.pivots : null,
+      support: candles.support,
+      resistance: candles.resistance
+    }),
+    [active, candles.pivots, candles.support, candles.resistance]
   )
 
   const toggle = (key: OverlayKey) =>
@@ -282,14 +189,11 @@ export default function TradePanel() {
       return next
     })
 
-  const switchInterval = (next: 'daily' | 'hourly') => {
-    setInterval_(next)
-    setDays(RANGES[next][1]?.days ?? RANGES[next][0].days)
-  }
-
+  const quote = current.data?.prices?.[symbol]
   const gold = current.data?.prices?.IR_GOLD_18K
-  const st = candles.data?.overlays.supertrend_dir
+  const st = candles.overlays?.supertrend_dir
   const stDir = st && st.length > 0 ? st[st.length - 1] : 0
+  const firstLoad = candles.loading && candles.candles.length === 0
 
   return (
     <div className="page-body">
@@ -297,34 +201,27 @@ export default function TradePanel() {
 
       <div className="trade-layout">
         <div className="trade-main">
-          <div className="card">
-            <div className="toolbar" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-              <div className="toggle-group" role="group" aria-label="Interval">
-                <button type="button" className={interval === 'daily' ? 'active' : ''} onClick={() => switchInterval('daily')}>
-                  Daily
-                </button>
-                <button type="button" className={interval === 'hourly' ? 'active' : ''} onClick={() => switchInterval('hourly')}>
-                  Hourly
-                </button>
-              </div>
-              <div className="toggle-group" role="group" aria-label="Range">
-                {RANGES[interval].map((r) => (
-                  <button
-                    key={r.days}
-                    type="button"
-                    className={days === r.days ? 'active' : ''}
-                    onClick={() => setDays(r.days)}
-                  >
-                    {r.label}
-                  </button>
-                ))}
-              </div>
-              <span style={{ flex: 1 }} />
+          <div
+            className={`card tchart-shell ${fullscreen ? 'tchart-shell-fs' : ''}`}
+            ref={shellRef}
+          >
+            <ChartToolbar
+              symbol={symbol}
+              onSymbolChange={chooseSymbol}
+              interval={interval}
+              onIntervalChange={chooseInterval}
+              coverage={candles.coverage}
+              fullscreen={fullscreen}
+              onToggleFullscreen={toggleFullscreen}
+            />
+
+            <div className="tchart-overlays">
               {(Object.keys(OVERLAY_LABELS) as OverlayKey[]).map((key) => (
                 <button
                   key={key}
                   type="button"
                   className={`btn btn-sm ${active.has(key) ? '' : 'btn-ghost'}`}
+                  aria-label={`${OVERLAY_LABELS[key]} overlay`}
                   aria-pressed={active.has(key)}
                   onClick={() => toggle(key)}
                 >
@@ -333,15 +230,62 @@ export default function TradePanel() {
               ))}
             </div>
 
-            {candles.loading && !candles.data ? (
-              <Loading label="Loading candles…" />
-            ) : candles.error ? (
-              <ErrorMessage message={candles.error} onRetry={candles.reload} />
-            ) : candles.data && candles.data.candles.length > 0 ? (
-              <CandleChart data={candles.data} overlays={active} height={440} unit={unit} />
-            ) : (
-              <EmptyState title="No candle data" hint="Candles appear once price history exists." />
+            {notice && (
+              <p className="tchart-notice muted small" role="status">
+                {notice}
+              </p>
             )}
+
+            <OhlcHeader
+              symbol={symbol}
+              interval={interval}
+              hovered={hovered}
+              candles={candles.candles}
+              unit={unit}
+            />
+
+            {firstLoad ? (
+              <Loading label="Loading candles…" />
+            ) : candles.error && candles.candles.length === 0 ? (
+              <ErrorMessage message={candles.error} onRetry={candles.reload} />
+            ) : candles.candles.length === 0 ? (
+              <EmptyState
+                title="No candle data"
+                hint="Candles appear once price history exists for this symbol and timeframe."
+              />
+            ) : (
+              <>
+                <TradingChart
+                  candles={candles.candles}
+                  overlays={visibleOverlays}
+                  overlayTimes={candles.overlayTimes}
+                  interval={interval}
+                  unit={unit}
+                  symbol={symbol}
+                  height={fullscreen ? Math.max(window.innerHeight - 260, 320) : 440}
+                  onCrosshair={setHovered}
+                  onLoadOlder={candles.loadOlder}
+                  levels={levels}
+                />
+                {candles.loadingOlder && (
+                  <p className="muted small" role="status">
+                    Loading older history…
+                  </p>
+                )}
+                {warmupWarning && (
+                  <p className="muted small tchart-notice">{warmupWarning}</p>
+                )}
+              </>
+            )}
+
+            <ChartStatusBar
+              asOf={candles.asOf}
+              interval={interval}
+              candles={candles.candles}
+              coverage={candles.coverage}
+              source={quote?.source ?? null}
+              stale={quote?.stale}
+            />
           </div>
         </div>
 
@@ -472,7 +416,7 @@ export default function TradePanel() {
             )}
           </div>
 
-          {candles.data?.pivots && (
+          {candles.pivots && (
             <div className="card">
               <div className="card-title">Pivot levels (classic)</div>
               <div className="table-wrap">
@@ -480,13 +424,13 @@ export default function TradePanel() {
                   <tbody>
                     {(
                       [
-                        ['R3', candles.data.pivots.r3, 'neg'],
-                        ['R2', candles.data.pivots.r2, 'neg'],
-                        ['R1', candles.data.pivots.r1, 'neg'],
-                        ['P', candles.data.pivots.p, ''],
-                        ['S1', candles.data.pivots.s1, 'pos'],
-                        ['S2', candles.data.pivots.s2, 'pos'],
-                        ['S3', candles.data.pivots.s3, 'pos']
+                        ['R3', candles.pivots.r3, 'neg'],
+                        ['R2', candles.pivots.r2, 'neg'],
+                        ['R1', candles.pivots.r1, 'neg'],
+                        ['P', candles.pivots.p, ''],
+                        ['S1', candles.pivots.s1, 'pos'],
+                        ['S2', candles.pivots.s2, 'pos'],
+                        ['S3', candles.pivots.s3, 'pos']
                       ] as Array<[string, number, string]>
                     ).map(([label, value, cls]) => (
                       <tr key={label}>

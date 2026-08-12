@@ -725,8 +725,13 @@ export interface TrendTimeframe {
 
 /**
  * GET /market/trend-alignment?symbol=… — a read-only technical indicator.
- * It feeds no model input, model selection, confidence, interval or buy/sell
- * decision; it is situational awareness only.
+ *
+ * It feeds no MODEL input, model selection, confidence or interval: the 4H and
+ * 1H legs cannot be reconstructed before intraday collection began, so there is
+ * no honest historical series to train on. It DOES contribute one weighted
+ * factor to the rule-based buy/sell score (Addendum 21) — read live, never
+ * fitted. `inputs.trend_alignment_points` on GET /signals/current is exactly
+ * how many points it moved the last score.
  */
 export interface TrendAlignmentResponse {
   symbol: string
@@ -742,4 +747,64 @@ export interface TrendAlignmentResponse {
   last_alert_at: string | null
   /** 'never_evaluated' when the symbol has no stored state yet. */
   note?: string | null
+}
+
+// ---------- Candles v2 (trading chart) ----------
+
+/**
+ * One time bucket of the tick stream in `prices`. These are NOT exchange OHLC
+ * bars: the API buckets observations by time, so a bucket that saw a single
+ * observation has open == high == low == close and no traded range at all.
+ * `ticks` and `synthetic` are how the chart tells the two apart honestly.
+ */
+export interface ChartCandle {
+  /** Unix seconds, bucket start (UTC). */
+  t: number
+  open_time?: string
+  close_time?: string
+  open: number
+  high: number
+  low: number
+  close: number
+  /** Always null — this data source carries no volume. Never invent one. */
+  volume?: number | null
+  /** Observations that fell in the bucket. */
+  ticks?: number
+  /** The bucket has ended; a false value is a still-forming bar. */
+  confirmed?: boolean
+  /** ticks <= 1: the high/low "range" is an artefact of a single observation. */
+  synthetic?: boolean
+}
+
+/**
+ * What the server can actually serve for this symbol. The chart offers only
+ * the timeframes this allows rather than letting the user pick one that will
+ * 400, and explains any timeframe it withholds.
+ */
+export interface CandleCoverage {
+  /** Finest real spacing between observations; null when unknown. */
+  base_granularity_seconds: number | null
+  /** First instant with sub-daily observations; null means daily-only history. */
+  intraday_from: string | null
+  history_from: string | null
+  supported_intervals: string[]
+  note: string
+}
+
+/** GET /market/candles — paginated buckets plus chart-ready overlays. */
+export interface ChartCandlesResponse {
+  symbol: string
+  interval: string
+  interval_seconds: number
+  timezone: string
+  candles: ChartCandle[]
+  has_more: boolean
+  /** Pagination cursor: pass back verbatim as `before` to fetch older buckets. */
+  next_before: string | null
+  coverage?: CandleCoverage
+  overlays?: CandleOverlays
+  pivots?: PivotLevels
+  support: number | null
+  resistance: number | null
+  as_of: string
 }

@@ -1738,3 +1738,209 @@ input[type='checkbox'] {
     margin-left: 0;
   }
 }
+
+/* --- Trading chart ----------------------------------------------------------
+   The chart is an imperative canvas host: everything here is frame and chrome,
+   never anything lightweight-charts draws itself. `.tchart` is the positioned
+   container the drawing overlay mounts into, so it must stay `relative` and
+   must not gain padding — an overlay canvas at inset 0 has to share the
+   chart's pixel coordinate space exactly. */
+
+.tchart-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tchart-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tchart-select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+
+/* The preset strip must never wrap into a second row on a phone; it scrolls. */
+.tchart-strip {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tchart-strip button {
+  white-space: nowrap;
+}
+
+.tchart-strip button:disabled,
+.tchart-menu-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tchart-custom {
+  position: relative;
+}
+
+.tchart-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(52px, 1fr));
+  gap: 2px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.tchart-menu-item {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.tchart-menu-item:hover:not(:disabled) {
+  background: var(--panel-2);
+  color: var(--accent);
+}
+
+.tchart-menu-item[aria-checked='true'] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tchart-spacer {
+  flex: 1;
+}
+
+.tchart-overlays {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tchart-notice {
+  margin: 0;
+}
+
+/* OHLC readout: a single row that degrades to a wrapped block on narrow
+   screens rather than truncating prices. */
+.ohlc-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  min-height: 20px;
+}
+
+.ohlc-symbol {
+  font-weight: 700;
+}
+
+.ohlc-interval {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ohlc-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.ohlc-key {
+  font-size: 11px;
+}
+
+.tchart {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.tchart-host {
+  position: absolute;
+  inset: 0;
+}
+
+.tchart-actions {
+  position: absolute;
+  right: 8px;
+  bottom: 28px;
+  display: flex;
+  gap: 4px;
+  z-index: 5;
+}
+
+.tchart-actions .btn {
+  background: var(--panel);
+  opacity: 0.85;
+}
+
+.tchart-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.tchart-singles {
+  font-style: italic;
+}
+
+/* CSS fallback for browsers that refuse element fullscreen (iPhone Safari).
+   The Fullscreen API path lands on the same class, so both look identical. */
+.tchart-shell-fs {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  border-radius: 0;
+  overflow: auto;
+  background: var(--bg);
+}
+
+@media (max-width: 640px) {
+  .tchart-toolbar {
+    gap: 6px;
+  }
+
+  .ohlc-head {
+    gap: 8px;
+  }
+
+  .tchart-status {
+    gap: 8px;
+  }
+}
+
+/* --- Trend alignment: held-duration + score contribution --------------- */
+.trend-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+}
+.trend-held { color: var(--muted); }
+.trend-points { font-weight: 600; }

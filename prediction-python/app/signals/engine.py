@@ -5,6 +5,7 @@ Composes a 0–100 bullishness score from weighted factors:
 * forecast expected return vs the round-trip transaction cost threshold,
 * model confidence and cross-horizon agreement,
 * trend (price vs SMA20/SMA50), RSI zones, momentum,
+* multi-timeframe MA alignment (Addendum 21),
 * premium z-score (a rich premium argues caution when buying),
 * volatility regime,
 * and a hard data-freshness gate — stale inputs force ``hold``.
@@ -64,6 +65,42 @@ class SignalInputs:
     # (older than the last session) forces hold.
     market_closed: bool = False
     round_trip_cost_pct: float = DEFAULT_ROUND_TRIP_COST_PCT
+    # Addendum 21 — multi-timeframe MA alignment as a scored factor.
+    # ``trend_alignment`` is 'full_bullish' | 'full_bearish' | 'not_aligned' |
+    # None (never evaluated, disabled, or too old to use).  ``trend_states``
+    # maps '1d'/'4h'/'1h' -> that timeframe's own trend, which is what lets the
+    # scorer distinguish "no trend anywhere" from "the timeframes contradict
+    # each other" — two very different pieces of information that both arrive
+    # as 'not_aligned'.  ``trend_alignment_age_days`` is how long the current
+    # alignment has held.
+    trend_alignment: Optional[str] = None
+    trend_states: dict[str, str] = field(default_factory=dict)
+    trend_alignment_age_days: Optional[float] = None
+    trend_weight: float = 0.0
+
+
+# Score band edges of _score_to_signal, as (class, lowest, highest). Used to
+# stop a single factor promoting the score into a stronger call on its own.
+_SIGNAL_BANDS = (
+    ("strong_sell", 0, 25),
+    ("sell", 26, 40),
+    ("hold", 41, 59),
+    ("buy", 60, 74),
+    ("strong_buy", 75, 100),
+)
+
+
+def _hold_within_band(before: float, after: float) -> float:
+    """Cap ``after`` at the edge of the band ``before`` already sat in.
+
+    Only ever used for a move that makes the call MORE committal, so the cap
+    is on the far side in the direction of travel.
+    """
+    band = _score_to_signal(int(np.clip(round(before), 0, 100)))
+    for name, low, high in _SIGNAL_BANDS:
+        if name == band:
+            return float(min(after, high)) if after > before else float(max(after, low))
+    return after
 
 
 def _score_to_signal(score: int) -> str:
@@ -160,20 +197,91 @@ def compute_signal(inputs: SignalInputs, now: Optional[datetime] = None) -> dict
                 conflicting.append("Forecast horizons disagree on direction.")
 
     # --- trend: price vs SMA20/50 ------------------------------------------
+    sma_factor = 0.0
     if inputs.last_price and inputs.sma20 and inputs.sma50:
         if inputs.last_price > inputs.sma20 > inputs.sma50:
-            score += 12.0
+            sma_factor = 12.0
             supporting.append("Price is above SMA20 and SMA50 (established uptrend).")
         elif inputs.last_price > inputs.sma20:
-            score += 6.0
+            sma_factor = 6.0
             supporting.append("Price is above SMA20.")
         elif inputs.last_price < inputs.sma20 < inputs.sma50:
-            score -= 12.0
+            sma_factor = -12.0
             conflicting.append("Price is below SMA20 and SMA50 (established downtrend).")
         elif inputs.last_price < inputs.sma20:
-            score -= 6.0
+            sma_factor = -6.0
             conflicting.append("Price is below SMA20.")
         # price sitting exactly on its averages is trend-neutral
+        score += sma_factor
+
+    # --- multi-timeframe MA alignment (Addendum 21) -------------------------
+    # The strongest purely technical read the app has: 1D, 4H and 1H must ALL
+    # show a strict price > ma26 > ma48 > ma220 stack (or the mirror) on their
+    # own CLOSED candles.  Two design decisions are load-bearing:
+    #
+    # It is deliberately correlation-aware.  This factor and the SMA20/50 one
+    # above answer overlapping questions — "is price above its own averages" —
+    # so paying both in full when they agree would count one piece of evidence
+    # twice and let a single trending tape push the score around by 22 points.
+    # Agreement therefore pays half; the full weight is reserved for the case
+    # where the SMA factor is absent, flat, or pointing the other way, which is
+    # exactly when the multi-timeframe read carries information the rest of the
+    # scorer does not already have.
+    #
+    # It never scores an unavailable read.  A timeframe short of warm-up, or a
+    # state older than the configured age gate, contributes NOTHING rather than
+    # a neutral 0 — "we could not tell" is not evidence of balance, and letting
+    # it read as balance would quietly dilute every other factor.
+    trend_contribution = 0.0
+    if inputs.trend_alignment in ("full_bullish", "full_bearish") and inputs.trend_weight > 0:
+        direction = 1.0 if inputs.trend_alignment == "full_bullish" else -1.0
+        confirms_sma = sma_factor * direction > 0
+        trend_contribution = direction * inputs.trend_weight * (0.5 if confirms_sma else 1.0)
+        # It can talk the engine OUT of a call, never INTO one.  That asymmetry
+        # is how multi-timeframe alignment is actually used: agreement across
+        # timeframes is permission to act on a case the rest of the evidence
+        # already made, while disagreement is a genuine reason to stand down.
+        # So a contribution that moves the score toward caution applies in full
+        # and may change the call, while one that makes the call MORE committal
+        # is capped at the edge of the band the other eight factors had already
+        # reached.  Without this an otherwise perfectly neutral board plus a
+        # bullish stack scored exactly 60 — the alignment inventing a "buy" out
+        # of no other evidence, which is the one thing it must not do.
+        proposed = score + trend_contribution
+        if abs(proposed - 50.0) > abs(score - 50.0):
+            proposed = _hold_within_band(score, proposed)
+        trend_contribution = proposed - score
+        score = proposed
+        held = (
+            f" (held {inputs.trend_alignment_age_days:.1f} days)"
+            if inputs.trend_alignment_age_days is not None
+            else ""
+        )
+        word = "bullish" if direction > 0 else "bearish"
+        line = (
+            f"1D, 4H and 1H moving averages are all stacked {word} on closed "
+            f"candles{held}."
+        )
+        if confirms_sma:
+            line += " Counted at half weight: it confirms the SMA trend factor rather than adding to it."
+        (supporting if direction > 0 else conflicting).append(line)
+    elif inputs.trend_alignment == "not_aligned" and inputs.trend_states:
+        # 'not_aligned' covers two different worlds.  Timeframes that actively
+        # contradict each other are a genuine caution — a position taken on one
+        # timeframe is fighting another — and that is worth telling the reader
+        # even though it moves no score.  Merely quiet timeframes are not.
+        directions = {s for s in inputs.trend_states.values() if s in ("bullish", "bearish")}
+        if len(directions) > 1:
+            conflicting.append(
+                "Timeframes contradict each other: "
+                + ", ".join(f"{tf.upper()} {inputs.trend_states[tf]}" for tf in ("1d", "4h", "1h")
+                            if tf in inputs.trend_states)
+                + "."
+            )
+            risks.append(
+                "Short- and long-timeframe trends disagree; moves against the "
+                "slower timeframe tend to reverse."
+            )
 
     # --- RSI zones ----------------------------------------------------------
     if inputs.rsi14 is not None:
@@ -294,6 +402,13 @@ def compute_signal(inputs: SignalInputs, now: Optional[datetime] = None) -> dict
             "market_closed": inputs.market_closed,
             "round_trip_cost_pct": inputs.round_trip_cost_pct,
             "round_trip_cost_basis": getattr(inputs, "round_trip_cost_basis", "assumed"),
+            # Recorded so a reader can reconstruct exactly what the alignment
+            # did to this score, including the half-weight case. A factor that
+            # moves the buy/sell call has to be auditable after the fact.
+            "trend_alignment": inputs.trend_alignment,
+            "trend_states": inputs.trend_states,
+            "trend_alignment_age_days": inputs.trend_alignment_age_days,
+            "trend_alignment_points": round(trend_contribution, 2),
         },
     }
 
@@ -334,6 +449,74 @@ def _load_latest_predictions(engine, symbol: str = "IR_GOLD_18K") -> dict:
                 "predicted_at": ensure_utc(row[3]),
             }
     return latest
+
+
+def _load_trend_alignment(engine, settings, symbol: str, now: datetime) -> dict:
+    """Current alignment for ``symbol``, or an empty dict when unusable.
+
+    Three gates, all of which mean "contribute nothing" rather than "contribute
+    neutrally":  the feature is switched off, the stored read is not fresh, or
+    it was calculated too long ago to describe the present.  Returning an empty
+    dict (not a 'not_aligned') keeps that distinction — the scorer must be able
+    to tell "the timeframes do not agree" from "we do not know".
+
+    ``age_days`` is measured from the ENTRY into the current alignment, which
+    lives in ``trend_alignment_events``, not from the last evaluation — the
+    question a reader asks is how long this has held, not when we last looked.
+    """
+    if not getattr(settings, "trend_alignment_enabled", False):
+        return {}
+    weight = float(getattr(settings, "trend_alignment_signal_weight", 0.0) or 0.0)
+    if weight <= 0:
+        return {}
+
+    from sqlalchemy import select
+
+    from ..db import ensure_utc, trend_alignment_events, trend_alignment_states
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(trend_alignment_states).where(
+                trend_alignment_states.c.symbol == symbol
+            )
+        ).mappings().first()
+        if row is None:
+            return {}
+
+        calculated_at = ensure_utc(row["calculated_at"])
+        max_age = timedelta(minutes=int(getattr(settings, "trend_alignment_max_age_minutes", 180)))
+        if not row["data_fresh"] or calculated_at is None or now - calculated_at > max_age:
+            return {}
+
+        alignment = str(row["alignment"])
+        timeframes = row["timeframes"] or {}
+        states = {
+            tf: str(leg.get("trend"))
+            for tf, leg in timeframes.items()
+            if isinstance(leg, dict) and leg.get("trend")
+        }
+
+        age_days = None
+        if alignment in ("full_bullish", "full_bearish"):
+            entered = conn.execute(
+                select(trend_alignment_events.c.occurred_at)
+                .where(
+                    trend_alignment_events.c.symbol == symbol,
+                    trend_alignment_events.c.alignment == alignment,
+                )
+                .order_by(trend_alignment_events.c.occurred_at.desc())
+                .limit(1)
+            ).scalar()
+            entered = ensure_utc(entered)
+            if entered is not None:
+                age_days = max(0.0, (now - entered).total_seconds() / 86400.0)
+
+    return {
+        "alignment": alignment,
+        "states": states,
+        "age_days": age_days,
+        "weight": weight,
+    }
 
 
 def generate_signal(engine, settings) -> dict:
@@ -427,6 +610,19 @@ def generate_signal(engine, settings) -> dict:
     else:
         inputs.data_fresh = False
         inputs.market_closed = not is_market_open("IR_GOLD_18K", now, settings)
+
+    # Never let the indicator sink signal generation: it is one factor among
+    # nine, and a signal scored without it is far better than no signal.
+    try:
+        trend = _load_trend_alignment(engine, settings, "IR_GOLD_18K", now)
+    except Exception as exc:  # noqa: BLE001 — see comment above
+        log.warning("trend alignment unavailable for signal scoring: %s", exc)
+        trend = {}
+    if trend:
+        inputs.trend_alignment = trend["alignment"]
+        inputs.trend_states = trend["states"]
+        inputs.trend_alignment_age_days = trend["age_days"]
+        inputs.trend_weight = trend["weight"]
 
     result = compute_signal(inputs, now=now)
 

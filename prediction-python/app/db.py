@@ -317,6 +317,40 @@ trend_alignment_events = Table(
     Index("idx_trend_alignment_events_symbol_time", "symbol", "occurred_at"),
 )
 
+# --- table mirroring database/migrations/0021_trend_alignment_performance ----
+
+# The measured track record of the same indicator, one row per (symbol,
+# window).  ``basis`` says which alignment was actually replayed — the real
+# 1D+4H+1H one, or the 1D leg alone where intraday history does not reach —
+# and the statistic columns are NULLABLE because "never happened" and
+# "happened and returned nothing" are different facts.  The counts stay NOT
+# NULL: a count of zero IS the measurement.
+trend_alignment_performance = Table(
+    "trend_alignment_performance",
+    metadata,
+    Column("symbol", Text, primary_key=True),
+    Column("window_days", Integer, primary_key=True),
+    Column("basis", Text, nullable=False),
+    Column("computed_at", _TS, nullable=False, server_default=func.now()),
+    Column("evaluated_from", _TS),
+    Column("evaluated_to", _TS),
+    Column("samples", Integer, nullable=False, server_default=text("0")),
+    Column("bullish_episodes", Integer, nullable=False, server_default=text("0")),
+    Column("bearish_episodes", Integer, nullable=False, server_default=text("0")),
+    Column("bullish_bars", Integer, nullable=False, server_default=text("0")),
+    Column("bearish_bars", Integer, nullable=False, server_default=text("0")),
+    Column("unaligned_bars", Integer, nullable=False, server_default=text("0")),
+    Column("fwd_return_bullish_pct", Float),
+    Column("fwd_return_bearish_pct", Float),
+    Column("fwd_return_baseline_pct", Float),
+    Column("hit_rate_bullish", Float),
+    Column("hit_rate_bearish", Float),
+    Column("note", Text, nullable=False, server_default=""),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("basis IN ('full_mtf', 'daily_only')"),
+    Index("idx_trend_alignment_performance_symbol_window", "symbol", "window_days"),
+)
+
 # --- helpers ----------------------------------------------------------------
 
 

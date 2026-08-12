@@ -217,3 +217,169 @@ def test_round_trip_cost_prefers_observed_spread(engine):
         ))
     cost, basis = round_trip_cost_pct(engine)
     assert basis == "observed_spread" and cost == pytest.approx(0.49)
+
+
+# --- multi-timeframe MA alignment as a scored factor (Addendum 21) ----------
+#
+# The factor exists to move the buy/sell call, so every test below pins a
+# property that keeps it from moving it for the wrong reason.
+
+
+def _neutral_trend_inputs(**overrides) -> SignalInputs:
+    """Inputs whose SMA factor is absent, so the alignment pays full weight."""
+    base = dict(
+        expected_change_pct={"1d": 0.0},
+        confidence={"1d": 0.5},
+        last_price=None,
+        sma20=None,
+        sma50=None,
+        rsi14=50.0,
+        momentum_10_pct=0.0,
+        premium_z=0.0,
+        regime="normal",
+        data_fresh=True,
+        trend_weight=10.0,
+    )
+    base.update(overrides)
+    return SignalInputs(**base)
+
+
+def test_alignment_moves_the_score_in_the_right_direction_and_symmetrically():
+    """Direction and symmetry.
+
+    From a dead-neutral 50 the band cap binds at both edges of 'hold', so the
+    magnitude here is 9 rather than the raw weight of 10 — the full weight is
+    exercised by the contradicting-SMA and veto tests below, where the cap does
+    not apply.
+    """
+    flat = compute_signal(_neutral_trend_inputs())["score"]
+    up = compute_signal(_neutral_trend_inputs(trend_alignment="full_bullish"))
+    down = compute_signal(_neutral_trend_inputs(trend_alignment="full_bearish"))
+    assert up["score"] > flat > down["score"]
+    assert up["score"] - flat == flat - down["score"]
+    assert up["inputs"]["trend_alignment_points"] == -down["inputs"]["trend_alignment_points"]
+
+
+def _mild_bullish_inputs(**overrides) -> SignalInputs:
+    """Bullish enough that the SMA factor fires, mild enough not to saturate.
+
+    _bullish_inputs already scores 98, where the 0-100 clip hides any further
+    contribution — a fixture that cannot show the delta cannot test it.
+    """
+    base = dict(
+        expected_change_pct={"1d": 0.4},
+        confidence={"1d": 0.5},
+        last_price=8_500_000.0,
+        sma20=8_200_000.0,
+        sma50=8_000_000.0,
+        rsi14=50.0,
+        momentum_10_pct=0.0,
+        premium_z=0.0,
+        regime="normal",
+        data_fresh=True,
+        trend_weight=10.0,
+    )
+    base.update(overrides)
+    return SignalInputs(**base)
+
+
+def test_alignment_is_halved_when_it_only_confirms_the_sma_factor():
+    """The two factors overlap; agreement must not be counted twice.
+
+    With price above SMA20 and SMA50 the trend factor already paid +12. A full
+    bullish alignment adds +5 on top, not +10.
+    """
+    aligned = compute_signal(_mild_bullish_inputs(trend_alignment="full_bullish"))
+    plain = compute_signal(_mild_bullish_inputs())
+    assert aligned["score"] - plain["score"] == 5
+    assert aligned["inputs"]["trend_alignment_points"] == 5.0
+
+
+def test_alignment_pays_full_weight_when_it_contradicts_the_sma_factor():
+    """Disagreement is exactly when the multi-timeframe read is informative."""
+    contra = compute_signal(
+        _bullish_inputs(trend_alignment="full_bearish", trend_weight=10.0)
+    )
+    plain = compute_signal(_bullish_inputs())
+    assert plain["score"] - contra["score"] == 10
+    assert contra["inputs"]["trend_alignment_points"] == -10.0
+
+
+def test_unavailable_alignment_scores_nothing_at_all():
+    """'We could not tell' must not read as 'the evidence is balanced'."""
+    absent = compute_signal(_neutral_trend_inputs(trend_alignment=None))
+    zero_weight = compute_signal(
+        _neutral_trend_inputs(trend_alignment="full_bullish", trend_weight=0.0)
+    )
+    baseline = compute_signal(_neutral_trend_inputs())
+    assert absent["score"] == baseline["score"] == zero_weight["score"]
+    assert absent["inputs"]["trend_alignment_points"] == 0.0
+    assert zero_weight["inputs"]["trend_alignment_points"] == 0.0
+
+
+def test_not_aligned_moves_no_score_but_flags_contradicting_timeframes():
+    result = compute_signal(
+        _neutral_trend_inputs(
+            trend_alignment="not_aligned",
+            trend_states={"1d": "bearish", "4h": "bullish", "1h": "bullish"},
+        )
+    )
+    baseline = compute_signal(_neutral_trend_inputs())
+    assert result["score"] == baseline["score"]
+    assert result["inputs"]["trend_alignment_points"] == 0.0
+    assert any("contradict" in c.lower() for c in result["conflicting"])
+    assert any("disagree" in r.lower() for r in result["risks"])
+
+
+def test_quiet_timeframes_are_not_reported_as_a_contradiction():
+    """Neutral everywhere is not the same as 1D bearish against 1H bullish."""
+    result = compute_signal(
+        _neutral_trend_inputs(
+            trend_alignment="not_aligned",
+            trend_states={"1d": "neutral", "4h": "neutral", "1h": "bullish"},
+        )
+    )
+    assert not any("contradict" in c.lower() for c in result["conflicting"])
+
+
+def test_alignment_reports_how_long_it_has_held():
+    result = compute_signal(
+        _neutral_trend_inputs(trend_alignment="full_bullish", trend_alignment_age_days=3.25)
+    )
+    assert any("held 3.2 days" in s for s in result["supporting"])
+    assert result["inputs"]["trend_alignment_age_days"] == 3.25
+
+
+def test_alignment_cannot_override_the_stale_data_hold():
+    """A hard gate stays hard: no technical read outranks stale inputs."""
+    result = compute_signal(
+        _neutral_trend_inputs(trend_alignment="full_bullish", data_fresh=False)
+    )
+    assert result["signal"] == "hold"
+    assert result["score"] == 50
+
+
+def test_alignment_alone_cannot_manufacture_a_buy():
+    """From an otherwise neutral board it must not reach the buy band.
+
+    Caught a real defect: an exactly-neutral 50 plus a full bullish stack
+    landed on exactly 60, so the alignment invented a "buy" with no other
+    evidence behind it. It is now capped at the edge of the band the rest of
+    the evidence reached.
+    """
+    result = compute_signal(_neutral_trend_inputs(trend_alignment="full_bullish"))
+    assert result["signal"] == "hold"
+    assert result["score"] == 59
+    assert result["inputs"]["trend_alignment_points"] == 9.0
+
+
+def test_alignment_may_talk_the_engine_out_of_a_call():
+    """The asymmetry: it cannot create a call, but it can withdraw one."""
+    buying = compute_signal(_mild_bullish_inputs(expected_change_pct={"1d": 1.6}))
+    assert buying["signal"] == "buy"
+    vetoed = compute_signal(
+        _mild_bullish_inputs(expected_change_pct={"1d": 1.6}, trend_alignment="full_bearish")
+    )
+    assert vetoed["score"] < buying["score"]
+    assert vetoed["signal"] == "hold"
+    assert vetoed["inputs"]["trend_alignment_points"] == -10.0

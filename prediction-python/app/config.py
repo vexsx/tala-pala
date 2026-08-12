@@ -125,11 +125,14 @@ class Settings:
     provider_backoff_base: float = field(
         default_factory=lambda: float(_env("PROVIDER_BACKOFF_BASE", "0.75"))
     )
-    # Multi-timeframe trend alignment (Addendum 20). A TECHNICAL INDICATOR
-    # ONLY: these periods never reach model input, model selection, confidence,
-    # intervals or the buy/sell policy — they only decide when the 1D/4H/1H
-    # stacks are called aligned. On by default because it reads existing price
-    # history and writes only its own two tables.
+    # Multi-timeframe trend alignment (Addendum 20). These periods never reach
+    # MODEL input, model selection, confidence or intervals — the 4H and 1H
+    # legs cannot be reconstructed before intraday collection began, so there
+    # is no honest historical feature series to train on. They DO feed the
+    # rule-based buy/sell signal score as one weighted factor (Addendum 21),
+    # which needs no history because it is evaluated live, not fitted.
+    # On by default: it reads existing price history and writes only its own
+    # two tables.
     trend_alignment_enabled: bool = field(
         default_factory=lambda: _env("TREND_ALIGNMENT_ENABLED", "true").lower() == "true")
     trend_alignment_ma_type: str = field(
@@ -140,6 +143,18 @@ class Settings:
         default_factory=lambda: int(_env("TREND_ALIGNMENT_MID_PERIOD", "48")))
     trend_alignment_slow_period: int = field(
         default_factory=lambda: int(_env("TREND_ALIGNMENT_SLOW_PERIOD", "220")))
+    # Points a full alignment may move the 0-100 signal score (Addendum 21).
+    # 10 puts it just under the SMA20/50 trend factor's 12, which is deliberate:
+    # it is the more informative read but it is also the newer and less battle-
+    # tested one, and it is halved again when it merely confirms that factor.
+    # Set to 0 to keep the indicator display-only.
+    trend_alignment_signal_weight: float = field(
+        default_factory=lambda: float(_env("TREND_ALIGNMENT_SIGNAL_WEIGHT", "10")))
+    # A stack read off candles that closed hours ago is not a statement about
+    # now. Older than this and the factor is skipped entirely rather than
+    # scored stale.
+    trend_alignment_max_age_minutes: int = field(
+        default_factory=lambda: int(_env("TREND_ALIGNMENT_MAX_AGE_MINUTES", "180")))
 
     def __post_init__(self) -> None:
         """Reject a trend-alignment configuration that cannot mean anything.

@@ -1,5 +1,6 @@
 import { useApi } from '../hooks/useApi'
 import type {
+  SignalSummary,
   TrendAlignmentResponse,
   TrendAlignmentState,
   TrendState,
@@ -216,6 +217,63 @@ function NeverEvaluated() {
   )
 }
 
+/**
+ * How long the current alignment has held, in days.
+ *
+ * Only meaningful for a FULL alignment: `last_transition_at` is the last ENTRY
+ * into one, so for `not_aligned` it would answer a question nobody asked ("when
+ * did the last full alignment start", not "how long has it been unaligned").
+ * Returns null rather than a misleading number in that case.
+ */
+export function daysHeld(data: TrendAlignmentResponse | null, now: number = Date.now()): number | null {
+  if (data === null || data.last_transition_at === null) return null
+  if (data.alignment !== 'full_bullish' && data.alignment !== 'full_bearish') return null
+  const started = Date.parse(data.last_transition_at)
+  if (Number.isNaN(started)) return null
+  return Math.max(0, (now - started) / 86_400_000)
+}
+
+/** "3.2 days" / "18 hours" — hours below a day, because "0.1 days" reads as nothing. */
+export function formatHeld(days: number | null): string | null {
+  if (days === null) return null
+  if (days < 1) {
+    const hours = Math.round(days * 24)
+    return hours <= 1 ? 'under an hour' : `${hours} hours`
+  }
+  return `${days.toFixed(1)} days`
+}
+
+/**
+ * Points this alignment contributed to the latest buy/sell score.
+ *
+ * Read from the signal the server actually published rather than recomputed
+ * here: the weighting rules (half weight when it merely confirms the SMA
+ * factor, capped so it can never promote the call on its own) live in the
+ * scoring engine, and a second implementation in the browser would drift.
+ */
+function useTrendPoints(enabled: boolean): number | null {
+  const res = useApi<SignalSummary & { inputs?: Record<string, unknown> }>(
+    enabled ? '/signals/current' : null
+  )
+  const raw = res.data?.inputs?.trend_alignment_points
+  return typeof raw === 'number' ? raw : null
+}
+
+/** "+5 pts" / "−10 pts" — the sign is the whole message, so it is always shown. */
+function ScoreContribution({ points }: { points: number | null }) {
+  if (points === null || points === 0) return null
+  const sign = points > 0 ? '+' : '−'
+  return (
+    <span
+      className={`trend-points mono ${points > 0 ? 'pos' : 'neg'}`}
+      title="Points this alignment contributed to the latest buy/sell score (0–100). It is halved when it only confirms the SMA trend factor, and capped so it can never create a call on its own."
+    >
+      {sign}
+      {Math.abs(points).toFixed(0)} pts to score
+    </span>
+  )
+}
+
 /** Glyph + word, so colour is never carrying the meaning on its own. */
 function TrendMark({ trend }: { trend: TrendState }) {
   return (
@@ -238,6 +296,9 @@ export function TrendAlignmentCard({ symbol = 'IR_GOLD_18K' }: TrendAlignmentPro
   const data = reading.data
   const readable = data !== null && !reading.neverEvaluated && reading.error === null
   const stale = readable && data.data_fresh === false
+  const held = formatHeld(daysHeld(data))
+  // Only the gold signal is scored, so the contribution line belongs to it.
+  const points = useTrendPoints(symbol === 'IR_GOLD_18K')
 
   return (
     <section
@@ -298,11 +359,23 @@ export function TrendAlignmentCard({ symbol = 'IR_GOLD_18K' }: TrendAlignmentPro
             </span>
           </div>
 
+          {(held !== null || points !== null) && (
+            <div className="trend-meta-row">
+              {held !== null && (
+                <span className="trend-held">
+                  Held <span className="mono">{held}</span>
+                </span>
+              )}
+              <ScoreContribution points={points} />
+            </div>
+          )}
+
           <p className="muted small trend-note">
             {data.calculated_at !== null
               ? `Read ${formatDateTime(data.calculated_at, calendar)} (Tehran).`
               : ''}{' '}
-            Technical context only — it feeds no forecast and no buy/sell call.
+            Technical context. It feeds no forecast model — it is one weighted
+            factor in the buy/sell score, and it can never create a call on its own.
           </p>
         </>
       )}

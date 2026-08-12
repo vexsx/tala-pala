@@ -29,6 +29,14 @@ same place — one event per (symbol, direction, closed-candle triple).
 try/except and its own transaction, so a gap in one series cannot stop the
 other symbol from being evaluated or leave a half-written state behind.
 
+*The track record is best-effort, the live indicator is not.* After the live
+evaluation has been committed, the same pass refreshes
+``trend_alignment_performance`` — the measured history of this indicator, per
+window, on the basis the data actually supports (see
+``app/models/trend_backtest.py``). It runs in its own try/except outside that
+transaction because it is strictly the weaker obligation: a backtest that
+raises must cost the user a history section, never the alignment itself.
+
 Nothing here touches model input, model selection, prediction confidence,
 intervals or the buy/sell decision policy. It reads ``prices`` and writes its
 own two tables plus (when a user has subscribed) one ``alert_events`` row.
@@ -48,6 +56,7 @@ from ..config import Settings
 from ..db import (
     ensure_utc,
     trend_alignment_events,
+    trend_alignment_performance,
     trend_alignment_states,
     utcnow,
 )
@@ -61,6 +70,7 @@ from ..models.trend_alignment import (
     TrendConfig,
     evaluate,
 )
+from ..models.trend_backtest import WINDOW_DAYS, WindowPerformance, backtest
 
 log = logging.getLogger(__name__)
 
@@ -122,6 +132,16 @@ TREND_ALERTS = Counter(
     "talapala_prediction_trend_alignment_alerts_total",
     "In-app alert_events rows written for a trend-alignment entry",
     ["symbol", "alignment"],
+)
+TREND_PERFORMANCE_WINDOWS = Counter(
+    "talapala_prediction_trend_alignment_performance_windows_total",
+    "Track-record windows recomputed, by symbol and the basis they were computed on",
+    ["symbol", "basis"],
+)
+TREND_PERFORMANCE_FAILURES = Counter(
+    "talapala_prediction_trend_alignment_performance_failures_total",
+    "Track-record refreshes that raised, by symbol",
+    ["symbol"],
 )
 
 # Raw-SQL binds carry their type explicitly. Timestamps because an untyped
@@ -248,6 +268,21 @@ def _bucket_limits(config: TrendConfig) -> tuple[int, int]:
     return warm * HOURLY_PER_4H, warm
 
 
+def _backtest_bucket_limits(config: TrendConfig) -> tuple[int, int]:
+    """(hourly, daily) bucket counts for the longest reported window.
+
+    The live pass needs the slow MA warmed at ONE instant. The replay needs it
+    warmed before the OLDEST bar it walks, so both limits carry the longest
+    reported window on top of the same warm-up — otherwise the first bars of a
+    90-day window would be decided on an average that had not warmed up yet,
+    and the track record would be measuring the loader instead of the market.
+    """
+    warm = int(config.slow * WARMUP_FACTOR) + BUCKET_SLACK
+    longest = max(WINDOW_DAYS)
+    hourly_per_day = TIMEFRAME_SECONDS["1d"] // TIMEFRAME_SECONDS["1h"]
+    return warm * HOURLY_PER_4H + longest * hourly_per_day, warm + longest
+
+
 # --- persistence -------------------------------------------------------------
 
 
@@ -369,6 +404,61 @@ def _insert_event(
     )
     row = conn.execute(stmt).first()
     return int(row[0]) if row is not None else None
+
+
+# --- track record -------------------------------------------------------------
+
+
+def _upsert_performance(
+    conn: Connection, rows: Sequence[WindowPerformance], now: datetime
+) -> None:
+    """Restate every window for one symbol (one row per window, upserted).
+
+    A window is a statement about a span ending now, so a refresh REPLACES the
+    previous statement rather than appending to it: keeping both would leave two
+    rows claiming to be "the last 90 days" and no way to tell which is current.
+    """
+    insert = _dialect_insert(conn)
+    for row in rows:
+        values: dict[str, Any] = row.as_row()
+        values["computed_at"] = now
+        values["updated_at"] = now
+        stmt = insert(trend_alignment_performance).values(**values)
+        conn.execute(
+            stmt.on_conflict_do_update(
+                index_elements=[
+                    trend_alignment_performance.c.symbol,
+                    trend_alignment_performance.c.window_days,
+                ],
+                set_={
+                    k: v
+                    for k, v in values.items()
+                    if k not in ("symbol", "window_days")
+                },
+            )
+        )
+
+
+def refresh_performance(
+    engine: Engine, symbol: str, config: TrendConfig, now: datetime
+) -> list[dict[str, Any]]:
+    """Recompute and store every reported window for one symbol.
+
+    Candles are loaded by the SAME query the live evaluation uses, so the track
+    record is drawn from the buckets the chart and the indicator already agree
+    on — only more of them.
+    """
+    hourly_limit, daily_limit = _backtest_bucket_limits(config)
+    with engine.connect() as conn:
+        hourly = _load_candles(conn, symbol, "hour", hourly_limit, now)
+        daily = _load_candles(conn, symbol, "day", daily_limit, now)
+
+    rows = backtest(symbol, hourly, daily, now, config)
+    with engine.begin() as conn:
+        _upsert_performance(conn, rows, now)
+    for row in rows:
+        TREND_PERFORMANCE_WINDOWS.labels(symbol=symbol, basis=row.basis).inc()
+    return [row.as_dict() for row in rows]
 
 
 # --- alerting ----------------------------------------------------------------
@@ -562,6 +652,19 @@ def _evaluate_symbol(
             alerted_at=now if alert_event_id is not None else None,
         )
 
+    # The track record is a separate, best-effort concern, refreshed AFTER the
+    # live evaluation has been committed. It reads far more history and reduces
+    # it to statistics, so it has more ways to fail — and a failed backtest must
+    # cost the user a missing history section, never the indicator itself. Its
+    # own try/except, outside the transaction above, is what guarantees that.
+    try:
+        outcome["performance"] = refresh_performance(engine, symbol, config, now)
+    except Exception as exc:  # noqa: BLE001 - see comment above
+        TREND_PERFORMANCE_FAILURES.labels(symbol=symbol).inc()
+        log.warning("trend alignment performance refresh failed for %s: %s", symbol, exc)
+        outcome["performance"] = []
+        outcome["performance_error"] = f"{type(exc).__name__}: {exc}"
+
     TREND_EVALUATIONS.labels(symbol=symbol, alignment=result.alignment).inc()
     return outcome
 
@@ -588,6 +691,7 @@ def run_trend_alignment(
         "failed": 0,
         "events": 0,
         "alerts": 0,
+        "performance_windows": 0,
         "errors": [],
     }
     if not settings.trend_alignment_enabled:
@@ -625,6 +729,9 @@ def run_trend_alignment(
         counts["evaluated"] += 1
         counts["events"] += 1 if outcome["event_created"] else 0
         counts["alerts"] += 1 if outcome["alerted"] else 0
+        counts["performance_windows"] += len(outcome.get("performance") or [])
+        if outcome.get("performance_error"):
+            counts["errors"].append(f"{symbol} performance: {outcome['performance_error']}")
 
     if counts["evaluated"]:
         # Only a pass that actually evaluated something may refresh the

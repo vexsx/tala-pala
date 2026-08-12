@@ -32,6 +32,11 @@ type PriceHandlers interface {
 	Funds(http.ResponseWriter, *http.Request)
 	TrendAlignment(http.ResponseWriter, *http.Request)
 	TrendAlignmentEvents(http.ResponseWriter, *http.Request)
+	TrendAlignmentPerformance(http.ResponseWriter, *http.Request)
+	ListDrawings(http.ResponseWriter, *http.Request)
+	CreateDrawing(http.ResponseWriter, *http.Request)
+	UpdateDrawing(http.ResponseWriter, *http.Request)
+	DeleteDrawing(http.ResponseWriter, *http.Request)
 }
 
 type PredictionHandlers interface {
@@ -162,6 +167,17 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			// has no pattern to shadow here) and both are plain reads.
 			r.Get("/api/v1/market/trend-alignment", d.Prices.TrendAlignment)
 			r.Get("/api/v1/market/trend-alignment/events", d.Prices.TrendAlignmentEvents)
+			// The same indicator's measured track record, per window and
+			// labelled with the basis it could honestly be computed on.
+			r.Get("/api/v1/market/trend-alignment/performance", d.Prices.TrendAlignmentPerformance)
+
+			// Per-user chart annotations. Authenticated group only: a drawing
+			// belongs to the person who made it, and every statement behind
+			// these four routes scopes to the token's user id.
+			r.Get("/api/v1/chart/drawings", d.Prices.ListDrawings)
+			r.Post("/api/v1/chart/drawings", d.Prices.CreateDrawing)
+			r.Put("/api/v1/chart/drawings/{id}", d.Prices.UpdateDrawing)
+			r.Delete("/api/v1/chart/drawings/{id}", d.Prices.DeleteDrawing)
 
 			r.Get("/api/v1/predictions", d.Predictions.Latest)
 			// static route wins over the {horizon} pattern in chi

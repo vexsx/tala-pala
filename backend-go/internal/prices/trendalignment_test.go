@@ -601,3 +601,298 @@ func TestBuildTrendEventsResponse_EmptyEncodesAsList(t *testing.T) {
 		t.Fatalf("count must be 0, got %s", got)
 	}
 }
+
+// --- track record (Addendum 22) ----------------------------------------------
+
+func float64Ptr(f float64) *float64 { return &f }
+
+func TestTrendAlignmentPerformance_UnsupportedSymbolReturns400(t *testing.T) {
+	// Nil pool again: validation must happen before the query, or this panics.
+	h := &Handler{Log: quietLogger()}
+	for _, raw := range []string{"XAGUSD", "USD_IRT", "ir_gold_18k", "IR_GOLD_FUND_TALA"} {
+		rec := httptest.NewRecorder()
+		h.TrendAlignmentPerformance(rec, httptest.NewRequest("GET",
+			"/api/v1/market/trend-alignment/performance?symbol="+raw, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("symbol=%s: got status %d, want 400", raw, rec.Code)
+		}
+		var body httpserver.ErrorBody
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Error.Code != "bad_request" {
+			t.Fatalf("symbol=%s: wrong error code %q", raw, body.Error.Code)
+		}
+	}
+}
+
+// storedPerformanceRows are rows as the evaluator writes them, in a deliberately
+// wrong order. The 90-day row is daily_only with every conditional statistic
+// NULL: that is the real shape of the longest window, because the 4H and 1H legs
+// have no history that far back and the daily leg was never directionally
+// aligned inside it.
+func storedPerformanceRows() []trendPerformanceRow {
+	return []trendPerformanceRow{
+		{WindowDays: 14, Basis: "daily_only", Samples: 13,
+			BullishEpisodes: 1, BearishEpisodes: 0,
+			BullishBars: 9, BearishBars: 0, UnalignedBars: 4,
+			FwdReturnBullishPct: float64Ptr(0.42), FwdReturnBearishPct: nil,
+			FwdReturnBaselinePct: float64Ptr(0.31),
+			HitRateBullish:       float64Ptr(0.5555555555555556), HitRateBearish: nil,
+			EvaluatedFrom: timePtr(trendTime(1)), EvaluatedTo: timePtr(trendTime(9)),
+			ComputedAt: trendTime(10), Note: "Daily leg only"},
+		{WindowDays: 90, Basis: "daily_only", Samples: 61,
+			BullishEpisodes: 0, BearishEpisodes: 0,
+			BullishBars: 0, BearishBars: 0, UnalignedBars: 61,
+			FwdReturnBullishPct: nil, FwdReturnBearishPct: nil,
+			FwdReturnBaselinePct: float64Ptr(0.11),
+			HitRateBullish:       nil, HitRateBearish: nil,
+			EvaluatedFrom: timePtr(trendTime(0)), EvaluatedTo: timePtr(trendTime(9)),
+			ComputedAt: trendTime(10), Note: "the 4H and 1H legs have no history that far back"},
+		{WindowDays: 30, Basis: "daily_only", Samples: 29,
+			BullishEpisodes: 2, BearishEpisodes: 1,
+			BullishBars: 12, BearishBars: 5, UnalignedBars: 12,
+			FwdReturnBullishPct: float64Ptr(0.9), FwdReturnBearishPct: float64Ptr(-0.4),
+			FwdReturnBaselinePct: float64Ptr(0.2),
+			HitRateBullish:       float64Ptr(0.75), HitRateBearish: float64Ptr(0.6),
+			EvaluatedFrom: timePtr(trendTime(0)), EvaluatedTo: timePtr(trendTime(9)),
+			ComputedAt: trendTime(10), Note: "Daily leg only"},
+		{WindowDays: 60, Basis: "full_mtf", Samples: 3,
+			BullishEpisodes: 1, BearishEpisodes: 0,
+			BullishBars: 3, BearishBars: 0, UnalignedBars: 0,
+			FwdReturnBullishPct: float64Ptr(1.5), FwdReturnBearishPct: nil,
+			FwdReturnBaselinePct: float64Ptr(1.5),
+			HitRateBullish:       float64Ptr(1), HitRateBearish: nil,
+			EvaluatedFrom: timePtr(trendTime(2)), EvaluatedTo: timePtr(trendTime(9)),
+			ComputedAt: trendTime(10), Note: "three bars is not a track record"},
+	}
+}
+
+func TestSortTrendPerformanceRows_LongestWindowFirst(t *testing.T) {
+	rows := storedPerformanceRows()
+	sortTrendPerformanceRows(rows)
+
+	var got []int
+	for _, r := range rows {
+		got = append(got, r.WindowDays)
+	}
+	for i, want := range []int{90, 60, 30, 14} {
+		if got[i] != want {
+			t.Fatalf("order = %v, want [90 60 30 14]", got)
+		}
+	}
+}
+
+func TestBuildTrendPerformanceResponse_EnvelopeAndItemShape(t *testing.T) {
+	resp := buildTrendPerformanceResponse("IR_GOLD_18K", storedPerformanceRows())
+	b, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(b, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope) != 3 {
+		t.Fatalf("envelope must be exactly {symbol,items,count}: %s", b)
+	}
+	for _, key := range []string{"symbol", "items", "count"} {
+		if _, ok := envelope[key]; !ok {
+			t.Fatalf("envelope is missing %q: %s", key, b)
+		}
+	}
+	if string(envelope["symbol"]) != `"IR_GOLD_18K"` || string(envelope["count"]) != "4" {
+		t.Fatalf("symbol/count wrong: %s", b)
+	}
+
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(envelope["items"], &items); err != nil {
+		t.Fatal(err)
+	}
+	wantKeys := []string{
+		"window_days", "basis", "samples", "bullish_episodes", "bearish_episodes",
+		"bullish_bars", "bearish_bars", "unaligned_bars",
+		"fwd_return_bullish_pct", "fwd_return_bearish_pct", "fwd_return_baseline_pct",
+		"hit_rate_bullish", "hit_rate_bearish",
+		"evaluated_from", "evaluated_to", "computed_at", "note",
+	}
+	for _, key := range wantKeys {
+		if _, ok := items[0][key]; !ok {
+			t.Fatalf("item is missing %q: %s", key, b)
+		}
+	}
+	if len(items[0]) != len(wantKeys) {
+		t.Fatalf("item has unexpected keys: %s", b)
+	}
+	// The reader has to be able to say "that rate is noise", which needs the
+	// denominator in the same object as the rate.
+	if string(items[0]["samples"]) != "61" {
+		t.Fatalf("samples not projected: %s", items[0]["samples"])
+	}
+	// Timestamps serialize UTC with Z.
+	if string(items[0]["computed_at"]) != `"2026-08-12T10:00:00Z"` {
+		t.Fatalf("computed_at not RFC3339 UTC: %s", items[0]["computed_at"])
+	}
+	if string(items[0]["evaluated_from"]) != `"2026-08-12T00:00:00Z"` {
+		t.Fatalf("evaluated_from not RFC3339 UTC: %s", items[0]["evaluated_from"])
+	}
+	// No significance decoration may appear on this contract: with these sample
+	// sizes a Sharpe or a p-value would be a claim the data cannot support.
+	for _, forbidden := range []string{"sharpe", "p_value", "pvalue", "significan", "confidence"} {
+		if strings.Contains(strings.ToLower(string(b)), forbidden) {
+			t.Fatalf("statistic %q must not appear on this contract: %s", forbidden, b)
+		}
+	}
+}
+
+func TestBuildTrendPerformanceResponse_OrderedLongestWindowFirst(t *testing.T) {
+	resp := buildTrendPerformanceResponse("IR_GOLD_18K", storedPerformanceRows())
+	if resp.Count != 4 || len(resp.Items) != 4 {
+		t.Fatalf("count = %d, items = %d, want 4 and 4", resp.Count, len(resp.Items))
+	}
+	for i, want := range []int{90, 60, 30, 14} {
+		if resp.Items[i].WindowDays != want {
+			t.Fatalf("item %d window_days = %d, want %d", i, resp.Items[i].WindowDays, want)
+		}
+	}
+}
+
+// The 90-day row is daily_only and must stay daily_only: relabelling it as the
+// multi-timeframe alignment would be the single most misleading thing this
+// endpoint could do, because the 4H and 1H legs have no history that far back.
+func TestBuildTrendPerformanceResponse_BasisIsNeverRewritten(t *testing.T) {
+	resp := buildTrendPerformanceResponse("IR_GOLD_18K", storedPerformanceRows())
+	want := map[int]string{90: "daily_only", 60: "full_mtf", 30: "daily_only", 14: "daily_only"}
+	for _, item := range resp.Items {
+		if item.Basis != want[item.WindowDays] {
+			t.Fatalf("window %d basis = %q, want %q",
+				item.WindowDays, item.Basis, want[item.WindowDays])
+		}
+		if item.Note == "" {
+			t.Fatalf("window %d lost its note", item.WindowDays)
+		}
+	}
+}
+
+// "Never happened" and "happened and returned nothing" are different facts.
+// A null that arrives as 0.0 would credit the indicator with a measurement it
+// never made.
+func TestBuildTrendPerformanceResponse_NullStatisticsStayNull(t *testing.T) {
+	b, err := json.Marshal(buildTrendPerformanceResponse("IR_GOLD_18K", storedPerformanceRows()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(b, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	ninety := envelope.Items[0] // window_days DESC, so the 90-day row
+	for _, key := range []string{
+		"fwd_return_bullish_pct", "fwd_return_bearish_pct",
+		"hit_rate_bullish", "hit_rate_bearish",
+	} {
+		if string(ninety[key]) != "null" {
+			t.Fatalf("%s = %s, want null (it was never measured)", key, ninety[key])
+		}
+	}
+	// The baseline IS measured over the same window and must survive beside
+	// them: without it a reader cannot tell the indicator from the market.
+	if string(ninety["fwd_return_baseline_pct"]) != "0.11" {
+		t.Fatalf("baseline = %s, want 0.11", ninety["fwd_return_baseline_pct"])
+	}
+	// A count of zero, by contrast, IS the measurement.
+	if string(ninety["bullish_bars"]) != "0" || string(ninety["unaligned_bars"]) != "61" {
+		t.Fatalf("counts not projected: %s", b)
+	}
+}
+
+// No rows yet is a 200 with an empty list, never a 404 and never a null items.
+func TestBuildTrendPerformanceResponse_EmptyEncodesAsList(t *testing.T) {
+	b, err := json.Marshal(buildTrendPerformanceResponse("XAUUSD", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, want := range []string{`"symbol":"XAUUSD"`, `"items":[]`, `"count":0`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s", want, got)
+		}
+	}
+}
+
+// Go must not touch the numbers it was handed: no rounding, no rescaling, and
+// no rate recomputed from the counts beside it.
+func TestBuildTrendPerformanceResponse_StatisticsArePassedThroughVerbatim(t *testing.T) {
+	rows := storedPerformanceRows()
+	resp := buildTrendPerformanceResponse("IR_GOLD_18K", rows)
+	sortTrendPerformanceRows(rows)
+	sameFloat := func(got, want *float64) bool {
+		if got == nil || want == nil {
+			return got == nil && want == nil
+		}
+		return *got == *want
+	}
+	for i, item := range resp.Items {
+		src := rows[i]
+		if !sameFloat(item.HitRateBullish, src.HitRateBullish) ||
+			!sameFloat(item.HitRateBearish, src.HitRateBearish) {
+			t.Fatalf("window %d hit rates rewritten", item.WindowDays)
+		}
+		if !sameFloat(item.FwdReturnBullishPct, src.FwdReturnBullishPct) ||
+			!sameFloat(item.FwdReturnBearishPct, src.FwdReturnBearishPct) ||
+			!sameFloat(item.FwdReturnBaselinePct, src.FwdReturnBaselinePct) {
+			t.Fatalf("window %d returns rewritten", item.WindowDays)
+		}
+		if item.Samples != src.Samples || item.BullishBars != src.BullishBars ||
+			item.BearishBars != src.BearishBars || item.UnalignedBars != src.UnalignedBars ||
+			item.BullishEpisodes != src.BullishEpisodes ||
+			item.BearishEpisodes != src.BearishEpisodes {
+			t.Fatalf("window %d counts rewritten", item.WindowDays)
+		}
+	}
+}
+
+// A location-carrying timestamp from the driver must still serialize as UTC Z.
+func TestBuildTrendPerformanceResponse_NormalizesLocationToUTC(t *testing.T) {
+	tehran := time.FixedZone("Asia/Tehran", int((3*time.Hour + 30*time.Minute).Seconds()))
+	local := trendTime(6).In(tehran)
+	rows := []trendPerformanceRow{{
+		WindowDays: 30, Basis: "daily_only", Samples: 1,
+		EvaluatedFrom: timePtr(local), EvaluatedTo: timePtr(local), ComputedAt: local,
+		Note: "n/a",
+	}}
+	b, err := json.Marshal(buildTrendPerformanceResponse("IR_GOLD_18K", rows))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"computed_at":"2026-08-12T06:00:00Z"`,
+		`"evaluated_from":"2026-08-12T06:00:00Z"`,
+		`"evaluated_to":"2026-08-12T06:00:00Z"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %s in %s", want, b)
+		}
+	}
+}
+
+// hit_rate_bullish over 3 bars is arithmetically valid and epistemically noise.
+// The contract's job is to hand the client both numbers so it can say so; this
+// test is the guard that the counts never get dropped as "redundant".
+func TestBuildTrendPerformanceResponse_SmallSampleKeepsItsDenominator(t *testing.T) {
+	resp := buildTrendPerformanceResponse("IR_GOLD_18K", storedPerformanceRows())
+	var sixty trendPerformanceItem
+	for _, item := range resp.Items {
+		if item.WindowDays == 60 {
+			sixty = item
+		}
+	}
+	if sixty.Samples != 3 || sixty.BullishBars != 3 || sixty.BullishEpisodes != 1 {
+		t.Fatalf("60-day denominators lost: %+v", sixty)
+	}
+	if sixty.HitRateBullish == nil || *sixty.HitRateBullish != 1 {
+		t.Fatalf("60-day hit rate = %v, want 1", sixty.HitRateBullish)
+	}
+}

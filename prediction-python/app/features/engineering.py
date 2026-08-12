@@ -28,6 +28,33 @@ CORR_WINDOW = 20      # rolling 18k-vs-XAU log-return correlation
 DRAWDOWN_WINDOW = 90
 PREMIUM_MOM_LAG = 5
 
+# --- daily trend stack (1D leg of the Addendum 20 alignment indicator) -------
+# Periods and comparisons mirror app/models/trend_alignment.TrendConfig; the
+# feature and the card on screen must never disagree about the same market.
+TREND_FAST, TREND_MID, TREND_SLOW = 26, 48, 220
+
+# Only the 1D leg is built. ``prices`` holds one observation per day until
+# 2026-07-19 and 5-minute ticks after it, so the intraday history is ~23 days:
+# a 4H or 1H leg would be ~23 usable rows or fabricated history, and neither is
+# a feature. The daily leg is the slowest and most decisive one anyway.
+DAILY_BAR_MIN_SECONDS = 20 * 3600
+DAILY_BAR_MAX_SECONDS = 36 * 3600
+
+# An EMA_n does not exist before its n-th bar, and ml.TabularModel drops any
+# row holding a NaN — so an EMA's warm-up is charged to EVERY feature in the
+# matrix, not just to itself. Measured on a 1224-bucket daily frame: 1194 ->
+# 1004 usable rows at the 1d horizon (-15.9%), worth paying on a long history
+# and not on a short one. So each leg is emitted only while its warm-up stays
+# under this share of the series; below that it is OMITTED, never softened with
+# min_periods (an EMA220 seeded on 30 bars is not an EMA220, and labelling it
+# as one would be the dishonesty this feature set exists to avoid).
+# Charged to both legs, not just the slow one: with the 47-bar EMA48 warm-up
+# applied unconditionally, walk_forward's first fold (60 training bars) fell to
+# 12 clean rows, under TabularModel.min_rows, and silently degraded to naive.
+MAX_TREND_WARMUP_SHARE = 0.25
+TREND_MID_MIN_BARS = int(np.ceil((TREND_MID - 1) / MAX_TREND_WARMUP_SHARE))    # 188
+TREND_SLOW_MIN_BARS = int(np.ceil((TREND_SLOW - 1) / MAX_TREND_WARMUP_SHARE))  # 876
+
 
 class LeakageError(AssertionError):
     """A feature computation attempted to use data from after ``as_of``."""
@@ -90,6 +117,132 @@ def rsi(series: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
     # all-gain windows => RSI 100
     out = out.where(~(loss == 0.0) | gain.isna(), 100.0)
     return out
+
+
+def ema_series(values: pd.Series, period: int) -> pd.Series:
+    """EMA at EVERY row, identical to :func:`app.models.trend_alignment.ema`.
+
+    Seeded with the SMA of the first ``period`` values, then ``k = 2/(period+1)``
+    — the convention the deployed indicator (and every charting package) uses.
+    Rows before the seed are NaN because the EMA does not exist there yet; the
+    indicator returns ``None`` for exactly the same inputs.
+
+    Deliberately NOT ``pandas.ewm(adjust=False)``: that seeds on the FIRST
+    observation, so its early values are a function of one arbitrary tick and
+    it converges to a different number than the indicator publishes. Two
+    definitions of "EMA26" in one system means the feature and the trend card
+    disagree about the same market, quietly. The explicit loop keeps the
+    arithmetic bit-identical to the indicator's (tests/test_features.py pins
+    the two together).
+    """
+    index = values.index
+    data = [float(v) for v in values.to_numpy(dtype=float)]
+    out = np.full(len(data), np.nan)
+    if period <= 0 or len(data) < period:
+        return pd.Series(out, index=index)
+    k = 2.0 / (period + 1.0)
+    current = sum(data[:period]) / period  # SMA seed, same summation order
+    out[period - 1] = current
+    for i in range(period, len(data)):
+        current = (data[i] - current) * k + current
+        out[i] = current
+    return pd.Series(out, index=index)
+
+
+def _is_daily_bars(index: pd.Index) -> bool:
+    """True when consecutive bars sit ~one day apart.
+
+    The stack is the 1D leg by definition. Handed the hourly series (which the
+    1h/4h horizons train on), an "EMA220" would span nine days of intraday
+    history — a 1H feature wearing a 1D label. The median gap shrugs off
+    holidays and closed sessions, which only ever lengthen individual gaps.
+    """
+    if len(index) < 2:
+        return False
+    try:
+        stamps = pd.DatetimeIndex(index)
+    except (TypeError, ValueError):
+        return False
+    gaps = pd.Series(stamps).diff().dt.total_seconds().dropna()
+    if gaps.empty:
+        return False
+    return DAILY_BAR_MIN_SECONDS <= float(gaps.median()) <= DAILY_BAR_MAX_SECONDS
+
+
+def _stack_state(
+    close: pd.Series, fast: pd.Series, mid: pd.Series, slow: pd.Series
+) -> pd.Series:
+    """+1 strict bullish stack, -1 strict bearish mirror, 0 otherwise.
+
+    The comparisons are the strict ones from ``trend_alignment.trend_state``:
+    two equal MAs are a crossover in progress, not a trend. Warm-up rows are
+    NaN, never 0 — "not computable yet" is a different statement from
+    "computed, and neutral", and the indicator keeps that distinction too
+    (``unavailable`` is a first-class state there).
+    """
+    bullish = (close > fast) & (fast > mid) & (mid > slow)
+    bearish = (close < fast) & (fast < mid) & (mid < slow)
+    state = np.where(bullish, 1.0, np.where(bearish, -1.0, 0.0))
+    undefined = fast.isna() | mid.isna() | slow.isna() | close.isna()
+    return pd.Series(np.where(undefined, np.nan, state), index=close.index)
+
+
+def _stack_run(state: pd.Series) -> pd.Series:
+    """Signed count of consecutive bars the current stack state has held.
+
+    +5 = the bullish stack has held five bars, -3 = three bars bearish. This is
+    the "how long has it held" the trend card shows, as a number.
+
+    Neutral yields 0 whatever its duration (sign * count, as with ``streak``
+    above): the length of a non-trend is not a stronger non-trend. Left
+    uncapped, unlike ``streak``: the daily stack routinely holds for months and
+    that duration IS the signal here, while the linear models are all
+    StandardScaler pipelines and the tree models are scale-free.
+    """
+    values = state.to_numpy(dtype=float)
+    run = np.full(len(values), np.nan)
+    count = 0
+    previous = np.nan
+    for i, current in enumerate(values):
+        if np.isnan(current):
+            count, previous = 0, np.nan
+            continue
+        count = count + 1 if current == previous else 1
+        previous = current
+        run[i] = current * count
+    return pd.Series(run, index=state.index)
+
+
+def daily_trend_stack(close: pd.Series) -> dict[str, pd.Series]:
+    """1D trend-alignment columns for ``close``, or fewer when unaffordable.
+
+    Returns only what the series can honestly support: nothing at all for
+    intraday bars, the two fast distances once the 47-bar EMA48 warm-up is
+    affordable, and the EMA220 leg (plus the categorical stack) once the 219-bar
+    one is — affordable meaning under :data:`MAX_TREND_WARMUP_SHARE` of the
+    rows. Every column is strictly causal: each EMA at row t is a recursion
+    over rows <= t.
+
+    The column SET therefore depends on how much history exists, which is
+    itself point-in-time information: a walk-forward fold fitted early sees the
+    frame that was actually buildable then, exactly as it sees fewer rows.
+    """
+    if not _is_daily_bars(close.index) or len(close) < TREND_MID_MIN_BARS:
+        return {}
+    fast = ema_series(close, TREND_FAST)
+    mid = ema_series(close, TREND_MID)
+    columns = {
+        "close_vs_ema_26": close / fast - 1.0,
+        "ema26_vs_ema48": fast / mid - 1.0,
+    }
+    if len(close) < TREND_SLOW_MIN_BARS:
+        return columns
+    slow = ema_series(close, TREND_SLOW)
+    state = _stack_state(close, fast, mid, slow)
+    columns["ema48_vs_ema220"] = mid / slow - 1.0
+    columns["trend_stack_1d"] = state
+    columns["trend_stack_run"] = _stack_run(state)
+    return columns
 
 
 def daily_close(df: pd.DataFrame, symbol: str) -> pd.Series:
@@ -229,6 +382,15 @@ def compute_feature_frame(
     ema_20 = close.ewm(span=CHANNEL_PERIOD, adjust=False).mean()
     atr_20 = tr.rolling(CHANNEL_PERIOD).mean().replace(0.0, np.nan)
     df["keltner_pos_20"] = (close - ema_20) / (2.0 * atr_20)
+
+    # --- 1D trend alignment (Addendum 20) ------------------------------------
+    # The daily leg of the multi-timeframe indicator, as features: three
+    # continuous MA distances (magnitude survives, unlike a bare bullish/
+    # bearish label) plus the strict stack the indicator itself publishes and
+    # how long it has held.  Absent on intraday frames and on short histories —
+    # see daily_trend_stack for what each case can honestly support.
+    for name, values in daily_trend_stack(close).items():
+        df[name] = values
 
     # drawdown from the 90-day high (uses whatever history exists early on)
     df["drawdown_90d_pct"] = (

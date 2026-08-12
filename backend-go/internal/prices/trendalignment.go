@@ -439,6 +439,176 @@ func buildTrendEventsResponse(rows []trendEventRow, limit int) trendEventsRespon
 	return out
 }
 
+// --- track record (Addendum 22) ----------------------------------------------
+//
+// Go is a PURE READER here too, and more strictly than anywhere else in this
+// file: no moving averages, no candle synthesis, no returns arithmetic, no
+// rounding, no rate recomputed from the counts beside it. Every number below
+// was measured by prediction-python/app/models/trend_backtest.py against the
+// same closed candles the live indicator uses, and re-deriving even one of them
+// here would let the API and the evaluator disagree about the indicator's own
+// history — the one number a user would use to decide whether to trust it.
+//
+// `basis` travels with every row because the rows are NOT all the same
+// measurement: `full_mtf` is the real 1D+4H+1H alignment, `daily_only` is the
+// 1D leg alone where intraday history does not reach back far enough. The
+// handler must never drop, default or normalize that field, and `note` — the
+// row's plain-language limitation — is part of the contract for the same
+// reason. A statistic is null when it was never measured; null is passed
+// through as null, never as 0.
+
+// trendPerformanceRow is trend_alignment_performance as scanned. Every
+// statistic is a pointer because the table stores NULL for "this never
+// happened", which is a different fact from a measured zero.
+type trendPerformanceRow struct {
+	WindowDays           int
+	Basis                string
+	Samples              int
+	BullishEpisodes      int
+	BearishEpisodes      int
+	BullishBars          int
+	BearishBars          int
+	UnalignedBars        int
+	FwdReturnBullishPct  *float64
+	FwdReturnBearishPct  *float64
+	FwdReturnBaselinePct *float64
+	HitRateBullish       *float64
+	HitRateBearish       *float64
+	EvaluatedFrom        *time.Time
+	EvaluatedTo          *time.Time
+	ComputedAt           time.Time
+	Note                 string
+}
+
+// trendPerformanceItem is one window on the wire. The counts sit next to the
+// rates on purpose: a hit rate over three bars is noise, and the client can
+// only say so if it is handed the denominator in the same object.
+type trendPerformanceItem struct {
+	WindowDays           int        `json:"window_days"`
+	Basis                string     `json:"basis"`
+	Samples              int        `json:"samples"`
+	BullishEpisodes      int        `json:"bullish_episodes"`
+	BearishEpisodes      int        `json:"bearish_episodes"`
+	BullishBars          int        `json:"bullish_bars"`
+	BearishBars          int        `json:"bearish_bars"`
+	UnalignedBars        int        `json:"unaligned_bars"`
+	FwdReturnBullishPct  *float64   `json:"fwd_return_bullish_pct"`
+	FwdReturnBearishPct  *float64   `json:"fwd_return_bearish_pct"`
+	FwdReturnBaselinePct *float64   `json:"fwd_return_baseline_pct"`
+	HitRateBullish       *float64   `json:"hit_rate_bullish"`
+	HitRateBearish       *float64   `json:"hit_rate_bearish"`
+	EvaluatedFrom        *time.Time `json:"evaluated_from"`
+	EvaluatedTo          *time.Time `json:"evaluated_to"`
+	ComputedAt           time.Time  `json:"computed_at"`
+	Note                 string     `json:"note"`
+}
+
+type trendPerformanceResponse struct {
+	Symbol string                 `json:"symbol"`
+	Items  []trendPerformanceItem `json:"items"`
+	Count  int                    `json:"count"`
+}
+
+// trendPerformanceSelect reads every stored window for one symbol. The ORDER BY
+// is longest window first, which is the order the section is read in: the
+// widest, weakest-basis row first, then the narrower ones.
+const trendPerformanceSelect = `
+	SELECT window_days, basis, samples,
+	       bullish_episodes, bearish_episodes,
+	       bullish_bars, bearish_bars, unaligned_bars,
+	       fwd_return_bullish_pct, fwd_return_bearish_pct, fwd_return_baseline_pct,
+	       hit_rate_bullish, hit_rate_bearish,
+	       evaluated_from, evaluated_to, computed_at, note
+	FROM trend_alignment_performance
+	WHERE symbol = $1
+	ORDER BY window_days DESC`
+
+// sortTrendPerformanceRows applies the documented order (window_days DESC).
+// trendPerformanceSelect already returns rows this way; the comparator exists
+// so the ordering is expressible and testable without a database.
+func sortTrendPerformanceRows(rows []trendPerformanceRow) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		return rows[i].WindowDays > rows[j].WindowDays
+	})
+}
+
+// buildTrendPerformanceResponse projects the stored rows onto the contract.
+// Pure function (unit tested): it orders and copies, and computes nothing.
+func buildTrendPerformanceResponse(symbol string, rows []trendPerformanceRow) trendPerformanceResponse {
+	sortTrendPerformanceRows(rows)
+	out := trendPerformanceResponse{
+		Symbol: symbol,
+		// Never nil: a symbol whose track record has not been computed yet is a
+		// 200 with an empty list, not a 404 and not a missing key.
+		Items: make([]trendPerformanceItem, 0, len(rows)),
+	}
+	for _, r := range rows {
+		out.Items = append(out.Items, trendPerformanceItem{
+			WindowDays:           r.WindowDays,
+			Basis:                r.Basis,
+			Samples:              r.Samples,
+			BullishEpisodes:      r.BullishEpisodes,
+			BearishEpisodes:      r.BearishEpisodes,
+			BullishBars:          r.BullishBars,
+			BearishBars:          r.BearishBars,
+			UnalignedBars:        r.UnalignedBars,
+			FwdReturnBullishPct:  r.FwdReturnBullishPct,
+			FwdReturnBearishPct:  r.FwdReturnBearishPct,
+			FwdReturnBaselinePct: r.FwdReturnBaselinePct,
+			HitRateBullish:       r.HitRateBullish,
+			HitRateBearish:       r.HitRateBearish,
+			EvaluatedFrom:        utcPtr(r.EvaluatedFrom),
+			EvaluatedTo:          utcPtr(r.EvaluatedTo),
+			ComputedAt:           r.ComputedAt.UTC(),
+			Note:                 r.Note,
+		})
+	}
+	out.Count = len(out.Items)
+	return out
+}
+
+// TrendAlignmentPerformance implements
+// GET /api/v1/market/trend-alignment/performance?symbol=.
+func (h *Handler) TrendAlignmentPerformance(w http.ResponseWriter, r *http.Request) {
+	raw := r.URL.Query().Get("symbol")
+	symbol, err := ParseTrendSymbol(raw)
+	if err != nil {
+		httpserver.BadRequest(w, err.Error(), map[string]any{
+			"symbol": raw, "supported": trendAlignmentSymbols})
+		return
+	}
+
+	rows, err := h.Pool.Query(r.Context(), trendPerformanceSelect, symbol)
+	if err != nil {
+		h.Log.Error("trend_alignment_performance", "error", err, "symbol", symbol)
+		httpserver.Internal(w, "database error")
+		return
+	}
+	defer rows.Close()
+	scanned := []trendPerformanceRow{}
+	for rows.Next() {
+		var p trendPerformanceRow
+		if err := rows.Scan(&p.WindowDays, &p.Basis, &p.Samples,
+			&p.BullishEpisodes, &p.BearishEpisodes,
+			&p.BullishBars, &p.BearishBars, &p.UnalignedBars,
+			&p.FwdReturnBullishPct, &p.FwdReturnBearishPct, &p.FwdReturnBaselinePct,
+			&p.HitRateBullish, &p.HitRateBearish,
+			&p.EvaluatedFrom, &p.EvaluatedTo, &p.ComputedAt, &p.Note); err != nil {
+			h.Log.Error("trend_alignment_performance_scan", "error", err, "symbol", symbol)
+			httpserver.Internal(w, "database error")
+			return
+		}
+		scanned = append(scanned, p)
+	}
+	if err := rows.Err(); err != nil {
+		h.Log.Error("trend_alignment_performance_rows", "error", err, "symbol", symbol)
+		httpserver.Internal(w, "database error")
+		return
+	}
+
+	httpserver.JSON(w, http.StatusOK, buildTrendPerformanceResponse(symbol, scanned))
+}
+
 // TrendAlignmentEvents implements
 // GET /api/v1/market/trend-alignment/events?symbol=&limit=20.
 func (h *Handler) TrendAlignmentEvents(w http.ResponseWriter, r *http.Request) {
