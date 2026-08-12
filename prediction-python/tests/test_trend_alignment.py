@@ -162,12 +162,20 @@ def test_falling_series_reports_bearish():
 
 
 def test_ma_type_is_configurable():
-    bars = _rising(400)
+    """EMA and SMA must be genuinely different maths, not a relabelled field.
+
+    A constant-slope ramp is the one series where they coincide at steady
+    state, so the difference is probed with a curved series instead.
+    """
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    bars = _hours(400, start, price=lambda i: 100.0 + (i ** 1.7) / 500.0)
     now = bars[-1].start + timedelta(hours=1)
     e = evaluate_timeframe("1h", bars, now, TrendConfig(ma_type="ema"))
     s = evaluate_timeframe("1h", bars, now, TrendConfig(ma_type="sma"))
     assert e.ma_type == "ema" and s.ma_type == "sma"
-    assert e.ma220 != s.ma220  # genuinely different maths, not a relabel
+    assert e.ma220 != s.ma220
+    # On an accelerating series the EMA tracks the recent end more closely.
+    assert e.ma220 > s.ma220
 
 
 def test_invalid_periods_are_rejected():
@@ -192,9 +200,12 @@ def test_evaluate_computes_three_independent_timeframes():
     assert set(res.timeframes) == {"1d", "4h", "1h"}
     # 4H is resampled from hourly, so it has ~1/4 the candles.
     assert res.timeframes["4h"].history_points < res.timeframes["1h"].history_points
-    # Each timeframe carries its own closed-candle identity.
+    # Identity covers all three timeframes. The values may coincide when a
+    # boundary is shared (an hour close at 00:00 is also a 4H close), so the
+    # contract is completeness, not distinctness.
     ident = res.candle_identity()
-    assert ident["1h"] != ident["4h"] != ident["1d"]
+    assert set(ident) == {"1d", "4h", "1h"}
+    assert all(v is not None for v in ident.values())
 
 
 def test_candle_identity_is_stable_for_the_same_closed_candles():
