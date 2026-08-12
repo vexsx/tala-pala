@@ -70,6 +70,14 @@ export interface TradingChartProps {
 /** How close to the left edge a pan has to get before older history is fetched. */
 const LOAD_OLDER_BARS = 20
 
+/**
+ * lightweight-charts TickMarkType: Year=0, Month=1, DayOfMonth=2, Time=3,
+ * TimeWithSeconds=4. Anything at or above Time is a within-day tick; below it
+ * is a calendar boundary that must render as a DATE. Kept as a local constant
+ * rather than importing the enum so the test file's module mock stays minimal.
+ */
+const TICK_MARK_TIME = 3
+
 interface Palette {
   text: string
   border: string
@@ -401,9 +409,16 @@ export function TradingChart({
       },
       timeScale: {
         timeVisible: isIntraday(interval),
-        tickMarkFormatter: (t: unknown) => {
+        // lightweight-charts asks for two KINDS of tick on an intraday axis:
+        // day/month/year boundaries and times within a day. Formatting both as
+        // a clock time made every boundary on a 15m chart read "03:30" — the
+        // Tehran rendering of UTC midnight — so five day-separators were
+        // indistinguishable and the axis carried no date at all. The tick type
+        // is the second argument; honour it.
+        tickMarkFormatter: (t: unknown, tickMarkType: unknown) => {
           const d = new Date(Number(t) * 1000)
-          return isIntraday(interval) ? formatTime(d) : shortDate(d, calendar)
+          const isTimeTick = Number(tickMarkType) >= TICK_MARK_TIME
+          return isIntraday(interval) && isTimeTick ? formatTime(d) : shortDate(d, calendar)
         }
       }
     })

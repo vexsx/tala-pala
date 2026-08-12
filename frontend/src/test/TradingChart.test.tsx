@@ -15,6 +15,7 @@ const lw = vi.hoisted(() => ({
   rangeHandlers: [] as Array<(r: { from: number; to: number } | null) => void>,
   crosshairHandlers: [] as Array<(p: { time?: number; point?: { x: number; y: number } }) => void>,
   visibleRangeCalls: [] as Array<{ from: number; to: number }>,
+  chartOptions: [] as Array<Record<string, any>>,
   reset() {
     lw.createChartCalls = 0
     lw.removeCalls = 0
@@ -23,6 +24,7 @@ const lw = vi.hoisted(() => ({
     lw.rangeHandlers = []
     lw.crosshairHandlers = []
     lw.visibleRangeCalls = []
+    lw.chartOptions = []
   }
 }))
 
@@ -56,7 +58,7 @@ vi.mock('lightweight-charts', () => {
   const chart = {
     addSeries: () => series,
     removeSeries: vi.fn(),
-    applyOptions: vi.fn(),
+    applyOptions: (o: Record<string, any>) => lw.chartOptions.push(o),
     remove: () => {
       lw.removeCalls++
     },
@@ -207,6 +209,20 @@ describe('TradingChart lifecycle', () => {
 
     expect(lw.createChartCalls).toBe(1)
     expect(lw.removeCalls).toBe(0)
+  })
+
+  it('labels an intraday day-boundary with a DATE, not a clock time', () => {
+    // Found in the real browser: every tick on a 15m chart read "03:30",
+    // because the formatter ignored the tick TYPE and Tehran renders UTC
+    // midnight as 03:30. Five day separators were indistinguishable and the
+    // axis carried no date at all.
+    render(<TradingChart {...chartProps()} interval="15m" />)
+    const opts = lw.chartOptions.filter((o) => o?.timeScale?.tickMarkFormatter).pop()
+    const fmt = opts!.timeScale.tickMarkFormatter as (t: number, k: number) => string
+    const midnightUtc = Date.UTC(2026, 7, 12) / 1000
+    // TickMarkType: 2 = DayOfMonth (a calendar boundary), 3 = Time.
+    expect(fmt(midnightUtc, 2)).not.toMatch(/^\d{1,2}:\d{2}$/)
+    expect(fmt(midnightUtc, 3)).toMatch(/^\d{1,2}:\d{2}$/)
   })
 
   it('patches the tail with update() instead of replacing the series', () => {
