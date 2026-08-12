@@ -118,6 +118,16 @@ func New(cfg *config.Config, rdb *redis.Client, client *internalclient.Client,
 			_, err := client.NewsCollect(ctx)
 			return err
 		}},
+		// Multi-timeframe trend alignment: a technical indicator, evaluated on
+		// its own schedule and written to its own tables. It is deliberately
+		// NOT folded into predict — nothing it produces may reach model input,
+		// intervals or the buy/sell policy, and a failure here must leave the
+		// forecast untouched. Hourly (see the cron default): the 1H leg only
+		// moves when an hourly candle closes.
+		{"trend-alignment", cfg.Crons.TrendAlignment, internalclient.TrendAlignmentTimeout, func(ctx context.Context) error {
+			_, err := client.TrendAlignment(ctx)
+			return err
+		}},
 	}
 
 	for _, j := range jobs {

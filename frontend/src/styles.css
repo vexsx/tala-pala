@@ -1581,3 +1581,160 @@ input[type='checkbox'] {
   margin-top: 0.6rem;
   line-height: 1.55;
 }
+
+/* ---------- Trend alignment (1D / 4H / 1H) ----------
+   Display-only technical indicator. Colour is a reinforcement here, never the
+   message: every state also ships a glyph and a word from TrendAlignment.tsx,
+   so the card survives greyscale, colour blindness and a screen reader. */
+
+.trend-head-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.trend-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trend-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.trend-tf {
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.trend-state {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.trend-glyph {
+  font-size: 11px;
+}
+
+.trend-bullish {
+  color: var(--pos);
+}
+
+.trend-bearish {
+  color: var(--neg);
+}
+
+.trend-neutral,
+.trend-unavailable {
+  color: var(--muted);
+}
+
+.trend-verdict {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--bg-2);
+}
+
+.trend-verdict-label {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.trend-align-full_bullish {
+  border-left-color: var(--pos);
+}
+
+.trend-align-full_bullish .trend-verdict-label {
+  color: var(--pos);
+}
+
+.trend-align-full_bearish {
+  border-left-color: var(--neg);
+}
+
+.trend-align-full_bearish .trend-verdict-label {
+  color: var(--neg);
+}
+
+.trend-align-not_aligned {
+  border-left-color: var(--muted);
+}
+
+.trend-align-not_aligned .trend-verdict-label {
+  color: var(--muted);
+}
+
+.trend-previous {
+  margin-left: auto;
+}
+
+.trend-note {
+  margin-top: 10px;
+  line-height: 1.55;
+}
+
+/* Failure keeps the card frame — a vanished card would read as "no trend". */
+.trend-error {
+  padding: 0.5rem 0;
+}
+
+.trend-state-title {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--warn, var(--muted));
+  margin-bottom: 0.4rem;
+}
+
+.trend-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.trend-skeleton-bar {
+  height: 28px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  animation: trend-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes trend-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+@media (max-width: 640px) {
+  .trend-previous {
+    margin-left: 0;
+  }
+}

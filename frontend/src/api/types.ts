@@ -683,3 +683,63 @@ export interface NewsFeedResponse {
   newest_available_at: string | null
   as_of: string
 }
+
+// ---------- Trend alignment (1D / 4H / 1H moving-average read) ----------
+
+/** How one timeframe reads: price against its three moving averages. */
+export type TrendState = 'bullish' | 'bearish' | 'neutral' | 'unavailable'
+
+/** Whether all three timeframes agree. */
+export type TrendAlignmentState = 'full_bullish' | 'full_bearish' | 'not_aligned'
+
+export type TrendMaType = 'ema' | 'sma'
+
+/** The timeframes the engine evaluates, slowest first. */
+export type TrendTimeframeKey = '1d' | '4h' | '1h'
+
+/** Symbols the endpoint accepts — anything else is a 400. */
+export type TrendSymbol = 'IR_GOLD_18K' | 'XAUUSD'
+
+/**
+ * One timeframe row — mirrors TimeframeResult.as_dict() in
+ * prediction-python/app/models/trend_alignment.py. Every moving average here is
+ * computed server-side; the UI only ever displays what this carries.
+ */
+export interface TrendTimeframe {
+  timeframe: string
+  trend: TrendState
+  price: number | null
+  ma26: number | null
+  ma48: number | null
+  ma220: number | null
+  candle_open_time: string | null
+  candle_close_time: string | null
+  /** The candle these numbers were read from is closed, not still forming. */
+  confirmed: boolean
+  data_fresh: boolean
+  ma_type: TrendMaType
+  history_points: number
+  /** Why a timeframe is unavailable; '' when it read cleanly. */
+  reason: string
+}
+
+/**
+ * GET /market/trend-alignment?symbol=… — a read-only technical indicator.
+ * It feeds no model input, model selection, confidence, interval or buy/sell
+ * decision; it is situational awareness only.
+ */
+export interface TrendAlignmentResponse {
+  symbol: string
+  alignment: TrendAlignmentState
+  previous_alignment: TrendAlignmentState | null
+  timeframes: Partial<Record<TrendTimeframeKey, TrendTimeframe>>
+  ma_type: TrendMaType
+  /** Moving-average periods the server used — the UI labels columns from these. */
+  periods: { fast: number; mid: number; slow: number }
+  data_fresh: boolean
+  calculated_at: string | null
+  last_transition_at: string | null
+  last_alert_at: string | null
+  /** 'never_evaluated' when the symbol has no stored state yet. */
+  note?: string | null
+}

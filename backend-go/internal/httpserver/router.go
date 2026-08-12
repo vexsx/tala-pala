@@ -30,6 +30,8 @@ type PriceHandlers interface {
 	ProviderGap(http.ResponseWriter, *http.Request)
 	Candles(http.ResponseWriter, *http.Request)
 	Funds(http.ResponseWriter, *http.Request)
+	TrendAlignment(http.ResponseWriter, *http.Request)
+	TrendAlignmentEvents(http.ResponseWriter, *http.Request)
 }
 
 type PredictionHandlers interface {
@@ -155,6 +157,11 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			r.Get("/api/v1/market/provider-gap", d.Prices.ProviderGap)
 			r.Get("/api/v1/market/candles", d.Prices.Candles)
 			r.Get("/api/v1/market/funds", d.Prices.Funds)
+			// Read-only view of the multi-timeframe trend state Python
+			// persisted. The static /events path is registered separately (chi
+			// has no pattern to shadow here) and both are plain reads.
+			r.Get("/api/v1/market/trend-alignment", d.Prices.TrendAlignment)
+			r.Get("/api/v1/market/trend-alignment/events", d.Prices.TrendAlignmentEvents)
 
 			r.Get("/api/v1/predictions", d.Predictions.Latest)
 			// static route wins over the {horizon} pattern in chi

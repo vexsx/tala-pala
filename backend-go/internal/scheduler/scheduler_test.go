@@ -172,15 +172,17 @@ func TestNewsJobIsRegisteredSeparatelyWithItsOwnTimeout(t *testing.T) {
 	cfg.Crons.Alerts = "*/5 * * * *"
 	cfg.Crons.Cleanup = "0 4 * * *"
 	cfg.Crons.News = "*/15 * * * *"
+	cfg.Crons.TrendAlignment = "7 * * * *"
 
 	s, err := New(cfg, nil, nil, nil, obs.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// One entry per job: collect, predict, signals, evaluate, train, alerts,
-	// cleanup, news.
-	if got := len(s.cron.Entries()); got != 8 {
-		t.Fatalf("registered %d cron entries, want 8 (news missing?)", got)
+	// cleanup, news, trend-alignment. A dropped job silently stops the work it
+	// does, so the count is asserted rather than assumed.
+	if got := len(s.cron.Entries()); got != 9 {
+		t.Fatalf("registered %d cron entries, want 9 (a job was dropped?)", got)
 	}
 	if internalclient.NewsTimeout <= 0 {
 		t.Fatal("news job must declare a positive timeout")

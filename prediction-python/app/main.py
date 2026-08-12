@@ -66,6 +66,12 @@ class NewsCollectRequest(BaseModel):
     dry_run: bool = False
 
 
+class TrendAlignmentRequest(BaseModel):
+    """Optional narrowing of a trend-alignment pass (empty = every symbol)."""
+
+    symbols: list[str] = Field(default_factory=list)
+
+
 class BacktestRequest(BaseModel):
     horizon: str = "1d"
     fee_pct: float = 0.5
@@ -220,6 +226,21 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
             settings,
             sources=(req.sources or None) if req else None,
             dry_run=bool(req.dry_run) if req else False,
+        )
+
+    @app.post("/internal/trend-alignment/evaluate")
+    def trend_alignment_evaluate(req: Optional[TrendAlignmentRequest] = None) -> dict:
+        """Evaluate 1D/4H/1H trend alignment and record entries (Addendum 20).
+
+        A technical indicator only: it reads price history and writes its own
+        state/event tables, never model input, confidence, intervals or the
+        buy/sell policy. Safe to call repeatedly — an unchanged closed-candle
+        set produces no new event.
+        """
+        from .jobs.trend_alignment import run_trend_alignment
+
+        return run_trend_alignment(
+            engine, settings, symbols=(req.symbols or None) if req else None
         )
 
     @app.get("/internal/data/coverage")

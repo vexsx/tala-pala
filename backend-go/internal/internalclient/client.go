@@ -36,7 +36,13 @@ const (
 	// News collection walks several sources; GDELT alone spaces its requests
 	// >=5s apart and retries inside that budget.
 	NewsTimeout = 5 * time.Minute
-	DefaultTimeout = 60 * time.Second
+	// Trend alignment reads a long hourly/daily candle history per symbol (the
+	// 220-period MA needs it) and folds it into three moving averages. That is
+	// arithmetic, not model fitting, so it is far quicker than a train — but it
+	// walks more rows than a normal request, hence its own budget rather than
+	// the 60s default.
+	TrendAlignmentTimeout = 3 * time.Minute
+	DefaultTimeout        = 60 * time.Second
 )
 
 // Client talks to the prediction-service internal API.
@@ -235,4 +241,13 @@ func (c *Client) Cleanup(ctx context.Context) (json.RawMessage, error) {
 // budget — hence its own timeout rather than DefaultTimeout.
 func (c *Client) NewsCollect(ctx context.Context) (json.RawMessage, error) {
 	return c.Post(ctx, "/internal/news/collect", nil, NewsTimeout)
+}
+
+// TrendAlignment re-evaluates the multi-timeframe trend state for every covered
+// symbol and persists it (states + idempotent transition events). It is a
+// technical indicator: the call writes trend_alignment_* and nothing else, so
+// no model input, no interval and no buy/sell decision can depend on whether
+// this succeeded.
+func (c *Client) TrendAlignment(ctx context.Context) (json.RawMessage, error) {
+	return c.Post(ctx, "/internal/trend-alignment/evaluate", nil, TrendAlignmentTimeout)
 }

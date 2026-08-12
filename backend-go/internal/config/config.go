@@ -13,14 +13,15 @@ import (
 
 // CronConfig holds the cron specs (standard 5-field, UTC) for scheduler jobs.
 type CronConfig struct {
-	Collect  string
-	Predict  string
-	Signals  string
-	Evaluate string
-	Train    string
-	Alerts   string
-	Cleanup  string
-	News     string
+	Collect        string
+	Predict        string
+	Signals        string
+	Evaluate       string
+	Train          string
+	Alerts         string
+	Cleanup        string
+	News           string
+	TrendAlignment string
 }
 
 // Config is the fully-parsed application configuration.
@@ -163,7 +164,13 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 			// Quarter-hourly is well inside every approved source's courtesy
 			// interval; the Python side additionally refuses to poll a source
 			// before its own min_interval_seconds has elapsed.
-			News:     get("SCHEDULE_NEWS_CRON", "*/15 * * * *"),
+			News: get("SCHEDULE_NEWS_CRON", "*/15 * * * *"),
+			// Hourly at :07, deliberately offset from the collect (*/10) and
+			// predict (:05) minutes so the hour's fresh candle has landed
+			// before the trend is judged. Not more often than hourly: the
+			// 1H leg only changes when an hourly candle CLOSES, so a
+			// minutely run would re-read the same closed candles all hour.
+			TrendAlignment: get("SCHEDULE_TREND_ALIGNMENT_CRON", "7 * * * *"),
 		},
 	}
 

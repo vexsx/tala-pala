@@ -252,6 +252,71 @@ app_issues = Table(
     Column("created_at", _TS, nullable=False, server_default=func.now()),
 )
 
+# --- tables mirroring database/migrations/0019_trend_alignment.up.sql -------
+
+# Multi-timeframe trend alignment (Addendum 20).  A technical indicator only:
+# nothing here feeds model input, model selection, confidence, intervals or the
+# buy/sell policy.  ``trend_alignment_states`` is the current per-symbol
+# conclusion; ``trend_alignment_events`` is the append-only log of ENTRIES into
+# a full alignment.
+trend_alignment_states = Table(
+    "trend_alignment_states",
+    metadata,
+    Column("symbol", Text, primary_key=True),
+    Column("alignment", Text, nullable=False),
+    Column("previous_alignment", Text),
+    Column("timeframes", JSON, nullable=False, default=dict),
+    Column("ma_type", Text, nullable=False, server_default="ema"),
+    Column("fast_period", Integer, nullable=False, server_default=text("26")),
+    Column("mid_period", Integer, nullable=False, server_default=text("48")),
+    Column("slow_period", Integer, nullable=False, server_default=text("220")),
+    Column("data_fresh", Boolean, nullable=False, server_default=text("FALSE")),
+    Column("latest_1h_candle_close", _TS),
+    Column("latest_4h_candle_close", _TS),
+    Column("latest_1d_candle_close", _TS),
+    Column("last_bullish_alert_at", _TS),
+    Column("last_bearish_alert_at", _TS),
+    Column("state_version", Integer, nullable=False, server_default=text("1")),
+    Column("calculated_at", _TS, nullable=False, server_default=func.now()),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("alignment IN ('full_bullish', 'full_bearish', 'not_aligned')"),
+    CheckConstraint(
+        "previous_alignment IS NULL OR previous_alignment IN "
+        "('full_bullish', 'full_bearish', 'not_aligned')"
+    ),
+)
+
+trend_alignment_events = Table(
+    "trend_alignment_events",
+    metadata,
+    _big_pk(),
+    Column("symbol", Text, nullable=False),
+    Column("alignment", Text, nullable=False),
+    Column("previous_alignment", Text),
+    Column("occurred_at", _TS, nullable=False, server_default=func.now()),
+    Column("latest_1h_candle_close", _TS, nullable=False),
+    Column("latest_4h_candle_close", _TS, nullable=False),
+    Column("latest_1d_candle_close", _TS, nullable=False),
+    Column("timeframes", JSON, nullable=False, default=dict),
+    Column("ma_type", Text, nullable=False, server_default="ema"),
+    Column("alert_event_id", BigInteger().with_variant(Integer, "sqlite")),
+    Column("created_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("alignment IN ('full_bullish', 'full_bearish')"),
+    # Mirrored by name because it is inferred as the ON CONFLICT target: the
+    # duplicate guard is the database's, not the evaluator's (a restart must
+    # not re-fire an alert the user already saw).
+    Index(
+        "uq_trend_alignment_event_identity",
+        "symbol",
+        "alignment",
+        "latest_1d_candle_close",
+        "latest_4h_candle_close",
+        "latest_1h_candle_close",
+        unique=True,
+    ),
+    Index("idx_trend_alignment_events_symbol_time", "symbol", "occurred_at"),
+)
+
 # --- helpers ----------------------------------------------------------------
 
 

@@ -27,6 +27,7 @@ import ProviderStatus from '../components/ProviderStatus'
 import ProviderGapCard from '../components/ProviderGapCard'
 import GoldFundsPanel from '../components/GoldFundsPanel'
 import OsintStream from '../components/OsintStream'
+import { TrendAlignmentCard } from '../components/TrendAlignment'
 import ShortTermDesk from '../components/ShortTermDesk'
 import AdvisorPanel from '../components/AdvisorCard'
 import ActionPlannerPanel from '../components/ActionPlanner'
@@ -252,6 +253,7 @@ export default function Overview() {
       </div>
 
       <div className="grid grid-wide">
+        <TrendAlignmentCard />
         <div className="card">
           <div className="card-title">Gold funds — Tehran exchange (Ayar &amp; peers)</div>
           <GoldFundsPanel state={funds} />

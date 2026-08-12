@@ -125,6 +125,46 @@ class Settings:
     provider_backoff_base: float = field(
         default_factory=lambda: float(_env("PROVIDER_BACKOFF_BASE", "0.75"))
     )
+    # Multi-timeframe trend alignment (Addendum 20). A TECHNICAL INDICATOR
+    # ONLY: these periods never reach model input, model selection, confidence,
+    # intervals or the buy/sell policy — they only decide when the 1D/4H/1H
+    # stacks are called aligned. On by default because it reads existing price
+    # history and writes only its own two tables.
+    trend_alignment_enabled: bool = field(
+        default_factory=lambda: _env("TREND_ALIGNMENT_ENABLED", "true").lower() == "true")
+    trend_alignment_ma_type: str = field(
+        default_factory=lambda: _env("TREND_ALIGNMENT_MA_TYPE", "ema").strip().lower())
+    trend_alignment_fast_period: int = field(
+        default_factory=lambda: int(_env("TREND_ALIGNMENT_FAST_PERIOD", "26")))
+    trend_alignment_mid_period: int = field(
+        default_factory=lambda: int(_env("TREND_ALIGNMENT_MID_PERIOD", "48")))
+    trend_alignment_slow_period: int = field(
+        default_factory=lambda: int(_env("TREND_ALIGNMENT_SLOW_PERIOD", "220")))
+
+    def __post_init__(self) -> None:
+        """Reject a trend-alignment configuration that cannot mean anything.
+
+        ``fast < mid < slow`` is not a preference, it is what makes the stack
+        test a trend test: with the periods swapped, ``price > ma26 > ma48 >
+        ma220`` would be comparing a slow average against a fast one and the
+        resulting "alignment" would be noise wearing the label of a signal.
+        Failing here (process start) rather than at the first evaluation means
+        a typo in the environment is visible immediately instead of turning
+        into a silently wrong indicator hours later.
+
+        The rule itself lives in :meth:`TrendConfig.validate` so the job, the
+        engine and this validation can never drift apart; the import is local
+        to keep ``config`` free of module-level dependencies on ``app``.
+        """
+        from .models.trend_alignment import TrendConfig
+
+        TrendConfig(
+            enabled=self.trend_alignment_enabled,
+            ma_type=self.trend_alignment_ma_type,  # type: ignore[arg-type]
+            fast=self.trend_alignment_fast_period,
+            mid=self.trend_alignment_mid_period,
+            slow=self.trend_alignment_slow_period,
+        ).validate()
 
 
 def get_settings() -> Settings:

@@ -18,6 +18,7 @@ import type { IndicatorPoint, IndicatorsResponse } from '../api/types'
 import { useSettings } from '../lib/settings'
 import { formatCompact, formatCompactToman, formatGrouped, formatToman, shortDate } from '../lib/format'
 import { ChartTip } from '../components/PriceChart'
+import { TrendAlignmentTable } from '../components/TrendAlignment'
 import Loading from '../components/Loading'
 import ErrorMessage from '../components/ErrorMessage'
 import EmptyState from '../components/EmptyState'
@@ -257,6 +258,8 @@ export default function Technical() {
   return (
     <div className="page-body">
       <h2 className="page-title">Technical analysis</h2>
+
+      <TrendAlignmentTable />
 
       <div className="card">
         <div className="row space-between">
