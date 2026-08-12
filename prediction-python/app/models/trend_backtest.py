@@ -424,10 +424,22 @@ def _note(
     config: TrendConfig,
     bars: Sequence[ReplayBar],
     samples: int,
+    daily_warmup: int,
 ) -> str:
     """The per-row limitation, in the words a reader needs, not a code."""
     ma = f"{config.ma_type.upper()} {config.fast}/{config.mid}/{config.slow}"
     parts = [f"{_BASIS_LABEL[choice.basis]} ({ma}); chosen because {choice.reason}."]
+    warm = warmup_candles(config)
+    if daily_warmup < warm:
+        # The fallback basis can itself be short of history. Saying so here is
+        # the difference between "the indicator was never directional" and "the
+        # indicator could not be computed", which look identical in the counts.
+        parts.append(
+            f"The daily leg had only {daily_warmup} of the {warm} candles it "
+            f"needs to warm up the {config.ma_type.upper()}{config.slow} at the "
+            "start of this window, so its earliest bars could not be evaluated "
+            "at all and are counted as unaligned."
+        )
     if not bars:
         parts.append(
             "No bar in this window could be replayed, so there is no track "
@@ -519,7 +531,13 @@ def measure_window(
         fwd_return_baseline_pct=_mean([float(b.forward_return_pct) for b in measured]),
         hit_rate_bullish=_hit_rate(by_state["bullish"], bullish=True),
         hit_rate_bearish=_hit_rate(by_state["bearish"], bullish=False),
-        note=_note(choice, config, bars, len(measured)),
+        note=_note(
+            choice,
+            config,
+            bars,
+            len(measured),
+            len(completed(daily, TIMEFRAME_SECONDS["1d"], window_start)),
+        ),
         replayed_bars=len(bars),
     )
 
