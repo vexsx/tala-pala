@@ -8,7 +8,9 @@
 
 ## Iranian gold & FX
 
-### TGJU (primary) — unofficial JSON endpoints
+### TGJU (**disabled since 2026-08-13**) — unofficial JSON endpoints
+> `call2`/`call3`/`call4.tgju.org` have answered scripted clients with "access denied" since 2026-08-02; 2047 consecutive failures, no success in between. Migration 0023 sets `enabled = FALSE` (same treatment as Stooq in 0005) so the roster stops advertising a source that is gone. The adapter and its history are kept; re-enable with `UPDATE data_providers SET enabled = TRUE WHERE code = 'tgju';` if public access returns. Coverage moved on years ago: 18k → Hamrah Gold then Milli Gold, USD → BitMax, XAU → Yahoo, Emami coin → alanchand/BrsApi/pricedb.
+
 - **Live snapshot**: `https://call2.tgju.org/ajax.json` (fallbacks: `call3`, `call4`). One request returns ~830 indicators under `current`, each `{p, h, l, d, dp, dt, ts}` with comma-formatted **rial** strings. Symbols used: `geram18` (18k gram), `geram24`, `ons` (global ounce, USD), `price_dollar_rl` (free-market USD), `sekee` (Emami coin), `mesghal`.
 - **Daily history**: `https://api.tgju.org/v1/market/indicator/summary-table-data/geram18` — DataTables JSON, rows `[open, low, high, close, change(HTML), change%(HTML), gregorian_date, jalali_date]`, ~3,458 records (full history). Used by the seeding script; change fields require HTML-tag stripping.
 - **Unit**: **RIAL** — triple-confirmed (page labels "ریال"; parity arithmetic closes in rials within +0.26% of theoretical on the access date; alanchand's IRR figure matches). Our adapter divides by 10 → toman and keeps the raw rial value.
@@ -35,8 +37,8 @@ API mode: `https://api.alanchand.com?type=gold&symbols=18ayar,...` — Bearer to
 
 | Source | Use | Notes |
 |---|---|---|
-| TGJU `ons` | **Primary XAU/USD** | Same feed as Iranian data → timestamps coherent for premium math |
-| Yahoo Finance chart API (`GC=F`, `SI=F`, `BZ=F`, `DX-Y.NYB`, `^TNX`) | Secondary global (gold futures proxy, silver, Brent, DXY, US10Y) | Unofficial, personal-use scale only; ToS forbid redistribution. `^TNX` quotes yield×10 — normalized ÷10 |
+| TGJU `ons` | ~~Primary XAU/USD~~ — **gone** | Live sources took precedence in 2026-07 (its ticker lagged the market by 30–60 min); the provider is disabled outright since 2026-08-13 |
+| Yahoo Finance chart API (`GC=F`, `SI=F`, `BZ=F`, `DX-Y.NYB`, `^TNX`) | Secondary global (gold futures proxy, silver, Brent, DXY, US10Y) | Unofficial, personal-use scale only; ToS forbid redistribution. `^TNX` is served under **two** conventions and Yahoo switches between them in **both** directions — the plain yield (`4.697` = 4.697%) up to 2026-08-11, the CBOE index (yield×10, `46.82` = 4.682%) from 2026-08-11, and the plain yield again by 2026-08-13 (`regularMarketPrice` 4.627, fetched live). So the convention is read off the quote against the 25% plausibility ceiling and never assumed, and a *history* payload is settled once for the whole series from its maximum rather than bar by bar; see Addendum 25 |
 | metals.dev / goldapi.io / metalpriceapi.com | Optional keyed cross-check | Free tiers ~100–500 req/mo; enabled via API keys |
 | Stooq CSV | Historical backfill fallback | Now behind a JS anti-bot challenge for live scraping (verified); adapter kept for when CSV access works, never bypassed |
 | FRED | **Not usable for gold** | LBMA gold series removed 2022-01-31 |

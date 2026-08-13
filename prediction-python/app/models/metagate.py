@@ -29,6 +29,10 @@ log = logging.getLogger(__name__)
 META_GATE_KEY = "meta_gate"
 MIN_SAMPLES = 40          # matured, non-flat predictions before the gate exists
 MAX_SAMPLES = 500         # most recent examples used for the refit
+# lbfgs budget, and the number the convergence check reads back: sklearn emits
+# its ConvergenceWarning exactly when n_iter_ reaches this, so the two must be
+# the same constant or the check silently stops matching the warning.
+MAX_ITER = 1000
 REGIMES = ("trending_up", "trending_down", "ranging", "high_volatility")
 HORIZON_DAYS = {"1h": 1 / 24, "4h": 4 / 24, "eod": 1.0, "1d": 1.0,
                 "3d": 3.0, "7d": 7.0, "30d": 30.0}
@@ -295,6 +299,85 @@ def _row_features(
     return feats
 
 
+# --- the fitted design has to have full column rank --------------------------
+# ``FEATURE_NAMES`` is a good vector to PUBLISH and a bad matrix to FIT. Two
+# things in it are structurally degenerate, in every refit, by construction:
+#
+# * the four ``regime_*`` columns are a COMPLETE one-hot with no reference
+#   level. Whenever every training row carries a regime in :data:`REGIMES` they
+#   sum to 1, so after standardization ``sum_j std_j * z_ij == 0`` for every row
+#   i — the classic dummy-variable trap against the intercept sklearn fits
+#   separately. Measured on a 500-row production-shaped fit: the augmented
+#   design (10 features + intercept) has rank 10 of 11, sigma_max 34.6 vs
+#   sigma_min 6.7e-15, i.e. singular to machine precision.
+# * ``data_fresh`` is TRUE on essentially every row (a stale-input prediction is
+#   rare), and ``is_global`` is constant whenever only one instrument has
+#   matured rows in the window. :func:`fit_meta_gate` floors their std to 1.0,
+#   which turns them into columns of exact zeros — no information, but still a
+#   parameter, and another direction the log-likelihood is flat in. With both,
+#   the measured rank falls to 9 of 11.
+#
+# A flat direction is not fatal to the OPTIMUM — the L2 prior is what makes it
+# unique — but it is what the optimizer's conditioning is left standing on: the
+# curvature there comes only from the penalty while every informative direction
+# carries ~n times more, and lbfgs's stopping rule is an ABSOLUTE gradient bound
+# (``gtol = tol = 1e-4``) on a gradient whose informative components scale with
+# n. That is the shape of a fit that runs out of iterations, and raising
+# max_iter does not address it: across every configuration measured here a fit
+# that converges does so in under 30 iterations, so one that needs more than a
+# thousand is stuck, not slow.
+#
+# Stated honestly: the singular design is measured, the production STALL is not
+# reproduced here — it needs the pinned scikit-learn (1.5.2, requirements.txt),
+# and no interpreter on the dev machine can install it. What is reproduced is
+# that separation is not the explanation (complete separation on this same
+# design converges in 10-16 iterations, quasi-separation on a rare indicator
+# level in 17) and that iterations are not the explanation either (raising the
+# limit to 100_000 changes n_iter_ by zero). The degenerate design is the one
+# candidate cause that is present in every refit, and it is a defect whether or
+# not it is the whole of that warning.
+#
+# So the fit runs on an independent SUBSET of the columns and the coefficients
+# are scattered back into a full-length vector, zero in the dropped slots. That
+# keeps the stored gate's shape, ``score_meta_gate``'s dot product and every
+# applicability check (which read mean/std/n, not coef) exactly as they were: a
+# dropped column was constant or redundant in training, and its own contribution
+# to the logit is zero either way.
+_RANK_TOL = 1e-8
+
+
+def _independent_columns(Xs: np.ndarray) -> list[int]:
+    """Column indices that add rank to ``[1 | Xs]``, scanned left to right.
+
+    Modified Gram-Schmidt against a basis seeded with the intercept, because
+    the intercept is a fitted (and unpenalized) parameter: a complete one-hot
+    is redundant *against it*, not against the other features alone.
+
+    Left-to-right and greedy on purpose. The choice must be a function of the
+    feature ORDER, not of the data, or successive refits would drop different
+    members of the same collinear group and the stored coefficients would jump
+    between hours without the model having learned anything.
+    """
+    n_rows = Xs.shape[0]
+    basis = [np.full(n_rows, 1.0 / np.sqrt(n_rows))]
+    keep: list[int] = []
+    for j in range(Xs.shape[1]):
+        col = np.asarray(Xs[:, j], dtype=float)
+        norm = float(np.linalg.norm(col))
+        if norm <= 0.0:
+            continue  # constant in training: standardized to exact zeros
+        resid = col.copy()
+        for _ in range(2):  # twice-is-enough re-orthogonalization
+            for vec in basis:
+                resid -= float(resid @ vec) * vec
+        length = float(np.linalg.norm(resid))
+        if length <= _RANK_TOL * norm:
+            continue  # a linear combination of the intercept and kept columns
+        basis.append(resid / length)
+        keep.append(j)
+    return keep
+
+
 def _recover_base(point: float, expected_change_pct: float) -> Optional[float]:
     if expected_change_pct <= -100:
         return None
@@ -369,13 +452,41 @@ def fit_meta_gate(engine: Engine) -> Optional[dict]:
     # and divide-by-zero at apply time
     std[std < 1e-6] = 1.0
     Xs = (Xa - mean) / std
-    clf = LogisticRegression(C=1.0, max_iter=1000)
-    clf.fit(Xs, np.asarray(y))
+
+    keep = _independent_columns(Xs)
+    if not keep:
+        # Every column constant: no fit to be had (and nothing to score with).
+        log.warning("meta_gate refit skipped: all %d features were constant "
+                    "across %d training rows", len(FEATURE_NAMES), len(y))
+        return None
+    clf = LogisticRegression(C=1.0, max_iter=MAX_ITER)
+    clf.fit(Xs[:, keep], np.asarray(y))
+
+    # Refuse to SHIP a non-converged fit. sklearn only warns, and a warning
+    # leaves half-optimized coefficients in app_settings — which the prediction
+    # pass then blends 50/50 into user-visible confidence. Returning None keeps
+    # whatever gate is already stored (jobs/evaluate.py upserts only a truthy
+    # result), so the published self-assessment stays one the optimizer
+    # actually finished, and the reason is in the Issues tab rather than in a
+    # library warning nobody reads.
+    iterations = int(np.max(clf.n_iter_))
+    if iterations >= MAX_ITER:
+        log.warning(
+            "meta_gate refit did not converge (%d lbfgs iterations at the "
+            "%d limit) on %d rows, %d of %d columns independent; keeping the "
+            "previously stored gate",
+            iterations, MAX_ITER, len(y), len(keep), len(FEATURE_NAMES),
+        )
+        return None
+
+    # Scatter back: a dropped column contributes exactly zero to the logit.
+    coef = np.zeros(len(FEATURE_NAMES), dtype=float)
+    coef[keep] = clf.coef_[0]
     return {
         "feature_names": list(FEATURE_NAMES),
         "mean": [round(float(v), 8) for v in mean],
         "std": [round(float(v), 8) for v in std],
-        "coef": [round(float(v), 8) for v in clf.coef_[0]],
+        "coef": [round(float(v), 8) for v in coef],
         "intercept": round(float(clf.intercept_[0]), 8),
         "n": int(len(y)),
         "base_rate": round(float(np.mean(y)), 4),

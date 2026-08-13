@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 import respx
-from sqlalchemy import insert, select
+from sqlalchemy import func, insert, select
 
 from app.core import validation
-from app.db import data_providers, prices, raw_observations, utcnow
+from app.db import app_settings, data_providers, prices, raw_observations, utcnow
 from app.jobs.collect import PEER_DISPERSION_KEY, run_collect
 from app.providers import (
     alanchand,
@@ -121,6 +121,86 @@ def test_yahoo_tnx_scaling():
     assert obs.raw_value == pytest.approx(43.5)
     assert obs.value == pytest.approx(4.35)  # 10x quote handled
     assert obs.currency == "PCT"
+    assert obs.raw_unit == "TNX_index" and obs.raw_currency == "INDEX"
+
+
+def test_yahoo_tnx_direct_quote_is_not_divided():
+    """Yahoo also serves ^TNX as the yield itself. Dividing that anyway is
+    what stored five years of US10Y ten times too small; the raw row now says
+    which convention was read so the next flip is visible in the table."""
+    obs = yahoo.parse_chart(load_fixture_json("yahoo_tnx_direct.json"), "^TNX")
+    assert obs is not None
+    assert obs.raw_value == pytest.approx(4.697)
+    assert obs.value == pytest.approx(4.697)
+    assert obs.currency == "PCT"
+    assert obs.raw_unit == "pct" and obs.raw_currency == "PCT"
+
+
+def test_yahoo_tnx_history_uses_the_same_rule():
+    """Backfill writes the normalized number into `prices` AND into
+    raw_observations, so a wrong reading here poisons five years at once."""
+    pairs = yahoo.parse_chart_history(load_fixture_json("yahoo_tnx_direct.json"), "^TNX")
+    assert [round(v, 3) for _, v in pairs] == [4.697]
+    index_pairs = yahoo.parse_chart_history(load_fixture_json("yahoo_tnx.json"), "^TNX")
+    assert [round(v, 3) for _, v in index_pairs] == [4.35]
+
+
+def _tnx_history_payload(closes):
+    return {"chart": {"result": [{
+        "meta": {"currency": "USD", "symbol": "^TNX"},
+        "timestamp": [1600000000 + i * 86400 for i in range(len(closes))],
+        "indicators": {"quote": [{"close": list(closes)}]},
+    }]}}
+
+
+def test_yahoo_tnx_history_settles_the_convention_from_the_whole_series():
+    """The ambiguous band is where the per-bar rule silently loses.
+
+    An index-form history is ONE download under ONE convention, so every bar
+    must be read the same way. Judged bar by bar, the low-rate years survive
+    the 25% ceiling under both readings and are stored unscaled — and
+    ``SANITY_RANGES["US10Y"]`` is (0.0, 25.0), so 12.8 for a 1.28% yield is
+    accepted downstream as an ordinary value. The series settles it: one bar
+    above the ceiling proves the convention for all of them.
+
+    Reachable through ``POST /internal/backfill/history`` — the job migration
+    0022 recommends for recovering the days the freeze cost.
+    """
+    true_yields = [1.28, 1.51, 2.38, 3.48, 4.68]
+    index_quotes = [round(y * 10, 2) for y in true_yields]  # 12.8 15.1 23.8 34.8 46.8
+    pairs = yahoo.parse_chart_history(_tnx_history_payload(index_quotes), "^TNX")
+
+    assert [round(v, 3) for _, v in pairs] == true_yields
+    # the three that used to slip through did so because they looked plausible
+    for quote in (12.8, 15.1, 23.8):
+        assert validation.sanity_ok("US10Y", quote), "premise: the band is not caught downstream"
+
+
+def test_yahoo_tnx_plain_yield_history_is_never_divided():
+    """The other direction of the same rule, and the more dangerous one: the
+    unconditional divide is what stored five years ten times too small."""
+    true_yields = [1.28, 1.51, 2.38, 3.48, 4.68]
+    pairs = yahoo.parse_chart_history(_tnx_history_payload(true_yields), "^TNX")
+    assert [round(v, 3) for _, v in pairs] == true_yields
+
+
+def test_yahoo_tnx_history_never_mixes_conventions_within_one_payload():
+    """No payload may come back part index, part yield.
+
+    Every returned bar has to be the same multiple of its quote — that is what
+    "one download, one convention" means, and mixing was the actual defect.
+    """
+    for closes in ([12.8, 15.1, 23.8, 34.8, 46.8], [1.28, 1.51, 2.38, 3.48, 4.68]):
+        pairs = yahoo.parse_chart_history(_tnx_history_payload(closes), "^TNX")
+        ratios = {round(close / value, 6) for close, (_, value) in zip(closes, pairs)}
+        assert len(ratios) == 1, f"mixed conventions in one payload: {ratios}"
+        assert ratios <= {1.0, 10.0}
+
+
+def test_yahoo_non_tnx_history_is_untouched_by_the_series_rule():
+    """GC=F closes above 25 are ounces of gold, not a convention signal."""
+    pairs = yahoo.parse_chart_history(load_fixture_json("yahoo_gcf.json"), "GC=F")
+    assert pairs[0][1] == pytest.approx(3330.1)
 
 
 def test_yahoo_parse_history():
@@ -893,3 +973,365 @@ def test_load_provider_rows_drops_broken_providers(engine):
     codes = [r["code"] for r in load_provider_rows(engine, ["iran_gold"])]
     assert "broken" not in codes
     assert "healthy" in codes
+
+
+# --- a single-source symbol must be able to escape "suspect" ------------------
+#
+# US10Y has exactly one provider, so the "confirmed by a second source" rule
+# had no reachable exit: Yahoo's ^TNX convention change made every quote a
+# ~896% jump, every jump was held, and the series stopped for two days without
+# a single alert. These cover both halves of the fix — the level does get
+# accepted once it is sustained, and a spike still does not.
+
+
+def _tnx_obs(code, pct_value, observed_at):
+    """A ^TNX-shaped quote: the provider's index number and its percent value."""
+    return Observation(
+        provider_code=code, symbol="US10Y", raw_value=pct_value * 10.0,
+        raw_unit="TNX_index", raw_currency="INDEX", value=pct_value,
+        currency="PCT", unit="pct", observed_at=observed_at,
+    )
+
+
+# Deliberately not a flat line. A constant series has zero MAD, so the robust
+# outlier test fires on ANY move and every quote below would come back suspect
+# for a reason that has nothing to do with what these tests are about. The
+# last entry is 1.0 so the newest row — the "last good" a jump is measured
+# against — is exactly `level`.
+_US10Y_DRIFT = (1.0, 1.008, 0.994, 1.003, 0.997, 1.006, 0.992, 1.004, 0.998, 1.0)
+
+
+def _seed_us10y_prices(engine, level, now, days=10, newest_offset=None):
+    """A settled daily series around `level`, oldest first."""
+    rows = [
+        (timedelta(days=d), level * _US10Y_DRIFT[i % len(_US10Y_DRIFT)])
+        for i, d in enumerate(range(days, 0, -1))
+    ]
+    if newest_offset is not None:
+        rows.append((newest_offset, level))
+    with engine.begin() as conn:
+        conn.execute(insert(prices), [
+            dict(symbol="US10Y", value=value, currency="PCT", unit="pct",
+                 source="yahoo", observed_at=now - off, collected_at=now - off,
+                 quality="ok")
+            for off, value in rows
+        ])
+
+
+def _seed_suspect_run(engine, provider, level, now, count, spacing_minutes):
+    """`count` already-stored suspects at `level`, oldest last."""
+    with engine.begin() as conn:
+        conn.execute(insert(raw_observations), [
+            dict(provider_code=provider, symbol="US10Y", raw_value=level * 10.0,
+                 unit="TNX_index", currency="INDEX",
+                 observed_at=now - timedelta(minutes=spacing_minutes * (i + 1)),
+                 collected_at=now, quality="suspect", dedupe_key=f"held-{i}")
+            for i in range(count)
+        ])
+
+
+def _issue_capture(engine):
+    """Attach the app_issues logging bridge to THIS engine for one test.
+
+    Constructed directly rather than via ``install_issue_capture``: that
+    helper is idempotent per root logger, so once any earlier test has built a
+    FastAPI app it hands back the handler bound to that app's engine and this
+    test would silently observe the wrong database.
+    """
+    import contextlib
+    import logging
+
+    from app.core.issues import DBIssueHandler
+
+    @contextlib.contextmanager
+    def _ctx():
+        root = logging.getLogger()
+        handler = DBIssueHandler(engine)
+        root.addHandler(handler)
+        try:
+            yield
+        finally:
+            root.removeHandler(handler)
+
+    return _ctx()
+
+
+def _collect_issues(engine):
+    from app.db import app_issues
+
+    with engine.connect() as conn:
+        return [r._mapping for r in conn.execute(
+            select(app_issues).where(app_issues.c.source == "app.jobs.collect"))]
+
+
+def test_sustained_level_from_the_only_source_is_finally_accepted(
+    engine, settings, monkeypatch
+):
+    """Yahoo's ^TNX flip, replayed: the new level has held across four earlier
+    observations, the fifth completes the run, and the series moves again."""
+    _seed_provider(engine, "yahoo", priority=10, category="global_gold")
+    now = utcnow()
+    _seed_us10y_prices(engine, 0.4697, now)
+    _seed_suspect_run(engine, "yahoo", 4.68, now, count=4, spacing_minutes=30)
+    _patch_registry(monkeypatch, {
+        "yahoo": CountingStub([_tnx_obs("yahoo", 4.682, now)])
+    })
+
+    with _issue_capture(engine):
+        result = run_collect(engine, settings, ["macro"])
+
+    with engine.connect() as conn:
+        latest = conn.execute(
+            select(prices).where(prices.c.symbol == "US10Y")
+            .order_by(prices.c.observed_at.desc()).limit(1)
+        ).one()._mapping
+    assert float(latest["value"]) == pytest.approx(4.682)
+    assert result["collected"].get("US10Y") == 1
+    # and the re-level is on the record, not a silent decision
+    messages = [i["message"] for i in _collect_issues(engine)]
+    assert any("accepting" in m and "US10Y" in m for m in messages), messages
+
+
+def test_a_one_off_spike_is_still_held(engine, settings, monkeypatch):
+    """The escape hatch must not become a way in: a single outlying quote has
+    a run of one and stays out of `prices`."""
+    _seed_provider(engine, "yahoo", priority=10, category="global_gold")
+    now = utcnow()
+    _seed_us10y_prices(engine, 4.60, now)
+    _patch_registry(monkeypatch, {
+        "yahoo": CountingStub([_tnx_obs("yahoo", 9.9, now)])
+    })
+
+    run_collect(engine, settings, ["macro"])
+
+    with engine.connect() as conn:
+        values = [float(v) for (v,) in conn.execute(
+            select(prices.c.value).where(prices.c.symbol == "US10Y"))]
+        held = conn.execute(
+            select(raw_observations).where(raw_observations.c.symbol == "US10Y")
+        ).all()
+    assert 9.9 not in values
+    assert [r._mapping["quality"] for r in held] == ["suspect"]
+
+
+def test_repetition_cannot_outvote_a_source_still_delivering(
+    engine, settings, monkeypatch
+):
+    """A long consistent run is not enough on its own: while some source is
+    still producing accepted values the series is not frozen, and the
+    disagreeing primary keeps waiting for a real confirmation."""
+    _seed_provider(engine, "primary", priority=1, category="global_gold")
+    _seed_provider(engine, "fallback", priority=5, category="global_gold")
+    now = utcnow()
+    # the fallback wrote a price five minutes ago — well inside the run
+    _seed_us10y_prices(engine, 0.4697, now, newest_offset=timedelta(minutes=5))
+    _seed_suspect_run(engine, "primary", 4.68, now, count=6, spacing_minutes=30)
+    _patch_registry(monkeypatch, {
+        "primary": CountingStub([_tnx_obs("primary", 4.682, now)]),
+        "fallback": CountingStub([_tnx_obs("fallback", 0.4699, now)]),
+    })
+
+    run_collect(engine, settings, ["macro"])
+
+    with engine.connect() as conn:
+        values = [float(v) for (v,) in conn.execute(
+            select(prices.c.value).where(prices.c.symbol == "US10Y"))]
+    assert 4.682 not in values
+    assert pytest.approx(0.4699) in values
+
+
+def test_a_frozen_series_warns_once_per_cooldown(engine, settings, monkeypatch):
+    """The original failure was silence. A held series must reach app_issues —
+    and must not then flood it every ten minutes."""
+    from app.jobs.collect import FREEZE_ALERT_KEY
+
+    _seed_provider(engine, "yahoo", priority=10, category="global_gold")
+    now = utcnow()
+    _seed_us10y_prices(engine, 0.4697, now)
+    # three earlier suspects, but only 30 minutes of them: past the alert
+    # threshold, short of the span acceptance needs
+    _seed_suspect_run(engine, "yahoo", 4.68, now, count=3, spacing_minutes=10)
+    stub = CountingStub([_tnx_obs("yahoo", 4.682, now)])
+    _patch_registry(monkeypatch, {"yahoo": stub})
+
+    with _issue_capture(engine):
+        run_collect(engine, settings, ["macro"])
+        first = _collect_issues(engine)
+        run_collect(engine, settings, ["macro"])  # same quote, next cycle
+        second = _collect_issues(engine)
+
+    frozen = [i for i in first if "frozen" in i["message"]]
+    assert len(frozen) == 1, [i["message"] for i in first]
+    assert frozen[0]["level"] == "warning"
+    assert "US10Y" in frozen[0]["message"] and "yahoo" in frozen[0]["message"]
+    assert len([i for i in second if "frozen" in i["message"]]) == 1  # throttled
+    # nothing was promoted: 30 minutes is not a sustained level
+    with engine.connect() as conn:
+        assert conn.execute(
+            select(func.count()).select_from(prices)
+            .where(prices.c.symbol == "US10Y", prices.c.value > 1.0)
+        ).scalar() == 0
+        marker = conn.execute(select(app_settings.c.value).where(
+            app_settings.c.key == FREEZE_ALERT_KEY)).scalar()
+    assert "US10Y" in marker
+
+
+def test_repaired_history_lets_the_real_parser_flow_again(engine, settings, monkeypatch):
+    """The two halves of the US10Y fix, composed. The real parser reads an
+    index quote as a percent, and against a history migration 0022 has put
+    back on the right scale that is an ordinary move rather than a 900% jump —
+    so the series resumes on its own, with no suspect and no intervention."""
+    import dataclasses
+
+    _seed_provider(engine, "yahoo", priority=10, category="global_gold")
+    now = utcnow()
+    _seed_us10y_prices(engine, 4.30, now)  # the post-0022 scale
+    parsed = yahoo.parse_chart(load_fixture_json("yahoo_tnx.json"), "^TNX")
+    _patch_registry(monkeypatch, {
+        "yahoo": CountingStub([dataclasses.replace(parsed, observed_at=now)])
+    })
+
+    result = run_collect(engine, settings, ["macro"])
+
+    assert not [e for e in result["errors"] if "US10Y" in e], result["errors"]
+    with engine.connect() as conn:
+        latest = conn.execute(
+            select(prices).where(prices.c.symbol == "US10Y")
+            .order_by(prices.c.observed_at.desc()).limit(1)
+        ).one()._mapping
+        qualities = {r._mapping["quality"] for r in conn.execute(
+            select(raw_observations).where(raw_observations.c.symbol == "US10Y"))}
+    assert float(latest["value"]) == pytest.approx(4.35)
+    assert qualities == {"ok"}
+
+
+# --- an accepted level shift is a level RESET --------------------------------
+#
+# Letting the series out once is not enough. The MAD window is 30 accepted
+# values, so the quote immediately AFTER an accepted re-level is still an
+# outlier against 29 values of the level that was just abandoned — the run
+# restarts at 1 and the whole 5-observation/90-minute wait is paid again, per
+# price. Simulated against run_collect over 400 cycles of the real
+# 0.4697 -> 4.682 shift at the 10-minute cron: acceptances at cycles
+# 10, 20, 30 ... 150 and only then every cycle. One price per 100 minutes for
+# 25 hours, out of the mechanism that exists to end a freeze.
+
+
+def test_the_outlier_window_stops_at_the_last_accepted_level_shift():
+    """The accepted series records the reset; nothing else has to remember it.
+
+    A value more than MAX_JUMP_PCT from the last good one cannot reach
+    `prices` on its own, so a step that large between two consecutive accepted
+    prices is by construction a level shift this system chose to accept.
+    """
+    from app.jobs.collect import _since_last_level_reset
+
+    old, new = 0.4697, 4.682
+    # newest first: two at the new level, then the abandoned one
+    assert _since_last_level_reset([new, new, old, old, old]) == [new, new]
+    # no shift in view -> nothing is trimmed
+    assert _since_last_level_reset([4.68, 4.70, 4.66, 4.71]) == [4.68, 4.70, 4.66, 4.71]
+    # ordinary volatility is not a level shift (10% < MAX_JUMP_PCT = 15%)
+    assert len(_since_last_level_reset([4.68, 4.25, 4.70, 4.66])) == 4
+    # the newest shift wins when a series has re-levelled more than once
+    assert _since_last_level_reset([9.0, 9.1, 4.6, 4.7, 0.46]) == [9.0, 9.1]
+    assert _since_last_level_reset([]) == []
+    assert _since_last_level_reset([4.682]) == [4.682]
+
+
+def test_an_accepted_level_shift_lets_the_series_resume_immediately(
+    engine, settings, monkeypatch
+):
+    """The cycle after the re-level must be an ordinary collection.
+
+    Before the fix it was another suspect: same level, same provider, and a
+    window still holding 29 values of the level the system had just agreed to
+    abandon. The series limped at one price per 100 minutes for ~25 hours.
+    """
+    _seed_provider(engine, "yahoo", priority=10, category="global_gold")
+    now = utcnow()
+    _seed_us10y_prices(engine, 0.4697, now)
+    _seed_suspect_run(engine, "yahoo", 4.68, now, count=4, spacing_minutes=30)
+
+    stub = CountingStub([_tnx_obs("yahoo", 4.682, now)])
+    _patch_registry(monkeypatch, {"yahoo": stub})
+    run_collect(engine, settings, ["macro"])  # the escape hatch fires
+
+    # the very next cron tick, same level, a normal small move
+    stub._observations = [_tnx_obs("yahoo", 4.688, now + timedelta(minutes=10))]
+    result = run_collect(engine, settings, ["macro"])
+
+    assert result["collected"].get("US10Y") == 1, result["errors"]
+    with engine.connect() as conn:
+        at_new_level = [
+            float(v) for (v,) in conn.execute(
+                select(prices.c.value).where(
+                    prices.c.symbol == "US10Y", prices.c.value > 1.0)
+            )
+        ]
+    assert sorted(at_new_level) == pytest.approx([4.682, 4.688])
+
+
+def test_a_spike_is_still_rejected_right_after_a_level_reset(
+    engine, settings, monkeypatch
+):
+    """The property the whole mechanism exists to preserve.
+
+    Trimming the window is not a licence to accept anything: the jump test is
+    measured against the newly accepted level, so an outlier relative to THAT
+    is still held with a run of one.
+    """
+    _seed_provider(engine, "yahoo", priority=10, category="global_gold")
+    now = utcnow()
+    _seed_us10y_prices(engine, 0.4697, now)
+    _seed_suspect_run(engine, "yahoo", 4.68, now, count=4, spacing_minutes=30)
+
+    stub = CountingStub([_tnx_obs("yahoo", 4.682, now)])
+    _patch_registry(monkeypatch, {"yahoo": stub})
+    run_collect(engine, settings, ["macro"])  # re-level accepted
+
+    stub._observations = [_tnx_obs("yahoo", 9.9, now + timedelta(minutes=10))]
+    run_collect(engine, settings, ["macro"])
+
+    with engine.connect() as conn:
+        values = [float(v) for (v,) in conn.execute(
+            select(prices.c.value).where(prices.c.symbol == "US10Y"))]
+        qualities = [
+            r._mapping["quality"] for r in conn.execute(
+                select(raw_observations).where(
+                    raw_observations.c.symbol == "US10Y",
+                    raw_observations.c.raw_value == 99.0)
+            )
+        ]
+    assert 9.9 not in values
+    assert qualities == ["suspect"]
+
+
+def test_the_outlier_test_comes_back_once_the_new_level_has_a_window(
+    engine, settings, monkeypatch
+):
+    """Trimming disables the MAD test only until five values exist at the new
+    level — after that it guards again, against the level actually in force.
+
+    4.95 is a 5.7% move: inside MAX_JUMP_PCT, so the jump test alone would
+    wave it through. It is the robust test that has to catch it, and it can
+    only do that measured against the new level's own dispersion.
+    """
+    _seed_provider(engine, "yahoo", priority=10, category="global_gold")
+    now = utcnow()
+    _seed_us10y_prices(engine, 0.4697, now)
+    _seed_suspect_run(engine, "yahoo", 4.68, now, count=4, spacing_minutes=30)
+    stub = CountingStub([_tnx_obs("yahoo", 4.682, now)])
+    _patch_registry(monkeypatch, {"yahoo": stub})
+    run_collect(engine, settings, ["macro"])
+
+    for i, pct in enumerate((4.686, 4.679, 4.690, 4.684, 4.681), start=1):
+        stub._observations = [_tnx_obs("yahoo", pct, now + timedelta(minutes=10 * i))]
+        assert run_collect(engine, settings, ["macro"])["collected"].get("US10Y") == 1
+
+    stub._observations = [_tnx_obs("yahoo", 4.95, now + timedelta(minutes=70))]
+    result = run_collect(engine, settings, ["macro"])
+
+    assert validation.jump_pct(4.95, 4.681) < validation.MAX_JUMP_PCT  # premise
+    assert not result["collected"].get("US10Y")
+    assert any("MAD" in e for e in result["errors"]), result["errors"]

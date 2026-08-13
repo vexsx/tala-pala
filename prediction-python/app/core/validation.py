@@ -9,7 +9,9 @@ Rules (docs/CONTRACTS.md + service design):
   (usually a unit mix-up: rial-vs-toman or gram-vs-ounce);
 * a value deviating strongly from the recent window median (robust MAD test)
   or jumping more than ``MAX_JUMP_PCT`` vs the last good value is *suspect*
-  and must be confirmed by a second source before entering ``prices``;
+  and must be corroborated before entering ``prices`` — by a second source in
+  the same cycle, or, when there is no second source, by the same source
+  repeating the level (:func:`suspect_streak` / :func:`sustained_by_repetition`);
 * several sources quoting the same symbol in one collect cycle are summarised
   by :func:`dispersion_summary` — the cross-provider quote uncertainty of
   Addendum 3, measured at collection time.
@@ -20,12 +22,51 @@ import hashlib
 import math
 import statistics
 from datetime import datetime, timezone
-from typing import Mapping, Optional, Sequence
+from typing import Mapping, NamedTuple, Optional, Sequence
 
-MAX_JUMP_PCT = 15.0          # > this vs last good => needs a second source
+MAX_JUMP_PCT = 15.0          # > this vs last good => needs corroboration
 CONFIRM_TOLERANCE_PCT = 3.0  # two sources within this range confirm each other
 MAD_THRESHOLD = 8.0          # robust z-score threshold vs the recent window
 MAX_ABS_PREMIUM_PCT = 25.0   # |observed vs theoretical 18k premium| beyond this => suspect
+
+# --- corroboration by repetition (the single-source escape hatch) -----------
+#
+# Cross-source confirmation is unreachable for a symbol with one provider:
+# US10Y is served by ``yahoo`` alone, so when Yahoo's ^TNX convention changed
+# on 2026-08-11 every new observation was a ~896% jump, every jump was held as
+# suspect, no second source ever arrived, and the series simply stopped —
+# silently, for two days, until somebody looked.  A guard a series cannot get
+# out of is not a guard, it is a trapdoor.
+#
+# So a level may also be corroborated along the TIME axis: instead of two
+# sources at one instant, one source at N instants.  The thresholds:
+#
+# * ``SUSTAIN_MIN_OBSERVATIONS`` — five observations that all agree with each
+#   other within ``CONFIRM_TOLERANCE_PCT``.  Mutual agreement is what keeps a
+#   spike out: a one-off outlier is a single observation and the next quote
+#   comes back to the old level, so the run dies at one; a source flapping
+#   between two levels never accumulates a run at all.  The tolerance is the
+#   same 3% used across sources on purpose — what counts as "the same level"
+#   should not depend on whether the evidence is spatial or temporal.
+# * ``SUSTAIN_MIN_SPAN_MINUTES`` — and they must span an hour and a half of
+#   wall clock.  A count alone is gameable by cadence: a ticker that updates
+#   every few seconds, or a burst of manual ``/internal/collect`` calls, can
+#   present five "independent" observations inside a minute, which is one
+#   instant wearing five hats.  At the default 10-minute collect cron this is
+#   at least nine cycles of the same level.
+# * ``SUSPECT_ALERT_AFTER`` — three.  One held suspect is the guard working;
+#   by the third consecutive consistent one the guard is holding a LEVEL
+#   rather than rejecting a blip, and the operator should hear about it.  It
+#   is deliberately below the acceptance threshold so the warning always
+#   precedes an automatic acceptance instead of narrating it afterwards.
+#
+# The collect job adds the condition these thresholds do not express: the
+# series must actually be frozen (no accepted price since the run began).
+# Repetition is the fallback for the absence of corroboration, never a way to
+# outvote a source that is still delivering good values.
+SUSTAIN_MIN_OBSERVATIONS = 5
+SUSTAIN_MIN_SPAN_MINUTES = 90.0
+SUSPECT_ALERT_AFTER = 3
 
 # Plausibility ranges for normalized values (unit sanity checks).
 SANITY_RANGES: dict[str, tuple[float, float]] = {
@@ -138,6 +179,73 @@ def dispersion_summary(
     }
 
 
+class SuspectStreak(NamedTuple):
+    """How long one source has been insisting on the same unconfirmed level.
+
+    ``length`` counts the candidate itself, so a lone suspect is length 1 with
+    a zero span and ``since`` equal to its own timestamp.
+    """
+
+    length: int
+    span_minutes: float
+    since: datetime
+
+
+def suspect_streak(
+    value: float,
+    at: datetime,
+    history: Sequence[tuple[datetime, float, str]],
+    tolerance_pct: float = CONFIRM_TOLERANCE_PCT,
+) -> SuspectStreak:
+    """Measure the run of consistent suspects ending at ``(at, value)``.
+
+    ``history`` holds ONE provider's own recent observations of ONE symbol,
+    newest first, as ``(observed_at, value, quality)``.  The walk stops at the
+    first row that is not ``suspect`` (an accepted value in between means the
+    series was never stuck) or that disagrees with the candidate by more than
+    ``tolerance_pct`` (a different level is different evidence, not more of
+    the same).
+
+    Comparing in the PROVIDER'S OWN units is deliberate.  Within one provider
+    the raw-to-canonical map is a fixed factor, so relative agreement is the
+    same question in either space — except exactly when that factor changes,
+    which is a convention flip, and there the run *should* break so quotes
+    from before the flip cannot vouch for the level after it.
+    """
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    length, since = 1, at
+    for observed_at, past_value, quality in history:
+        if quality != "suspect" or not values_agree(value, past_value, tolerance_pct):
+            break
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        if observed_at >= since:
+            continue  # same instant re-observed: evidence of nothing new
+        length += 1
+        since = observed_at
+    span = (at - since).total_seconds() / 60.0
+    return SuspectStreak(length=length, span_minutes=max(span, 0.0), since=since)
+
+
+def sustained_by_repetition(
+    streak: SuspectStreak,
+    min_observations: int = SUSTAIN_MIN_OBSERVATIONS,
+    min_span_minutes: float = SUSTAIN_MIN_SPAN_MINUTES,
+) -> bool:
+    """Is this run long enough AND old enough to stand in for a second source?
+
+    Both conditions, never either: the count without the span accepts a fast
+    ticker's single instant, and the span without the count accepts two
+    observations ninety minutes apart, which is not a sustained level — it is
+    two points.
+    """
+    return (
+        streak.length >= min_observations
+        and streak.span_minutes >= min_span_minutes
+    )
+
+
 def premium_suspect(
     observed_18k_irt: float, xau_usd: float, usd_irt: float
 ) -> Optional[str]:
@@ -170,8 +278,10 @@ def classify_observation(
     """Classify a normalized value as ``ok`` / ``suspect`` / rejected (``outlier``).
 
     Returns ``(quality, reason)``.  ``suspect`` values are stored in
-    ``raw_observations`` but only promoted to ``prices`` when confirmed by a
-    second source (handled by the collect job).
+    ``raw_observations`` but only promoted to ``prices`` once corroborated —
+    by a second source in the same cycle, or, failing that, by the same source
+    sustaining the level (:func:`sustained_by_repetition`).  Both promotions
+    are handled by the collect job.
     """
     if not sanity_ok(symbol, value):
         return "outlier", f"value {value} outside plausible range for {symbol}"

@@ -7,6 +7,19 @@ did not deliver a *good* value for.  Suspicious values (>15% jump vs last
 good, or MAD outliers) are stored in ``raw_observations`` only, unless a
 second source confirms them within tolerance — then both are promoted.
 
+A symbol with exactly one provider has no second source, so that rule alone
+froze US10Y permanently when Yahoo changed its ^TNX convention (every quote a
+~896% jump, every jump held, nothing ever promoted, no alert).  Corroboration
+therefore has a second form here: a level the only available source has
+sustained across ``validation.SUSTAIN_MIN_OBSERVATIONS`` consistent
+observations spanning ``SUSTAIN_MIN_SPAN_MINUTES`` is accepted — but only
+while the series is genuinely frozen, i.e. no price has been accepted since
+the run began.  That last condition is what stops repetition from becoming a
+way for one provider to outvote a fallback that is still delivering values.
+A frozen series also raises a throttled WARNING, which the logging bridge in
+``core.issues`` mirrors into ``app_issues``: the original failure was not that
+the guard held a value, it was that holding it made no sound.
+
 Cross-provider dispersion (Addendum 3) is measured in a second pass over the
 responses already in the fetch cache: fallback stops *storing* once a symbol
 is satisfied, but the lower-priority providers consulted for the job's other
@@ -72,7 +85,22 @@ JOB_PROVIDER_CATEGORIES: dict[str, list[str]] = {
     "funds": ["iran_fund"],
 }
 
-RECENT_WINDOW = 30  # good values used for the MAD outlier test
+RECENT_WINDOW = 30  # good values used for the MAD outlier test, BEFORE trimming
+                    # at the last accepted level shift (see _recent_values)
+
+# How far back the suspect-run walk may look for one (symbol, provider).  It
+# only ever needs SUSTAIN_MIN_OBSERVATIONS rows, but the walk must be able to
+# SEE the accepted row that ends a run, and a busy ticker can deposit several
+# suspects per cycle; 40 leaves room for both without an unbounded read.
+SUSPECT_HISTORY_LIMIT = 40
+
+# app_settings key throttling the frozen-series warning, ``{symbol: iso}``.
+FREEZE_ALERT_KEY = "suspect_freeze_alerts"
+# Collect runs every 10 minutes (docs/CONTRACTS.md), so an unthrottled warning
+# would file ~144 app_issues rows a day per stuck symbol and bury the incident
+# under its own notifications.  Three hours still surfaces a freeze on the
+# same shift while leaving the Issues tab readable.
+FREEZE_ALERT_COOLDOWN_MINUTES = 180.0
 
 # raw_payload key carrying the cross-provider dispersion of the cycle that
 # produced the row (see the module docstring for why it lives here).
@@ -155,7 +183,52 @@ def mark_funds_attempt(engine: Engine, at: _Optional[object] = None) -> None:
                    {"at": ensure_utc(at or utcnow()).isoformat()})
 
 
+def _since_last_level_reset(values: Sequence[float]) -> list[float]:
+    """Trim a newest-first window at the most recent ACCEPTED level shift.
+
+    An accepted level shift is a level RESET, and the MAD window must stop
+    arguing with a conclusion the system has already reached.  Without this
+    the escape hatch above lets a series through once and then re-traps it:
+    the very next quote at the newly accepted level is still a MAD outlier
+    against a window 29/30ths of which is the level that was just abandoned,
+    so the suspect run restarts at 1 and the whole 5-observation /
+    90-minute wait is paid again — for every price, until the window has
+    turned over.
+
+    Simulated end to end against ``run_collect`` (400 cycles of the real
+    0.4697 -> 4.682 shift at the 10-minute cron, one Yahoo quote per cycle):
+    acceptances landed at cycles 10, 20, 30 ... 150 and only then every
+    cycle.  ONE price per 100 minutes for 25 hours, from a mechanism whose
+    entire purpose was to end a freeze.
+
+    HOW THE RESET IS FOUND, and why nothing new has to be remembered.  The
+    accepted series already records it.  A value more than
+    ``MAX_JUMP_PCT`` from the last good one is classified ``suspect`` and
+    cannot reach ``prices`` on its own; the only ways past that are the two
+    deliberate acceptances — a second source confirming it in the same cycle,
+    or the repetition path.  So a step larger than ``MAX_JUMP_PCT`` between
+    two CONSECUTIVE accepted prices is, by construction, a level shift this
+    system decided to accept, and the newest such step is the reset.  Reading
+    it back out of ``prices`` beats writing a marker somewhere: there is no
+    new state to keep in sync, no migration, and a series that re-levelled
+    before this code shipped is healed the first time it is asked.
+
+    The same threshold as the jump test on purpose — the window the robust
+    test measures dispersion over is exactly the run of values the jump test
+    considers one continuous level.  A window this trims to fewer than five
+    values disables the MAD test (``is_mad_outlier`` needs five), leaving the
+    jump test alone on guard for a few observations right after a re-level.
+    That is the intended reading of "accepted": the older level is not
+    evidence about the new one, and pretending otherwise is the defect.
+    """
+    for newer in range(len(values) - 1):
+        if validation.jump_pct(values[newer], values[newer + 1]) > validation.MAX_JUMP_PCT:
+            return [float(v) for v in values[: newer + 1]]
+    return [float(v) for v in values]
+
+
 def _recent_values(engine: Engine, symbol: str, limit: int = RECENT_WINDOW) -> list[float]:
+    """Recent accepted values, newest first, back to the last level reset."""
     stmt = (
         select(prices.c.value)
         .where(prices.c.symbol == symbol, prices.c.quality == "ok")
@@ -163,7 +236,107 @@ def _recent_values(engine: Engine, symbol: str, limit: int = RECENT_WINDOW) -> l
         .limit(limit)
     )
     with engine.connect() as conn:
-        return [float(v) for (v,) in conn.execute(stmt)]
+        values = [float(v) for (v,) in conn.execute(stmt)]
+    return _since_last_level_reset(values)
+
+
+def _last_price_at(engine: Engine, symbol: str) -> Optional[datetime]:
+    """``observed_at`` of the most recent accepted price, or None."""
+    stmt = select(func.max(prices.c.observed_at)).where(
+        prices.c.symbol == symbol, prices.c.quality == "ok"
+    )
+    with engine.connect() as conn:
+        at = conn.execute(stmt).scalar()
+    return ensure_utc(at) if at is not None else None
+
+
+def _provider_history(
+    engine: Engine, symbol: str, provider_code: str, limit: int = SUSPECT_HISTORY_LIMIT
+) -> list[tuple[datetime, float, str]]:
+    """One provider's own recent observations of one symbol, newest first."""
+    stmt = (
+        select(
+            raw_observations.c.observed_at,
+            raw_observations.c.raw_value,
+            raw_observations.c.quality,
+        )
+        .where(
+            raw_observations.c.symbol == symbol,
+            raw_observations.c.provider_code == provider_code,
+        )
+        .order_by(raw_observations.c.observed_at.desc())
+        .limit(limit)
+    )
+    with engine.connect() as conn:
+        return [
+            (ensure_utc(at), float(value), str(quality))
+            for at, value, quality in conn.execute(stmt)
+        ]
+
+
+def _suspect_state(
+    engine: Engine, obs: Observation
+) -> tuple[validation.SuspectStreak, bool]:
+    """``(run of consistent suspects, is the series frozen?)`` for this quote.
+
+    Frozen means no price has been accepted for the symbol since the run
+    started — from ANY source, so a fallback that is still delivering keeps
+    the series alive and keeps the repetition path shut.  The run is measured
+    on ``raw_value`` because that is what ``raw_observations`` stores; see
+    ``validation.suspect_streak`` for why the provider's own units are the
+    right space to compare in.
+    """
+    streak = validation.suspect_streak(
+        float(obs.raw_value),
+        obs.observed_at,
+        _provider_history(engine, obs.symbol, obs.provider_code),
+    )
+    last_price = _last_price_at(engine, obs.symbol)
+    return streak, last_price is None or last_price < streak.since
+
+
+def _warn_series_frozen(
+    engine: Engine,
+    obs: Observation,
+    streak: validation.SuspectStreak,
+    reason: Optional[str],
+) -> None:
+    """Throttled WARNING for a series that repeated suspects are holding shut.
+
+    WARNING rather than an ``errors`` entry because only WARNING+ reaches
+    ``app_issues`` through ``core.issues.DBIssueHandler``; the errors list is
+    returned to the caller of the job and was, in the US10Y incident, read by
+    nobody.  Throttled per symbol via ``app_settings`` (the pattern already
+    used for the TSE funds attempt marker) — see FREEZE_ALERT_COOLDOWN_MINUTES.
+    """
+    from ..jobs.evaluate import upsert_setting
+
+    now = utcnow()
+    with engine.connect() as conn:
+        stored = conn.execute(
+            select(app_settings.c.value).where(app_settings.c.key == FREEZE_ALERT_KEY)
+        ).scalar()
+    state = dict(stored) if isinstance(stored, dict) else {}
+    previous = state.get(obs.symbol)
+    if previous:
+        try:
+            age = (now - ensure_utc(datetime.fromisoformat(previous))).total_seconds()
+            if age < FREEZE_ALERT_COOLDOWN_MINUTES * 60:
+                return
+        except (TypeError, ValueError):
+            pass  # unparseable marker: warn now and overwrite it
+
+    log.warning(
+        "%s is frozen: %s has quoted a consistent %s across %d observations over "
+        "%.0f minutes and every one was held as suspect (%s). No other source "
+        "covers this symbol, so nothing can confirm it; the level is accepted "
+        "automatically after %d consistent observations spanning %.0f minutes.",
+        obs.symbol, obs.provider_code, obs.value, streak.length,
+        streak.span_minutes, reason or "no reason recorded",
+        validation.SUSTAIN_MIN_OBSERVATIONS, validation.SUSTAIN_MIN_SPAN_MINUTES,
+    )
+    state[obs.symbol] = now.isoformat()
+    upsert_setting(engine, FREEZE_ALERT_KEY, state)
 
 
 def _store(
@@ -373,27 +546,45 @@ def run_collect(
                         validation.values_agree(obs.value, other.value)
                         for other in suspects.get(obs.symbol, [])
                     )
-                    if not confirmed:
-                        suspects.setdefault(obs.symbol, []).append(obs)
-                        _store(engine, obs, "suspect")
-                        errors.append(
-                            f"{code}/{obs.symbol}: held as suspect ({reason}); "
-                            "awaiting confirmation by a second source"
+                    if confirmed:
+                        # confirmed by an earlier suspect: promote both
+                        for prior in suspects.pop(obs.symbol, []):
+                            if validation.values_agree(obs.value, prior.value):
+                                _, promoted = _store(engine, prior, "ok")
+                                cycle_values.setdefault(obs.symbol, {})[
+                                    prior.provider_code
+                                ] = float(prior.value)
+                                if promoted:
+                                    collected[obs.symbol] = collected.get(obs.symbol, 0) + 1
+                                    winners.setdefault(obs.symbol, prior)
+                                    COLLECT_SUCCESS.labels(
+                                        provider=prior.provider_code, symbol=obs.symbol
+                                    ).inc()
+                    else:
+                        streak, frozen = _suspect_state(engine, obs)
+                        if not (frozen and validation.sustained_by_repetition(streak)):
+                            suspects.setdefault(obs.symbol, []).append(obs)
+                            _store(engine, obs, "suspect")
+                            if frozen and streak.length >= validation.SUSPECT_ALERT_AFTER:
+                                _warn_series_frozen(engine, obs, streak, reason)
+                            errors.append(
+                                f"{code}/{obs.symbol}: held as suspect ({reason}); "
+                                "awaiting confirmation by a second source"
+                            )
+                            continue  # symbol NOT satisfied -> fallback continues
+                        # No second source exists and the series has been shut
+                        # since `streak.since`; the level has now outlasted the
+                        # thresholds, so accept it and say so loudly — an
+                        # automatic re-level is exactly the kind of thing an
+                        # operator must be able to find after the fact.
+                        log.warning(
+                            "%s: accepting %s from %s as a new level (%s). The series "
+                            "had no accepted value since %s and this level held across "
+                            "%d consistent observations over %.0f minutes, which stands "
+                            "in for the second source this symbol does not have.",
+                            obs.symbol, obs.value, code, reason or "no reason recorded",
+                            streak.since.isoformat(), streak.length, streak.span_minutes,
                         )
-                        continue  # symbol NOT satisfied -> fallback continues
-                    # confirmed by an earlier suspect: promote both
-                    for prior in suspects.pop(obs.symbol, []):
-                        if validation.values_agree(obs.value, prior.value):
-                            _, promoted = _store(engine, prior, "ok")
-                            cycle_values.setdefault(obs.symbol, {})[
-                                prior.provider_code
-                            ] = float(prior.value)
-                            if promoted:
-                                collected[obs.symbol] = collected.get(obs.symbol, 0) + 1
-                                winners.setdefault(obs.symbol, prior)
-                                COLLECT_SUCCESS.labels(
-                                    provider=prior.provider_code, symbol=obs.symbol
-                                ).inc()
                 _, price_inserted = _store(engine, obs, "ok")
                 # a repeat of the last quote inserts nothing but is still this
                 # cycle's opinion of the price, so it counts towards dispersion

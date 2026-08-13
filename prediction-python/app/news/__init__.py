@@ -12,8 +12,9 @@ can improve forecasts yet and nothing in ``app/features`` or ``app/models``
 reads these tables.
 
 The table definitions below mirror ``database/migrations/0016_news_events``
-exactly as :mod:`app.db` mirrors the rest of the schema (Postgres is created
-and migrated by the Go service; Python only reads and writes).  They live with
+and ``0017_news_intelligence`` exactly as :mod:`app.db` mirrors the rest of the
+schema (Postgres is created and migrated by the Go service; Python only reads
+and writes) — including 0017's ALTERs onto 0016's tables.  They live with
 their subsystem while it is behind ``NEWS_ENABLED`` — they belong in
 :mod:`app.db` once the subsystem is permanent — and they register on
 ``app.db.metadata``, so importing this package is what makes the tables appear
@@ -150,12 +151,38 @@ news_articles = Table(
     Column("duplicate_of", ForeignKey("news_articles.id", ondelete="SET NULL")),
     Column("raw_payload", JSON, nullable=True),
     Column("created_at", _TS, nullable=False, server_default=func.now()),
+    # --- 0017's ALTERs on the table 0016 created ----------------------------
+    # These are columns of news_articles, not a separate table, so they live
+    # here rather than in the 0017 block below.  They were absent for long
+    # enough that the collectors grew a defensive drop (``_mirror_supported``
+    # in app/news/sources/__init__.py) which logged the omission every pass.
+    #
+    # ``available_at`` is the point-in-time clock: the moment this system could
+    # first have acted on the item, and — per 0017 — the ONLY column a
+    # historical feature may filter on.  It is nullable in the schema because
+    # 0016's rows predate it (0017 backfills them from ingested_at); every
+    # writer here fills it, so a NULL means a row no writer in this repo made.
+    Column("source_updated_at", _TS),
+    Column("available_at", _TS),
+    Column("effective_event_at", _TS),
+    # BIGINT/INT references in Postgres; mirrored without ForeignKey to match
+    # the rest of the 0017 mirrors, which do the same.
+    Column("raw_payload_id", BigInteger().with_variant(Integer, "sqlite")),
+    Column("parser_version", Text, nullable=False, server_default=""),
+    Column("source_timezone", Text, nullable=False, server_default="UTC"),
+    Column("original_language", Text, nullable=False, server_default=""),
+    Column("body_excerpt", Text, nullable=False, server_default=""),
+    Column("relevance_score", Float),
+    Column("query_id", Integer),
     UniqueConstraint("source_code", "canonical_url", name="news_articles_unique"),
     Index("idx_news_articles_published", "published_at"),
     Index("idx_news_articles_source_published", "source_code", "published_at"),
     Index("idx_news_articles_ingested", "ingested_at"),
     Index("idx_news_articles_content_hash", "content_hash"),
     Index("idx_news_articles_title_key", "source_code", "title_key"),
+    Index("idx_news_articles_available", "available_at"),
+    Index("idx_news_articles_effective", "effective_event_at"),
+    Index("idx_news_articles_language", "language"),
 )
 
 news_article_versions = Table(
@@ -197,6 +224,18 @@ news_events = Table(
     Column("classifier_confidence", Float),
     Column("details", JSON, nullable=False, default=dict),
     Column("created_at", _TS, nullable=False, server_default=func.now()),
+    # --- 0017's ALTERs on the table 0016 created ----------------------------
+    # These six are precisely the keys
+    # :func:`app.news.consolidate.event_consolidation_fields` returns, so
+    # without them the consolidation result has no column to be written to —
+    # an ``update().values(**fields)`` against this mirror raises
+    # CompileError on the first unmirrored key rather than storing anything.
+    Column("available_at", _TS),
+    Column("duplicate_group_id", BigInteger().with_variant(Integer, "sqlite")),
+    Column("independent_source_count", Integer, nullable=False, server_default=text("1")),
+    Column("consolidation_method", Text, nullable=False, server_default=""),
+    Column("consolidation_version", Text, nullable=False, server_default=""),
+    Column("conflicting", Boolean, nullable=False, server_default=text("FALSE")),
     UniqueConstraint("article_id", "category", name="news_events_unique"),
     Index("idx_news_events_category_ingested", "category", "ingested_at"),
     Index("idx_news_events_event_time", "event_time"),

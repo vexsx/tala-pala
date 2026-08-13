@@ -37,6 +37,7 @@ from .predicting import (
 from .training import (
     report_metrics,
     MIN_DAILY_POINTS,
+    _worker_count,
     detect_regime,
     evaluate_candidates,
     load_series,
@@ -72,6 +73,35 @@ MAX_DAYS = 90
 # null. That case is now stated in the response instead of being silent.
 CUSTOM_MAX_FOLDS = 40
 
+# Where the wait actually went, measured on the production shape (1224 daily
+# points, 9 FAST_CANDIDATES, 40 folds, this machine, warm process):
+#
+#   candidate        walk-forward s   share
+#   hist_gb                  13.18   78.7%
+#   huber                     1.32    7.9%
+#   ses / linear / holt / theta / knn / sma / naive   3.56 combined
+#
+# So "360 fits" was the wrong unit: ONE candidate is four fifths of the
+# request, and 1.59s of the remainder (8.4%) was the three tabular candidates
+# rebuilding the same causal feature frame once per fold. Neither is fixable by
+# doing less work — the fold count buys the coverage measurement and the model
+# set decides the forecast — so the fix is to stop repeating work and to stop
+# doing it one core at a time:
+#
+#   * ``walk_forward`` builds the feature frame once per candidate and slices
+#     it (folds are prefixes of one series and every feature is causal);
+#   * the folds, which are independent by construction, are spread over worker
+#     processes for this path only. The nightly run stays sequential: nobody is
+#     waiting on it and it already has two symbols x seven horizons to fill a
+#     machine with.
+#
+# Measured end to end on evaluate_candidates, same input, 7 workers:
+#   7d   19.0s -> 17.4s (frame reuse) -> 2.7s warm pool / 5.3s cold
+#   30d  18.0s ->                        2.8s
+# Fold-for-fold identical predictions (max |diff| 0.0), asserted by
+# ``test_parallel_folds_are_the_same_folds``. The first request after a restart
+# pays the ~2.6s pool spin-up; loky keeps the workers for later ones.
+#
 # Fast families only: interactive latency matters and the heavyweight members
 # (rf/gbr/quantile_gbr/arima/sarimax) rarely beat these on this data scale.
 FAST_CANDIDATES = (
@@ -185,7 +215,8 @@ def predict_custom(
         )
 
     results = evaluate_candidates(
-        series, days, candidates=FAST_CANDIDATES, max_folds=CUSTOM_MAX_FOLDS
+        series, days, candidates=FAST_CANDIDATES, max_folds=CUSTOM_MAX_FOLDS,
+        n_jobs=_worker_count(None),
     )
     if not results:
         raise ValueError("no candidate model produced walk-forward folds")

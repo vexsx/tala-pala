@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 
 import pytest
 
@@ -150,6 +151,49 @@ def test_apply_order_is_numeric(checker, tmp_path):
     assert [os.path.basename(p) for p in
             checker.up_files(str(tmp_path), min_version=2, max_version=9)] == \
         ["0002_m.up.sql"]
+
+
+def test_alter_added_columns_reach_the_sqlalchemy_mirror(checker):
+    """A column added by ALTER TABLE must appear in the Python mirror too.
+
+    CREATE TABLE bodies are easy to mirror because the whole table is written
+    at once; the columns a LATER migration bolts on are the ones that get
+    missed, because nothing points at the mirror when the ALTER is written.
+    That is exactly what happened to 0017: ten columns on ``news_articles``
+    (which made the collectors log a mirror-drift warning every pass) and six
+    on ``news_events`` (which are precisely the keys
+    ``consolidate.event_consolidation_fields`` returns, so the consolidation
+    result had nowhere to be written at all).
+
+    Only tables the mirror actually declares are checked — Python deliberately
+    does not mirror the whole schema (users, alerts and the rest are the Go
+    service's).
+    """
+    import app.news  # noqa: F401  registers the news tables on db.metadata
+    from app.db import metadata
+
+    alter_add = re.compile(
+        r"ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([\w.]+)\s+"
+        r"ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
+        re.IGNORECASE,
+    )
+    missing = []
+    checked = 0
+    for path in checker.up_files(MIGRATIONS_DIR):
+        with open(path, "r", encoding="utf-8") as handle:
+            sql = checker._executable_sql(handle.read())
+        for raw_table, column in alter_add.findall(sql):
+            table = raw_table.split(".")[-1]
+            if table not in metadata.tables:
+                continue  # not mirrored in Python at all, by design
+            checked += 1
+            if column not in metadata.tables[table].c:
+                missing.append(f"{table}.{column} ({os.path.basename(path)})")
+
+    assert checked, "no ALTER ... ADD COLUMN found — the parse or the naming changed"
+    assert missing == [], (
+        "columns added by a migration but absent from the SQLAlchemy mirror:\n"
+        + "\n".join(f"  - {m}" for m in missing))
 
 
 def test_drop_in_a_later_migration_is_reflected(checker, tmp_path):

@@ -265,6 +265,13 @@ def _ingest_record(
             published_at=record.published_at,
             published_at_estimated=record.published_at_estimated,
             ingested_at=record.ingested_at,
+            # 0017 makes available_at the only clock a historical feature may
+            # filter on, and its backfill ran once over 0016's rows — a writer
+            # that leaves it NULL puts its articles permanently outside every
+            # such filter.  For this path the two are the same instant by
+            # construction: the feed IS how we came to hold the item, so the
+            # moment we could first act on it is the moment we ingested it.
+            available_at=record.ingested_at,
             last_seen_at=record.ingested_at,
             n_versions=1,
             duplicate_of=duplicate_of,

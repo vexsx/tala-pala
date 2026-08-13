@@ -178,6 +178,22 @@ jobs:
                                    expected_change_pct, direction, confidence)
           VALUES ('1d', 'naive', now(), now() + interval '1 day',
                   1000000, 990000, 1010000, 0.5, 'up', 0.5);
+          -- 0022 repairs DATA, not schema, so it is invisible to the table and
+          -- index diffs below: without rows shaped like the ones it targets,
+          -- the migration would be "tested" by never matching anything. These
+          -- are the three shapes production holds — the tenfold-small history,
+          -- the mislabelled pre-flip live quote, and the genuine ^TNX index
+          -- quote that must not be touched.
+          INSERT INTO prices (symbol, value, currency, unit, source, observed_at)
+          VALUES ('US10Y', 0.4988, 'PCT', 'pct', 'yahoo_backfill', TIMESTAMPTZ '2026-05-20 23:00+00');
+          INSERT INTO raw_observations (provider_code, symbol, raw_value, unit, currency,
+                                        raw_payload, observed_at, quality, dedupe_key)
+          VALUES ('yahoo', 'US10Y', 0.4988, 'pct', 'PCT', '{"kind":"backfill"}'::jsonb,
+                  TIMESTAMPTZ '2026-05-20 23:00+00', 'ok', 'ci-us10y-backfill'),
+                 ('yahoo', 'US10Y', 4.697, 'TNX_index', 'INDEX', '{"meta":{}}'::jsonb,
+                  TIMESTAMPTZ '2026-08-11 17:20+00', 'ok', 'ci-us10y-live-pre'),
+                 ('yahoo', 'US10Y', 46.82, 'TNX_index', 'INDEX', '{"meta":{}}'::jsonb,
+                  TIMESTAMPTZ '2026-08-12 14:00+00', 'suspect', 'ci-us10y-live-post');
           SQL
 
           for f in $(python3 scripts/check_migrations.py --list up-files --min-version "$((baseline + 1))"); do
@@ -202,13 +218,42 @@ jobs:
           fi
 
           # And it must still hold the rows it had before the upgrade.
-          for table in raw_observations prices model_versions predictions; do
+          for spec in raw_observations:4 prices:2 model_versions:1 predictions:1; do
+            table="${spec%:*}"; want="${spec#*:}"
             rows=$(psql -Atq -d db_upgrade -c "SELECT count(*) FROM $table")
-            if [ "$rows" != "1" ]; then
-              echo "::error::upgrade changed pre-existing $table rows (expected 1, found $rows)"
+            if [ "$rows" != "$want" ]; then
+              echo "::error::upgrade changed pre-existing $table rows (expected $want, found $rows)"
               exit 1
             fi
           done
+
+          # 0022 is a DATA migration: nothing above would notice if it silently
+          # matched no rows, or matched the wrong ones. Each branch is asserted.
+          psql -v ON_ERROR_STOP=1 -q -d db_upgrade <<'SQL'
+          DO $$
+          DECLARE n INT;
+          BEGIN
+            SELECT count(*) INTO n FROM prices
+             WHERE symbol = 'US10Y' AND value = 4.988;
+            IF n <> 1 THEN RAISE EXCEPTION '0022 did not rescale the US10Y price row'; END IF;
+            SELECT count(*) INTO n FROM raw_observations
+             WHERE dedupe_key = 'ci-us10y-backfill' AND raw_value = 4.988;
+            IF n <> 1 THEN RAISE EXCEPTION '0022 did not rescale the backfill raw row'; END IF;
+            -- the provider's own number is a record, not a value to repair:
+            -- only its label was wrong
+            SELECT count(*) INTO n FROM raw_observations
+             WHERE dedupe_key = 'ci-us10y-live-pre'
+               AND raw_value = 4.697 AND unit = 'pct' AND currency = 'PCT';
+            IF n <> 1 THEN RAISE EXCEPTION '0022 mishandled the pre-flip live row'; END IF;
+            SELECT count(*) INTO n FROM raw_observations
+             WHERE dedupe_key = 'ci-us10y-live-post'
+               AND raw_value = 46.82 AND unit = 'TNX_index' AND quality = 'suspect';
+            IF n <> 1 THEN RAISE EXCEPTION '0022 touched a genuine ^TNX index quote'; END IF;
+            SELECT count(*) INTO n FROM data_providers
+             WHERE code = 'tgju' AND NOT enabled AND consecutive_failures = 0;
+            IF n <> 1 THEN RAISE EXCEPTION '0023 did not disable tgju'; END IF;
+          END $$;
+          SQL
           echo "  upgrade from ${baseline} to ${latest} clean, pre-existing rows intact"
 
   frontend:

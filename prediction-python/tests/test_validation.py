@@ -1,7 +1,9 @@
 """Outlier detection, jump rule, premium cross-check and dedupe keys."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+import pytest
 
 from app.core import validation
 
@@ -67,6 +69,83 @@ def test_classify_out_of_range_is_outlier():
 def test_values_agree():
     assert validation.values_agree(100.0, 101.0)
     assert not validation.values_agree(100.0, 110.0)
+
+
+# --- corroboration by repetition (single-source escape hatch) ----------------
+
+
+def _history(*rows):
+    """(minutes ago, value, quality) -> the newest-first shape the walk takes."""
+    now = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+    return now, [
+        (now - timedelta(minutes=minutes), value, quality)
+        for minutes, value, quality in rows
+    ]
+
+
+def test_suspect_streak_counts_a_consistent_run():
+    now, history = _history(
+        (30, 4.681, "suspect"), (60, 4.690, "suspect"), (95, 4.675, "suspect"),
+    )
+    streak = validation.suspect_streak(4.682, now, history)
+    assert streak.length == 4  # three stored + the candidate
+    assert streak.span_minutes == pytest.approx(95.0)
+    assert streak.since == now - timedelta(minutes=95)
+
+
+def test_suspect_streak_stops_at_an_accepted_value():
+    """A good value in between means the series was never stuck, so the older
+    suspects cannot be counted as part of the current run."""
+    now, history = _history(
+        (30, 4.681, "suspect"), (60, 4.690, "ok"), (95, 4.675, "suspect"),
+    )
+    assert validation.suspect_streak(4.682, now, history).length == 2
+
+
+def test_suspect_streak_stops_at_a_disagreeing_value():
+    """A source flapping between levels never accumulates a run: each quote
+    only corroborates the ones it actually agrees with."""
+    now, history = _history(
+        (30, 4.681, "suspect"), (60, 0.470, "suspect"), (95, 4.675, "suspect"),
+    )
+    assert validation.suspect_streak(4.682, now, history).length == 2
+
+
+def test_suspect_streak_of_a_one_off_spike_is_one():
+    now, history = _history((30, 0.4697, "ok"), (60, 0.4701, "ok"))
+    streak = validation.suspect_streak(9.9, now, history)
+    assert streak.length == 1 and streak.span_minutes == 0.0
+
+
+def test_suspect_streak_ignores_re_observations_of_the_same_instant():
+    """Several rows carrying one source timestamp are one observation; the
+    span must not be inflated by re-reading the same quote."""
+    now, history = _history(
+        (30, 4.681, "suspect"), (30, 4.683, "suspect"), (90, 4.675, "suspect"),
+    )
+    streak = validation.suspect_streak(4.682, now, history)
+    assert streak.length == 3
+    assert streak.span_minutes == pytest.approx(90.0)
+
+
+def test_sustained_by_repetition_needs_both_count_and_span():
+    since = datetime(2026, 8, 13, 12, 0, tzinfo=timezone.utc)
+    enough = validation.SuspectStreak(
+        validation.SUSTAIN_MIN_OBSERVATIONS, validation.SUSTAIN_MIN_SPAN_MINUTES, since
+    )
+    assert validation.sustained_by_repetition(enough)
+    # a fast ticker: five quotes inside one minute is one instant, not a level
+    burst = validation.SuspectStreak(validation.SUSTAIN_MIN_OBSERVATIONS, 1.0, since)
+    assert not validation.sustained_by_repetition(burst)
+    # two points ninety minutes apart is a line, not a sustained level
+    sparse = validation.SuspectStreak(2, validation.SUSTAIN_MIN_SPAN_MINUTES, since)
+    assert not validation.sustained_by_repetition(sparse)
+
+
+def test_alert_threshold_precedes_automatic_acceptance():
+    """The operator must hear about a held series before it re-levels itself,
+    otherwise the warning only ever narrates a decision already taken."""
+    assert validation.SUSPECT_ALERT_AFTER < validation.SUSTAIN_MIN_OBSERVATIONS
 
 
 def test_premium_suspect():

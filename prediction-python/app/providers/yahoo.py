@@ -8,15 +8,22 @@ Ticker notes:
 
 * ``GC=F`` (COMEX gold futures) is used as the XAUUSD proxy, ``SI=F`` for
   XAGUSD, ``BZ=F`` for Brent, ``DX-Y.NYB`` for DXY.
-* ``^TNX`` quotes **ten times** the US 10-year yield (43.5 => 4.35%);
-  normalization divides by 10 (see core.normalize.tnx_to_pct).
+* ``^TNX`` is served under two conventions — the CBOE index (ten times the
+  yield, ``46.82`` => 4.682%) and the plain yield (``4.697`` => 4.697%) — and
+  Yahoo switches between them in BOTH directions: plain yield up to
+  2026-08-11, index form from 2026-08-11, plain yield again by 2026-08-13
+  (live fetch: 4.627).  So neither convention is the "current" one to assume.
+  A single quote is decided by ``core.normalize.tnx_to_pct`` against the 25%
+  plausibility ceiling, and the raw row records which branch it took.  A
+  HISTORY payload is decided once for the whole series — see
+  :func:`parse_chart_history`, which has evidence a lone quote does not.
 """
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from ..core.normalize import SYMBOL_META, tnx_to_pct
+from ..core.normalize import SYMBOL_META, tnx_quote_meta, tnx_series_to_pct, tnx_to_pct
 from ..db import utcnow
 from .base import Observation, Provider, ProviderError
 
@@ -59,13 +66,17 @@ def parse_chart(payload: Any, ticker: str) -> Optional[Observation]:
     )
     currency, unit = SYMBOL_META[symbol]
     raw_currency = str(meta.get("currency") or currency)
-    raw_unit = "TNX_index" if symbol == "US10Y" else f"{raw_currency}/{unit}"
+    raw_unit = f"{raw_currency}/{unit}"
+    if symbol == "US10Y":
+        # Yahoo's own `currency` field says "USD" for ^TNX under either
+        # convention, so it cannot label the row; the quote itself does.
+        raw_unit, raw_currency = tnx_quote_meta(float(raw_value))
     return Observation(
         provider_code="yahoo",
         symbol=symbol,
         raw_value=float(raw_value),
         raw_unit=raw_unit,
-        raw_currency=raw_currency if symbol != "US10Y" else "INDEX",
+        raw_currency=raw_currency,
         value=_normalize(symbol, float(raw_value)),
         currency=currency,
         unit=unit,
@@ -77,21 +88,31 @@ def parse_chart(payload: Any, ticker: str) -> Optional[Observation]:
 
 
 def parse_chart_history(payload: Any, ticker: str) -> list[tuple[datetime, float]]:
-    """Extract (utc timestamp, close) pairs from a ranged chart payload (seeding)."""
-    out: list[tuple[datetime, float]] = []
+    """Extract (utc timestamp, close) pairs from a ranged chart payload (seeding).
+
+    ``^TNX`` is normalized SERIES-WIDE rather than bar by bar.  One download is
+    published under one convention, so the whole payload is the evidence for
+    which one, and ``core.normalize.tnx_series_to_pct`` uses it — see that
+    function for what judging each bar alone got wrong (index-form bars inside
+    the ambiguous band, e.g. 12.80 for 1.28%, stored unscaled and passing the
+    sanity range on the way through).
+    """
     try:
         result = payload["chart"]["result"][0]
         stamps = result["timestamp"]
         closes = result["indicators"]["quote"][0]["close"]
     except (KeyError, IndexError, TypeError):
-        return out
+        return []
     symbol = TICKER_MAP.get(ticker, "")
-    for epoch, close in zip(stamps, closes):
-        if close is None or not isinstance(epoch, (int, float)):
-            continue
-        value = _normalize(symbol, float(close)) if symbol else float(close)
-        out.append((datetime.fromtimestamp(epoch, tz=timezone.utc), value))
-    return out
+    bars = [
+        (datetime.fromtimestamp(epoch, tz=timezone.utc), float(close))
+        for epoch, close in zip(stamps, closes)
+        if close is not None and isinstance(epoch, (int, float))
+    ]
+    if symbol != "US10Y":
+        return bars
+    values = tnx_series_to_pct([close for _, close in bars])
+    return [(at, value) for (at, _), value in zip(bars, values)]
 
 
 class YahooProvider(Provider):

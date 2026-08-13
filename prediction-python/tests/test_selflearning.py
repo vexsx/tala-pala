@@ -103,6 +103,101 @@ def test_fit_meta_gate_learns_confidence_signal(engine):
     assert p_unconfident < 0.4
 
 
+def _insert_varied(engine, n: int = 240):
+    """Matured predictions across both instruments, all four regimes and the
+    horizons the scheduler emits — i.e. the shape the production refit sees,
+    where the four ``regime_*`` one-hots sum to 1 on every row."""
+    from app.models.metagate import REGIMES
+
+    now = utcnow()
+    horizons = ["1h", "4h", "1d", "3d", "7d", "30d"]
+    rng = np.random.RandomState(11)
+    rows = []
+    for i in range(n):
+        horizon = horizons[i % len(horizons)]
+        symbol = "IR_GOLD_18K" if i % 3 else "XAUUSD"
+        regime = REGIMES[i % len(REGIMES)]
+        base = 1000.0
+        conf = float(np.clip(rng.normal(0.7, 0.09), 0.05, 0.95))
+        point = base * (1.0 + rng.normal(0.0, 0.01))
+        if point == base:
+            continue
+        width = base * abs(rng.normal(0.02, 0.005))
+        hit = rng.rand() < 1.0 / (1.0 + np.exp(-(0.3 + (conf - 0.7) / 0.09)))
+        moved = abs(point - base) * (1.0 if hit else -1.0)
+        rows.append(dict(
+            symbol=symbol, horizon=horizon, model_name="test",
+            predicted_at=now - timedelta(days=n - i),
+            target_time=now - timedelta(days=n - i - 1),
+            point_forecast=point, lower_bound=point - width, upper_bound=point + width,
+            expected_change_pct=(point / base - 1.0) * 100.0,
+            direction="up" if point > base else "down",
+            confidence=conf, raw_confidence=conf, regime=regime,
+            drivers=[], data_fresh=True, warnings=[],
+            actual_value=base + moved, created_at=now,
+        ))
+    with engine.begin() as conn:
+        for row in rows:
+            conn.execute(predictions.insert().values(**row))
+    return len(rows)
+
+
+def test_meta_gate_is_fitted_on_a_full_rank_design(engine):
+    """The published feature VECTOR is degenerate as a fitted MATRIX.
+
+    With every row carrying one of the four regimes, the ``regime_*`` one-hots
+    sum to 1 and are therefore collinear with the intercept sklearn fits
+    separately (rank 10 of 11 measured on a 500-row production-shaped design,
+    sigma_min 6.7e-15); ``data_fresh`` is TRUE on every row, so its standardized
+    column is exactly zero. Those are directions the log-likelihood is flat in,
+    and they are what leaves lbfgs's absolute gradient bound with nothing but
+    the prior's curvature to stand on. The fit must therefore run on an
+    independent subset — while the STORED vector keeps its published shape,
+    because every applicability check and ``score_meta_gate``'s dot product are
+    indexed by ``FEATURE_NAMES``.
+    """
+    from app.models.metagate import FEATURE_NAMES, _independent_columns
+
+    n = _insert_varied(engine)
+    gate = fit_meta_gate(engine)
+    assert gate is not None and gate["n"] == n
+    assert len(gate["coef"]) == len(FEATURE_NAMES)
+    assert len(gate["mean"]) == len(FEATURE_NAMES)
+    assert len(gate["std"]) == len(FEATURE_NAMES)
+
+    # std is stored for every column (floored, never zero) so the support
+    # checks still work on the columns the fit dropped
+    assert all(s > 0 for s in gate["std"])
+
+    # data_fresh is constant TRUE here, so it must have been dropped, and its
+    # stored coefficient is the zero a dropped column contributes.
+    assert gate["coef"][FEATURE_NAMES.index("data_fresh")] == 0.0
+
+    # and the selector itself: a complete one-hot plus a constant column
+    design = np.column_stack([
+        np.linspace(0.0, 1.0, 40),                 # informative
+        np.ones(40),                               # constant
+        *[(np.arange(40) % 4 == k).astype(float) for k in range(4)],  # one-hot
+    ])
+    keep = _independent_columns(design)
+    assert 0 in keep                    # the informative column survives
+    assert 1 not in keep                # constant: no information
+    assert len(keep) == 4               # 1 informative + 3 of the 4 one-hot levels
+    assert 5 not in keep                # left-to-right: the LAST level is the one dropped
+
+
+def test_meta_gate_does_not_ship_a_fit_that_did_not_converge(engine, monkeypatch):
+    """A ConvergenceWarning leaves half-optimized coefficients behind, and this
+    gate's output is blended 50/50 into user-visible confidence. Coefficients
+    the optimizer never settled on are not a self-assessment, so the refit
+    yields nothing and jobs/evaluate.py keeps the gate already stored."""
+    import app.models.metagate as metagate
+
+    _insert_varied(engine)
+    monkeypatch.setattr(metagate, "MAX_ITER", 1)   # nothing converges in one step
+    assert metagate.fit_meta_gate(engine) is None
+
+
 def test_apply_meta_gate_handles_garbage():
     assert apply_meta_gate(None, 1, 0, 2, 1, 0.5, "1d", "ranging", True) is None
     assert apply_meta_gate({"broken": True}, 1, 0, 2, 1, 0.5, "1d", "ranging", True) is None

@@ -28,6 +28,21 @@ _DROP_COLS = ("close", "lag_1", "lag_2", "lag_3", "lag_5", "lag_10", "lag_20",
               "roll_mean_5", "roll_mean_10", "roll_mean_20",
               "usd_irt", "xau_usd", "theoretical_18k")
 
+# Exogenous series a caller may put in the context. Named here so a caller can
+# ask "does this run use exog?" without knowing the reader's internals.
+EXOG_KEYS = ("usd_irt", "xau_usd", "gold_fund", "fund_flow")
+
+# Reserved (non-series) context key: a feature frame already built on a
+# SUPERSET of ``series``, to be sliced instead of recomputed. Walk-forward
+# rebuilds the frame from scratch for every fold, and since every column in it
+# is causal (:func:`app.features.engineering.compute_feature_frame`), fold k's
+# frame is exactly the first k rows of the last fold's — 40 folds x 3 tabular
+# candidates rebuilding the same 1224x42 matrix. Only the no-exog case uses
+# this: with exog present each fold cuts its auxiliary series at its OWN last
+# gold timestamp, and this shortcut must not be the thing that decides whether
+# that cut still happens.
+PREBUILT_FRAME_KEY = "prebuilt_feature_frame"
+
 
 def _feature_matrix(series: pd.Series, context: Optional[dict] = None) -> pd.DataFrame:
     """Full causal feature frame; exogenous series (USD/IRT, XAU) and the
@@ -38,6 +53,12 @@ def _feature_matrix(series: pd.Series, context: Optional[dict] = None) -> pd.Dat
     the FULL exog series via context, so each exog series is cut at the last
     gold timestamp before use (same leakage policy as sarimax_exog).
 
+    A caller that has already built the frame for a superset of ``series`` can
+    pass it under :data:`PREBUILT_FRAME_KEY`; the frame is causal, so this
+    function then returns its first ``len(series)`` rows, which is what it
+    would have recomputed. The result is shared, so treat it as read-only —
+    :meth:`TabularModel.fit` copies before writing its target column.
+
     Schema guard: ``series`` here is a walk-forward PREFIX, so nothing about it
     may decide which columns exist — otherwise early folds are scored in one
     feature space and the artifact refit on the full history ships in another.
@@ -47,6 +68,13 @@ def _feature_matrix(series: pd.Series, context: Optional[dict] = None) -> pd.Dat
     prefix and so keep the schema constant anyway.
     """
     cutoff = series.index[-1] if len(series) else None
+
+    cached = (context or {}).get(PREBUILT_FRAME_KEY)
+    if cached is not None and cutoff is not None and len(cached) >= len(series):
+        # Positional AND label agreement, so a cache built on a different
+        # series (or a differently spaced one) is ignored rather than sliced.
+        if cached.index[len(series) - 1] == cutoff:
+            return cached.iloc[: len(series)]
 
     def _pit(name: str) -> Optional[pd.Series]:
         aux = (context or {}).get(name)

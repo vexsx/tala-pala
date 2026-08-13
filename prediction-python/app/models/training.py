@@ -12,6 +12,7 @@ Rules (docs/CONTRACTS.md):
 """
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import os
@@ -43,6 +44,7 @@ from .baselines import NaiveModel  # noqa: F401  (registers baselines)
 from .classical import ThetaForecastModel  # noqa: F401  (registers 'theta', 'holt_damped')
 from .ensemble import EnsembleModel, combine, inverse_smape_weights
 from .intervals import relative_residuals, walk_forward_coverage
+from .ml import EXOG_KEYS, PREBUILT_FRAME_KEY, _feature_matrix
 from .ml import TabularModel  # noqa: F401  (registers ml models)
 from .sarimax_exog import SarimaxExogModel  # noqa: F401  (registers 'sarimax_exog')
 from .tvinspired import LorentzianKNNModel  # noqa: F401  (registers 'lorentzian_knn', 'kalman_llt')
@@ -53,6 +55,67 @@ MIN_TRAIN_POINTS = 60
 MIN_DAILY_POINTS = 120
 MIN_HOURLY_DAYS = 14
 MAX_FOLDS = 40
+
+# Ceiling on the worker processes an interactive walk-forward may spread its
+# folds over (see :func:`_worker_count`). The nightly run stays sequential:
+# it is a background job with no one waiting on it, and it already has both
+# symbols and seven horizons to fill a machine with.
+#
+# This is the SPEED ceiling — the point past which another worker buys nothing
+# (measured below) — and it is no longer the binding one. Memory is: each
+# worker is a whole interpreter, so the count has to be answered against the
+# memory this process is allowed to use, not only against the core count.
+MAX_PARALLEL_FOLD_WORKERS = 8
+
+# Resident set of ONE loky fold worker: a fresh interpreter with numpy, pandas,
+# scikit-learn and statsmodels imported plus a copy of the series and feature
+# frame. Measured on the production shape (1224 daily points, 9
+# FAST_CANDIDATES, 40 folds, 7-day horizon) by sampling the whole process tree
+# through a cold pool -- total RSS is linear in the worker count, 260 MB of
+# service plus ~184 MB per worker:
+#
+#   workers   latency   peak tree RSS      workers   latency   peak tree RSS
+#   1         19.38s      260 MB           5          4.70s     1175 MB
+#   2         11.14s      595 MB           6          4.64s     1352 MB
+#   3          6.18s      865 MB           7          4.88s     1546 MB
+#   4          5.99s      992 MB           8          4.79s     1734 MB
+#
+# Rounded up to 200 MB so the derived count errs low. Note the last four rows:
+# past ~5 workers the latency curve is flat and every extra worker is pure
+# memory, which is why an unbounded count is all cost and no benefit.
+FOLD_WORKER_RSS_BYTES = 200 * 1024 * 1024
+
+# Share of this process's memory budget the fold pool may claim.
+#
+# The pool is not alone in the container: the service's own resident set is the
+# ~260 MB above before a single worker starts, and every request in flight
+# holds its own series and feature frame. Half the budget for the pool leaves
+# the other half -- roughly twice the idle footprint -- to absorb concurrent
+# requests and allocator slack. At the deployed limit (docker-compose caps
+# prediction-service at 1500m) this resolves to 3 workers and a measured peak
+# of 865 MB, 55% of the cap; the unbounded rule resolved to 8 on the same host
+# and peaked at 1734 MB, i.e. over it. The trade is deliberate and cheap:
+# 6.18s against 4.79s, both against 19.38s sequential. A forecast that is
+# three times faster is worth a great deal less than one that does not get the
+# service OOM-killed, and the OOM killer does not negotiate.
+FOLD_POOL_MEMORY_SHARE = 0.5
+
+# Worker cap when the memory budget cannot be read at all (no cgroup limit, no
+# ``sysconf`` page counts). Two workers still halve the wait and cannot exceed
+# ~650 MB, which is survivable in any container small enough for the question
+# to matter. Guessing high here is the one mistake with an unbounded cost.
+FOLD_WORKERS_WITHOUT_A_BUDGET = 2
+
+# cgroup v2 then v1. In a container ``/sys/fs/cgroup`` is the container's own
+# root, so these files hold ITS limit rather than the host's.
+_CGROUP_MEMORY_LIMIT_FILES = (
+    "/sys/fs/cgroup/memory.max",                    # v2
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # v1
+)
+
+# Above this, a "limit" is a no-limit sentinel rather than a budget: 256 TiB
+# is far past any container and far below cgroup v1's page-aligned 2**63-1.
+_IMPLAUSIBLE_MEMORY_LIMIT_BYTES = 1 << 48
 
 # Bar spacing per series frequency, stated to the feature layer instead of
 # left to be guessed from a fold (see engineering.infer_bar_spacing): the
@@ -135,6 +198,184 @@ def horizon_enabled(freq: str, series: pd.Series) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _prediction_context(series: pd.Series, context: Optional[dict]) -> Optional[dict]:
+    """``context`` plus a feature frame built once for the whole series.
+
+    Only when the run carries no exog: with exog present each fold cuts its
+    auxiliary series at its own last gold timestamp, and a shared frame would
+    quietly decide that question for every fold at once.  Returns ``context``
+    unchanged when the shortcut does not apply, so a caller can always use the
+    result in place of the original.
+    """
+    if any((context or {}).get(key) is not None for key in EXOG_KEYS):
+        return context
+    if len(series) == 0:
+        return context
+    try:
+        frame = _feature_matrix(series, context)
+    except Exception as exc:  # a cache is never worth failing a run over
+        log.warning("feature-frame prebuild skipped: %s", exc)
+        return context
+    return {**(context or {}), PREBUILT_FRAME_KEY: frame}
+
+
+def _fold_indices(
+    series: pd.Series, horizon_steps: int, min_train: int, max_folds: int
+) -> list[int]:
+    """The ``now`` positions walk-forward fits at, in time order."""
+    last_now = len(series) - 1 - horizon_steps
+    first_now = min_train - 1
+    if last_now < first_now:
+        return []
+    step = max(1, (last_now - first_now) // max_folds + 1)
+    return list(range(first_now, last_now + 1, step))
+
+
+def _fit_fold_chunk(
+    series: pd.Series,
+    model_name: str,
+    horizon_steps: int,
+    indices: Sequence[int],
+    context: Optional[dict],
+) -> tuple[list[tuple[int, float]], Optional[str], list[tuple[int, str]]]:
+    """Fit ``model_name`` at each index; return ``(preds, unavailable, failures)``.
+
+    Split out of :func:`walk_forward` because this is the unit that gets handed
+    to a worker PROCESS, and a worker must not do the reporting: its logger is
+    not this process's, so anything it logged would vanish rather than reach the
+    Issues tab.  Both abnormal outcomes are therefore returned as data and
+    logged by the parent, in the same order and with the same wording as when
+    the loop ran inline.
+    """
+    # Only the tabular family reads the feature frame; building it for `naive`
+    # would be pure cost.  A future reader that is not a TabularModel simply
+    # misses the reuse and rebuilds, which is the safe direction.
+    ctx = (
+        _prediction_context(series, context)
+        if isinstance(make(model_name), TabularModel)
+        else context
+    )
+    preds: list[tuple[int, float]] = []
+    failures: list[tuple[int, str]] = []
+    for i in indices:
+        try:
+            model = make(model_name)
+            model.set_context(ctx)
+            model.fit(series.iloc[: i + 1], horizon_steps)
+            pred = float(model.predict_point())
+        except ModelUnavailable as exc:
+            return [], str(exc), failures
+        except Exception as exc:  # a fold failure should not sink the run
+            failures.append((i, str(exc)))
+            continue
+        if np.isfinite(pred):
+            preds.append((i, pred))
+    return preds, None, failures
+
+
+def _chunks(indices: Sequence[int], n_chunks: int) -> list[list[int]]:
+    """``indices`` split into at most ``n_chunks`` contiguous, near-equal parts."""
+    n_chunks = max(1, min(n_chunks, len(indices)))
+    size = math.ceil(len(indices) / n_chunks)
+    return [list(indices[k:k + size]) for k in range(0, len(indices), size)]
+
+
+def _read_int_file(path: str) -> Optional[int]:
+    """First line of ``path`` as an int, or None if it is absent/unreadable."""
+    try:
+        with open(path, "r", encoding="ascii") as handle:
+            return int(handle.readline().strip())
+    except (OSError, ValueError):
+        return None  # not Linux, no cgroup fs, or the sentinel "max"
+
+
+def _physical_memory_bytes() -> Optional[int]:
+    """Total RAM from ``sysconf``, or None where the page counts are absent."""
+    try:
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (AttributeError, ValueError, OSError):
+        return None
+    if pages <= 0 or page_size <= 0:
+        return None
+    return pages * page_size
+
+
+@functools.lru_cache(maxsize=1)
+def memory_budget_bytes() -> Optional[int]:
+    """Memory this process may actually use, or None if that is unknowable.
+
+    The cgroup limit when one is set, otherwise the machine's RAM, and the
+    SMALLER of the two when both are readable — a cgroup limit above physical
+    memory is a formality, not a budget.
+
+    This is the number ``joblib.cpu_count()`` has an analogue of for CPU and
+    nothing had for memory, which is the whole defect: the previous rule
+    reasoned only about cores, ``prediction-service`` has a
+    ``memory: 1500m`` limit and no ``cpus`` limit, so ``joblib.cpu_count()``
+    returned the HOST's core count and the pool sized itself against hardware
+    the container was never allowed to fill. Cached because a cgroup limit
+    cannot change under a running process; tests call ``.cache_clear()``.
+    """
+    limits = [_read_int_file(path) for path in _CGROUP_MEMORY_LIMIT_FILES]
+    candidates = [
+        value for value in limits
+        # "unlimited" is spelled differently by every cgroup version and none
+        # of the spellings is a budget: v2 writes "max" (which _read_int_file
+        # already drops), v1 a page-aligned 2**63-1. Read as a number the
+        # latter affords twenty billion workers, so any value past a quarter
+        # of a petabyte is a sentinel rather than a limit — checked here and
+        # not only against physical memory, because a host where sysconf is
+        # unavailable is exactly where an unfiltered sentinel would survive.
+        if value is not None and 0 < value < _IMPLAUSIBLE_MEMORY_LIMIT_BYTES
+    ]
+    physical = _physical_memory_bytes()
+    if physical:
+        # and a limit above the hardware is not a limit either
+        candidates = [value for value in candidates if value <= physical]
+        candidates.append(physical)
+    return min(candidates) if candidates else None
+
+
+def _memory_bounded_worker_cap() -> int:
+    """How many fold workers fit in this process's memory budget.
+
+    ``FOLD_POOL_MEMORY_SHARE`` of :func:`memory_budget_bytes`, divided by the
+    measured :data:`FOLD_WORKER_RSS_BYTES`; floored at one worker (sequential)
+    and ceilinged at :data:`MAX_PARALLEL_FOLD_WORKERS`, past which a container
+    with memory to spare would keep adding interpreters for no latency.
+    """
+    budget = memory_budget_bytes()
+    if budget is None:
+        return FOLD_WORKERS_WITHOUT_A_BUDGET
+    affordable = int(budget * FOLD_POOL_MEMORY_SHARE // FOLD_WORKER_RSS_BYTES)
+    return max(1, min(affordable, MAX_PARALLEL_FOLD_WORKERS))
+
+
+def _worker_count(n_jobs: Optional[int]) -> int:
+    """Resolve a requested worker count against this machine.
+
+    Follows joblib's convention: a positive count is taken as given, anything
+    else (None, -1) means "decide for me" — and the decision is the smallest
+    of three ceilings, because a worker costs a core AND a container's worth
+    of memory AND stops paying for itself at some point:
+
+    * one less than the core count, so an interactive forecast cannot take the
+      whole box away from the API process serving it;
+    * what the memory budget affords (:func:`_memory_bounded_worker_cap`) —
+      the binding constraint in the deployed container, and the one whose
+      absence let a single request peak at 1734 MB against a 1500m limit;
+    * :data:`MAX_PARALLEL_FOLD_WORKERS`, where the latency curve goes flat.
+    """
+    if n_jobs is not None and n_jobs > 0:
+        return n_jobs
+    # joblib's count, not os.cpu_count(): this runs in a container, and
+    # os.cpu_count() reports the HOST's cores through a cgroup CPU quota —
+    # which is how a 2-CPU container ends up starting eight workers.
+    cores = joblib.cpu_count() or 1
+    return max(1, min(cores - 1, _memory_bounded_worker_cap()))
+
+
 def walk_forward(
     series: pd.Series,
     model_name: str,
@@ -142,6 +383,7 @@ def walk_forward(
     min_train: int = MIN_TRAIN_POINTS,
     max_folds: int = MAX_FOLDS,
     context: Optional[dict] = None,
+    n_jobs: int = 1,
 ) -> list[Fold]:
     """Expanding-window walk-forward validation (no shuffling).
 
@@ -152,23 +394,75 @@ def walk_forward(
     from the earliest window (train-only information).  ``context`` carries
     auxiliary point-in-time series for exog-aware models; a model raising
     :class:`ModelUnavailable` (e.g. exog missing) is skipped entirely.
+
+    ``n_jobs`` > 1 spreads the folds over worker processes.  The folds are
+    independent by construction — each one fits a fresh model on a prefix of
+    the same series — so this changes only WHERE each fit runs, never what it
+    sees or what it returns; the folds come back in time order either way.
+    Models that ``reuse_across_folds`` are exempt: their whole point is that
+    fold n inherits fold 0's order selection, which is a sequential dependency.
     """
-    n = len(series)
-    last_now = n - 1 - horizon_steps
-    first_now = min_train - 1
-    if last_now < first_now:
+    indices = _fold_indices(series, horizon_steps, min_train, max_folds)
+    if not indices:
         return []
-    step = max(1, (last_now - first_now) // max_folds + 1)
 
     reusable = make(model_name)  # ARIMA/SARIMAX benefit from cached order selection
+    if reusable.reuse_across_folds:
+        return _walk_forward_sequential_reused(
+            series, reusable, model_name, horizon_steps, indices, context)
+
+    workers = _worker_count(n_jobs) if n_jobs != 1 else 1
+    chunks = _chunks(indices, workers)
+    if len(chunks) > 1:
+        results = joblib.Parallel(n_jobs=len(chunks))(
+            joblib.delayed(_fit_fold_chunk)(
+                series, model_name, horizon_steps, chunk, context)
+            for chunk in chunks
+        )
+    else:
+        results = [_fit_fold_chunk(series, model_name, horizon_steps, chunks[0], context)]
+
+    preds: list[tuple[int, float]] = []
+    for chunk_preds, unavailable, failures in results:
+        for i, exc in failures:
+            log.warning("walk_forward %s fold@%d failed: %s", model_name, i, exc)
+        if unavailable is not None:
+            log.info("walk_forward %s skipped: %s", model_name, unavailable)
+            return []
+        preds.extend(chunk_preds)
+    preds.sort()
+    return [
+        Fold(
+            t_index=i,
+            t_time=series.index[i].to_pydatetime(),
+            base=float(series.iloc[i]),
+            pred=pred,
+            actual=float(series.iloc[i + horizon_steps]),
+        )
+        for i, pred in preds
+    ]
+
+
+def _walk_forward_sequential_reused(
+    series: pd.Series,
+    reusable: ForecastModel,
+    model_name: str,
+    horizon_steps: int,
+    indices: Sequence[int],
+    context: Optional[dict],
+) -> list[Fold]:
+    """The ``reuse_across_folds`` path, which cannot be split across workers."""
+    ctx = (
+        _prediction_context(series, context)
+        if isinstance(reusable, TabularModel)
+        else context
+    )
     folds: list[Fold] = []
-    for i in range(first_now, last_now + 1, step):
-        train = series.iloc[: i + 1]
+    for i in indices:
         try:
-            model = reusable if reusable.reuse_across_folds else make(model_name)
-            model.set_context(context)
-            model.fit(train, horizon_steps)
-            pred = float(model.predict_point())
+            reusable.set_context(ctx)
+            reusable.fit(series.iloc[: i + 1], horizon_steps)
+            pred = float(reusable.predict_point())
         except ModelUnavailable as exc:
             log.info("walk_forward %s skipped: %s", model_name, exc)
             return []
@@ -328,6 +622,7 @@ def evaluate_candidates(
     candidates: Optional[Sequence[str]] = None,
     context: Optional[dict] = None,
     max_folds: int = MAX_FOLDS,
+    n_jobs: int = 1,
 ) -> dict[str, dict]:
     """Walk-forward all candidates on the same folds; add the ensemble.
 
@@ -345,13 +640,17 @@ def evaluate_candidates(
     ``candidates`` defaults to the module-level ``CANDIDATES`` (resolved at
     call time so tests can narrow the set); ``context`` feeds exog-aware
     models (see :func:`walk_forward`); ``max_folds`` lets interactive callers
-    (custom horizons) trade validation depth for latency.
+    (custom horizons) trade validation depth for latency; ``n_jobs`` spreads
+    each candidate's folds over worker processes, which changes latency only
+    (see :func:`walk_forward`) and defaults to the sequential behaviour the
+    nightly run has always had.
     """
     if candidates is None:
         candidates = CANDIDATES
     results: dict[str, dict] = {}
     for name in candidates:
-        folds = walk_forward(series, name, horizon_steps, context=context, max_folds=max_folds)
+        folds = walk_forward(series, name, horizon_steps, context=context,
+                             max_folds=max_folds, n_jobs=n_jobs)
         if folds:
             sel, hold = split_folds(folds, horizon_steps, _fold_step(series, horizon_steps, max_folds))
             results[name] = {

@@ -47,5 +47,5 @@ Iranian coins (Emami, etc.) trade with their own premium ("bubble") over melt va
 ## Validation
 
 - `test_formula.py` checks the constants and worked examples to 6 decimal places.
-- `test_normalize.py` checks rial→toman and the Yahoo `^TNX` (yield ×10) normalization.
+- `test_normalize.py` checks rial→toman and the Yahoo `^TNX` normalization — which is *not* a fixed ×10: the ticker is published under both the CBOE index convention (`46.82` = 4.682%) and the plain yield (`4.697` = 4.697%), so `÷10` is applied only as a repair to a quote above the 25% plausibility ceiling.
 - Collection-time validation rejects values that imply an impossible premium (e.g. |premium| > 25%) as `suspect` unless confirmed by a second source — this catches unit mistakes (rial/toman mixups produce ×10 errors that this check catches immediately).

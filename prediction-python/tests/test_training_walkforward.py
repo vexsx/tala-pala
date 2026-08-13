@@ -52,6 +52,41 @@ def test_walk_forward_folds_time_ordered_and_expanding():
         assert f.pred == pytest.approx(float(series.iloc[f.t_index]))  # naive
 
 
+def test_parallel_folds_are_the_same_folds():
+    """``n_jobs`` is a latency knob and nothing else.
+
+    Every fold fits a fresh model on a prefix of one series, so spreading them
+    over worker processes must not move a prediction, drop a fold or reorder
+    one — the interactive custom-horizon path ships the winner chosen from
+    these numbers, and a validation that depends on how many cores answered it
+    would not be a validation.
+    """
+    series = _rw_series(300)
+    for name in ("naive", "ses", "hist_gb"):
+        sequential = walk_forward(series, name, horizon_steps=7)
+        parallel = walk_forward(series, name, horizon_steps=7, n_jobs=3)
+        assert [f.t_index for f in parallel] == [f.t_index for f in sequential]
+        for a, b in zip(sequential, parallel):
+            assert b.pred == pytest.approx(a.pred, rel=0, abs=0)
+            assert b.base == a.base and b.actual == a.actual and b.t_time == a.t_time
+
+
+def test_walk_forward_reuses_the_causal_feature_frame_across_folds():
+    """The frame the tabular models train on is rebuilt from scratch for every
+    fold, and it is causal — so fold k's frame is exactly the first k rows of
+    the full one.  Reusing it is what makes that rebuild disappear, and this is
+    the invariant it rests on: if a feature ever stopped being causal, the
+    reuse would silently feed a fold rows it could not have known."""
+    from app.models.ml import _feature_matrix
+
+    series = _rw_series(300)
+    full = _feature_matrix(series, None)
+    for k in (MIN_TRAIN_POINTS, 150, 299, 300):
+        prefix = _feature_matrix(series.iloc[:k], None)
+        assert list(prefix.columns) == list(full.columns)
+        pd.testing.assert_frame_equal(prefix, full.iloc[:k])
+
+
 def test_walk_forward_respects_horizon_gap():
     series = _rw_series(140)
     folds = walk_forward(series, "naive", horizon_steps=7)
@@ -496,3 +531,117 @@ def test_interval_coverage_survives_the_publication_path():
     # the bare rate is gone from the flat namespace: it could be read next to
     # n_folds and silently attributed to the wrong fold set
     assert "interval_coverage" not in metrics
+
+
+# --- fold-pool sizing: memory is the binding constraint, not cores ----------
+
+
+@pytest.fixture
+def cgroup(tmp_path, monkeypatch):
+    """Point the cgroup-limit lookup at a writable file and reset its cache."""
+    from app.models import training
+
+    path = tmp_path / "memory.max"
+    monkeypatch.setattr(training, "_CGROUP_MEMORY_LIMIT_FILES", (str(path),))
+    training.memory_budget_bytes.cache_clear()
+
+    def write(text: str) -> None:
+        path.write_text(text)
+        training.memory_budget_bytes.cache_clear()
+
+    yield write
+    training.memory_budget_bytes.cache_clear()
+
+
+def test_fold_pool_fits_the_deployed_container_memory_limit(cgroup, monkeypatch):
+    """The pool is sized against the memory the container may use.
+
+    docker-compose caps prediction-service at ``memory: 1500m`` and sets NO
+    ``cpus`` limit, so ``joblib.cpu_count()`` reports the HOST's cores and the
+    old core-only rule started 8 workers on an 8-core host. Measured peak
+    process-tree RSS for ONE request at 8 workers: 1734 MB — over the limit,
+    i.e. an OOM kill of the service, from a single forecast.
+    """
+    from app.models import training
+
+    monkeypatch.setattr(training.joblib, "cpu_count", lambda: 8)
+    cgroup(str(1500 * 1024 * 1024))
+
+    workers = training._worker_count(None)
+    assert workers < 8, "the core count alone must not decide the pool size"
+    # peak tree RSS ~= 260 MB of service + ~184 MB per worker (measured); the
+    # bound the count exists to hold is that this stays under the limit.
+    peak_mb = 260 + 184 * workers
+    assert peak_mb < 1500 * 0.75, f"{workers} workers peak at ~{peak_mb} MB of 1500"
+    # ...and it must still be worth parallelising at all: 1 worker is 19.4s.
+    assert workers >= 2
+
+
+def test_fold_pool_scales_with_the_budget_it_is_given(cgroup, monkeypatch):
+    """The cap is derived, not a constant tuned for one deployment."""
+    from app.models import training
+
+    monkeypatch.setattr(training.joblib, "cpu_count", lambda: 64)
+    seen = {}
+    for limit_mb in (400, 1500, 4000, 64_000):
+        cgroup(str(limit_mb * 1024 * 1024))
+        seen[limit_mb] = training._worker_count(None)
+
+    assert seen[400] < seen[1500] < seen[4000], seen
+    # a roomy container still stops where the latency curve goes flat
+    assert seen[64_000] == training.MAX_PARALLEL_FOLD_WORKERS
+    # a container too small for even one worker's budget still runs sequentially
+    cgroup(str(64 * 1024 * 1024))
+    assert training._worker_count(None) == 1
+
+
+def test_unlimited_cgroup_falls_back_to_the_machine_and_never_to_infinity(
+    cgroup, monkeypatch
+):
+    """cgroup v2 writes ``max`` and v1 a page-aligned 2**63-1 for "no limit".
+
+    Neither is a budget, and neither may be read as one — an int() of the v1
+    sentinel would afford twenty billion workers. Physical memory is the real
+    ceiling in both cases.
+    """
+    from app.models import training
+
+    monkeypatch.setattr(training.joblib, "cpu_count", lambda: 64)
+    monkeypatch.setattr(training, "_physical_memory_bytes", lambda: 2 * 1024**3)
+
+    sentinels = ("max", str(2**63 - 1), str((2**63 - 1) // 4096 * 4096))
+    for sentinel in sentinels:
+        cgroup(sentinel)
+        assert training.memory_budget_bytes() == 2 * 1024**3, sentinel
+        assert training._worker_count(None) == 5  # 2 GiB * 0.5 / 200 MiB
+
+    # ...and the sentinel must not survive where sysconf cannot contradict it,
+    # which is precisely where an unfiltered one would.
+    monkeypatch.setattr(training, "_physical_memory_bytes", lambda: None)
+    for sentinel in sentinels:
+        cgroup(sentinel)
+        assert training.memory_budget_bytes() is None, sentinel
+        assert training._worker_count(None) == training.FOLD_WORKERS_WITHOUT_A_BUDGET
+
+
+def test_no_readable_budget_is_answered_conservatively(monkeypatch):
+    """Unknown budget must not mean unbounded pool."""
+    from app.models import training
+
+    monkeypatch.setattr(training, "_CGROUP_MEMORY_LIMIT_FILES", ("/nonexistent/x",))
+    monkeypatch.setattr(training, "_physical_memory_bytes", lambda: None)
+    monkeypatch.setattr(training.joblib, "cpu_count", lambda: 64)
+    training.memory_budget_bytes.cache_clear()
+    try:
+        assert training.memory_budget_bytes() is None
+        assert training._worker_count(None) == training.FOLD_WORKERS_WITHOUT_A_BUDGET
+    finally:
+        training.memory_budget_bytes.cache_clear()
+
+
+def test_an_explicit_worker_count_is_still_honoured(cgroup):
+    """joblib's convention: a positive n_jobs is the caller's decision."""
+    from app.models import training
+
+    cgroup(str(256 * 1024 * 1024))
+    assert training._worker_count(5) == 5

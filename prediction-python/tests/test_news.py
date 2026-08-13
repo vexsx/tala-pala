@@ -365,6 +365,27 @@ def test_ingest_stores_publication_and_ingestion_times_separately(
     assert ensure_utc(dateless["published_at"]) == INGESTED
 
 
+def test_ingest_fills_the_point_in_time_clock(news_engine, settings, monkeypatch, news_on):
+    """0017 makes ``available_at`` the only column a historical feature may
+    filter on, and its backfill ran once — so a writer that leaves it NULL
+    puts its rows outside every such filter for good.  For the feed path the
+    feed IS how we came to hold the item, so available_at == ingested_at, and
+    it must be distinct from the source's own publication claim."""
+    records = fedpress.parse_feed(load_fixture_text("fed_press.xml"), INGESTED)
+    _seed_source(news_engine)
+    _use_providers(monkeypatch, {"fed_press": _StubProvider("fed_press", records)})
+
+    news_job.run_news_ingest(news_engine, settings, now=INGESTED)
+
+    stored = _articles(news_engine)
+    assert stored, "nothing ingested"
+    assert all(row["available_at"] is not None for row in stored)
+    assert all(ensure_utc(row["available_at"]) == ensure_utc(row["ingested_at"])
+               for row in stored)
+    fomc = next(row for row in stored if row["title"] == FOMC_TITLE)
+    assert ensure_utc(fomc["available_at"]) != ensure_utc(fomc["published_at"])
+
+
 def test_ingest_is_idempotent(news_engine, settings, monkeypatch, news_on):
     records = fedpress.parse_feed(load_fixture_text("fed_press.xml"), INGESTED)
     _seed_source(news_engine)
