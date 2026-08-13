@@ -35,13 +35,25 @@ from ..db import app_settings, ensure_utc, model_versions, predictions, prices, 
 from ..metrics import PREDICTION_DURATION
 from .base import ForecastModel
 from .ensemble import EnsembleModel, inverse_smape_weights, live_member_smapes
-from .intervals import DEFAULT_ALPHA, adaptive_alpha, conformal_interval, empirical_interval
-from .metagate import META_GATE_KEY, apply_meta_gate
+from .intervals import (
+    DEFAULT_ALPHA,
+    MIN_SCORED_FOR_COVERAGE,
+    adaptive_alpha,
+    conformal_interval,
+    empirical_interval,
+)
+from .metagate import META_GATE_KEY, GateVerdict, score_meta_gate
+from .metagate import FEATURE_LABELS as GATE_FEATURE_LABELS
+from .metagate import MIN_SAMPLES as GATE_MIN_SAMPLES
 from .training import CONTEXT_SYMBOLS, HORIZON_SPECS, detect_regime, load_series
 
 log = logging.getLogger(__name__)
 
 FLAT_BAND_PCT = 0.15  # |expected change| below this => 'flat'
+
+# The Tehran 18k series: the only symbol the custom path forecasts, and the one
+# whose calibration was stored flat before the multi-symbol layout.
+PRIMARY_FORECAST_SYMBOL = "IR_GOLD_18K"
 
 # --- live calibration (see jobs/evaluate.py, key 'live_calibration') --------
 LIVE_CAL_KEY = "live_calibration"
@@ -139,6 +151,36 @@ def load_live_calibration(engine: Engine) -> dict:
     return dict(row[0]) if row is not None and isinstance(row[0], dict) else {}
 
 
+def live_calibration_for(cal_all: dict, symbol: str, horizon: str) -> Optional[dict]:
+    """The live-calibration block a forecast at ``symbol``/``horizon`` uses.
+
+    One function because the two prediction paths must agree on it. They did
+    not: ``_predict_one`` blended confidence against this block before storing
+    it as ``raw_confidence`` (which is the feature the meta-gate then trains
+    on), while ``custom.predict_custom`` shipped the UNBLENDED validation
+    number — so the gate was handed a confidence on a different scale from the
+    one it was fitted on and refused every custom forecast, blaming the user's
+    "abnormal" confidence for a difference the application itself created.
+
+    EXACT horizon only, for both paths. There used to be a
+    ``live_calibration_for_days`` next to this one that fell back to the
+    nearest horizon in log-days with no bound at all, so that
+    ``/internal/predict/custom`` could always blend something. Reproduced: on
+    a deployment whose first four hours have matured, a 90-DAY forecast was
+    calibrated on the 1-HOUR directional hit rate — 2160x out — and since the
+    blend weight floors at ``w = 0.3`` (see :func:`blended_confidence`),
+    seventy percent of that 90-day shipped confidence was the one-hour number.
+    Disclosure does not make that a measurement. When no block exists for the
+    horizon asked about, the confidence is simply not calibrated, and the
+    forecast says so.
+    """
+    live = (cal_all.get(symbol) or {}).get(horizon)
+    if live is None and symbol == PRIMARY_FORECAST_SYMBOL:
+        legacy = cal_all.get(horizon)  # pre-multi-symbol flat layout
+        live = legacy if isinstance(legacy, dict) and "n" in legacy else None
+    return live if isinstance(live, dict) else None
+
+
 MIN_REGIME_N = 10  # matured predictions in a regime before its stats are used
 
 
@@ -203,6 +245,78 @@ def coverage_widening(live: Optional[dict]) -> float:
     if cov <= 0.0:
         return MAX_WIDEN_FACTOR
     return float(min(NOMINAL_COVERAGE / cov, MAX_WIDEN_FACTOR))
+
+
+def live_coverage_note(live: Optional[dict]) -> str:
+    """Human-readable live coverage — a rate ONLY when the evidence supports one.
+
+    A nominal 90% band expects one miss every ten matured predictions, so
+    "live coverage 100%" over three of them says nothing about the band and
+    reads as a guarantee. Below :data:`MIN_SCORED_FOR_COVERAGE` the count is
+    reported instead of the rate.
+    """
+    cov = (live or {}).get("coverage")
+    # coverage_n is the coverage denominator specifically; older stored blocks
+    # only have n (the matured-prediction count), which equalled it.
+    n = int((live or {}).get("coverage_n") or (live or {}).get("n") or 0)
+    if not n or not isinstance(cov, (int, float)):
+        return "no live coverage evidence yet"
+    if n < MIN_SCORED_FOR_COVERAGE:
+        return (
+            f"live coverage not yet measurable ({n} matured prediction(s); "
+            f"{MIN_SCORED_FOR_COVERAGE} needed before a rate means anything "
+            "for a 90% band)"
+        )
+    return f"live coverage {cov:.0%} of {n} matured predictions"
+
+
+def _gate_driver(verdict: GateVerdict, gate: Optional[dict]) -> dict:
+    """One ``self_assessment`` driver for every outcome, including refusal.
+
+    Every prediction path that consults the gate must publish this driver —
+    "the gate scored it", "the gate declined", "there is no gate yet" and "the
+    gate could not read this" are four different facts, and a caller that
+    prints none of them leaves a reader unable to tell them apart while the
+    number still moved the shipped confidence.
+    """
+    n = int((gate or {}).get("n") or 0)
+    label = GATE_FEATURE_LABELS.get(verdict.worst_feature or "", verdict.worst_feature)
+    if verdict.status == "untrained":
+        note = (
+            "not available yet: the learned self-assessment needs at least "
+            f"{GATE_MIN_SAMPLES} matured directional predictions before it exists"
+        )
+    elif verdict.status == "unusable":
+        note = (
+            "the stored self-assessment could not read this forecast (it predates "
+            "the current feature set, or is malformed); confidence left untouched"
+        )
+    elif verdict.status == "out_of_support":
+        # a discrete level with no training examples has no finite distance
+        finite = verdict.max_abs_z is not None and np.isfinite(verdict.max_abs_z)
+        distance = (
+            f"sits {verdict.max_abs_z:.1f} SD outside" if finite
+            else "never appears in"
+        )
+        note = (
+            f"declined to score this forecast: {label} {distance} the "
+            f"{n} past predictions it was fitted on, where any score it gave "
+            "would be extrapolation rather than evidence; confidence left untouched"
+        )
+    else:
+        note = (
+            f"learned P(direction hit)={verdict.p_hit:.2f} from {n} of this "
+            "system's own past predictions"
+        )
+        if verdict.thin_support:
+            # Reported, not compensated for: the score is the model's own, and
+            # the thin evidence behind it is a separate fact the reader gets.
+            note += (
+                f" — thinly supported: {label} sits {verdict.max_abs_z:.1f} SD from "
+                "the fitted mean, at the edge of its training data, and this is the "
+                "model's unadjusted estimate there"
+            )
+    return {"factor": "self_assessment", "note": note}
 
 
 def _drivers(model: ForecastModel, series, regime: str) -> list[dict]:
@@ -422,10 +536,7 @@ def _predict_one(
     last_price = float(latest["value"]) if latest else float(series.iloc[-1])
 
     cal_all = load_live_calibration(engine)
-    live_cal = (cal_all.get(symbol) or {}).get(horizon)
-    if live_cal is None and symbol == "IR_GOLD_18K":
-        legacy = cal_all.get(horizon)  # pre-multi-symbol flat layout
-        live_cal = legacy if isinstance(legacy, dict) and "n" in legacy else None
+    live_cal = live_calibration_for(cal_all, symbol, horizon)
 
     # a model exposing its own interval (e.g. quantile_gbr) takes precedence
     # over the empirical residual-quantile interval
@@ -467,7 +578,7 @@ def _predict_one(
 
     # provider gap: when Iranian sources disagree materially on the current
     # price, that quote uncertainty is added to the interval half-width
-    gap_pct = provider_gap_pct(engine) if symbol == "IR_GOLD_18K" else None
+    gap_pct = provider_gap_pct(engine) if symbol == PRIMARY_FORECAST_SYMBOL else None
     if gap_pct is not None and gap_pct >= PROVIDER_GAP_WARN_PCT:
         half_gap = gap_pct / 2.0 / 100.0 * point
         lower -= half_gap
@@ -496,15 +607,12 @@ def _predict_one(
     )
     drivers = _drivers(model, series, regime)
     if interval_diag:
-        live_cov = (live_cal or {}).get("coverage")
         drivers.append({
             "factor": "interval_quality",
             "note": (
                 f"{interval_diag.get('method', 'n/a')} band from "
                 f"{interval_diag.get('n_residuals', 0)} held-out residuals"
-                + (f"; live coverage {live_cov:.0%} over {int((live_cal or {}).get('n') or 0)} "
-                   "matured predictions" if isinstance(live_cov, (int, float)) else
-                   "; no live coverage evidence yet")
+                + f"; {live_coverage_note(live_cal)}"
                 + ("" if interval_diag.get("coverage_guaranteed") else "; NOT guaranteed")
             ),
         })
@@ -515,21 +623,18 @@ def _predict_one(
     # P(this direction call is right) and pulls confidence toward it
     raw_confidence = confidence  # pre-gate value, persisted for gate training
     gate = load_meta_gate(engine)
-    if gate and direction != "flat":
-        p_hit = apply_meta_gate(
+    if direction != "flat":
+        verdict = score_meta_gate(
             gate, point, lower, upper, expected_change_pct,
             confidence, horizon, regime, data_fresh, symbol,
         )
-        if p_hit is not None:
-            confidence = float(np.clip(0.5 * confidence + 0.5 * p_hit, 0.05, 0.95))
-            drivers.append({
-                "factor": "self_assessment",
-                "note": (
-                    f"learned P(direction hit)={p_hit:.2f} from "
-                    f"{int(gate.get('n', 0))} of this system's own past predictions"
-                ),
-            })
-            if p_hit < 0.45:
+        # Always leave a driver: "the gate declined to score this" and "the
+        # gate does not exist yet" are different facts and a silent gate that
+        # says nothing is indistinguishable from one that was never trained.
+        drivers.append(_gate_driver(verdict, gate))
+        if verdict.p_hit is not None:
+            confidence = float(np.clip(0.5 * confidence + 0.5 * verdict.p_hit, 0.05, 0.95))
+            if verdict.p_hit < 0.45:
                 warnings.append(
                     "The system's self-assessment (learned from its own past "
                     "predictions) rates this call below coin-flip reliability."

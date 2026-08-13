@@ -29,6 +29,7 @@ from sqlalchemy.engine import Engine
 from ..config import Settings
 from ..db import app_settings, ensure_utc, predictions, prices, utcnow
 from ..metrics import JOB_LAST_SUCCESS
+from ..models.intervals import CoverageEvidence
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +98,19 @@ def compute_live_calibration(engine: Engine, window: int = LIVE_CAL_WINDOW) -> d
       ``point - base``) matched the realized direction (sign of
       ``actual - base``);
     * ``coverage`` — fraction where ``lower_bound <= actual <= upper_bound``
-      (empirical coverage of the nominal 90% interval).
+      (empirical coverage of the nominal 90% interval), reported alongside
+      ``coverage_n`` (its own denominator) and ``coverage_status``.
+
+    On ``coverage`` vs ``coverage_n``: the rate is kept here even when the
+    evidence is thin, because this block is a *control signal*, not a display
+    surface — ``predicting.coverage_widening`` and ``intervals.adaptive_alpha``
+    read it and both refuse to act below the same
+    :data:`~app.models.intervals.MIN_SCORED_FOR_COVERAGE` bar. What was missing
+    was the denominator: ``n`` counts matured predictions, which happens to
+    equal the coverage denominator today but is not the same quantity (that
+    conflation is exactly what made the training-side bug invisible), and
+    nothing said whether the rate could support a claim. Anything that shows
+    this to a human must gate on ``coverage_status``.
 
     Layout (Addendum 8): nested ``{symbol: {horizon: stats}}`` — one stats
     block per forecast symbol so IR_GOLD_18K and XAUUSD never mix.
@@ -159,6 +172,10 @@ def compute_live_calibration(engine: Engine, window: int = LIVE_CAL_WINDOW) -> d
                 "n": len(rows),
                 "dir_hit_rate": round(float(np.mean(dir_hits)), 4) if dir_hits else None,
                 "coverage": round(float(np.mean(covered)), 4),
+                "coverage_n": len(covered),
+                "coverage_status": CoverageEvidence(
+                    hits=int(np.sum(covered)), scored=len(covered)
+                ).status,
                 "by_regime": by_regime,
                 "updated_at": now_iso,
             }

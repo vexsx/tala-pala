@@ -84,6 +84,30 @@ def test_blended_confidence_clamps_to_5_95():
 # --- interval widening -------------------------------------------------------
 
 
+def test_live_coverage_is_never_shown_as_a_percentage_on_thin_evidence():
+    """"live coverage 100% over 3 matured predictions" reads as a guarantee.
+
+    Three predictions cannot distinguish a 90% band from a 100% one (a 90%
+    band shows zero misses in three with probability 0.73), so the note must
+    report the count and refuse the percentage.
+    """
+    from app.models.predicting import live_coverage_note
+
+    thin = live_coverage_note({"coverage": 1.0, "coverage_n": 3, "n": 3})
+    assert "100%" not in thin
+    assert "3 matured prediction(s)" in thin
+
+    solid = live_coverage_note({"coverage": 0.9, "coverage_n": 40, "n": 40})
+    assert "live coverage 90% of 40 matured predictions" == solid
+
+    assert "no live coverage evidence yet" == live_coverage_note(None)
+    assert "no live coverage evidence yet" == live_coverage_note({"n": 5})
+
+    # blocks written before coverage_n existed fall back to n
+    legacy = live_coverage_note({"coverage": 0.85, "n": 40})
+    assert "live coverage 85% of 40 matured predictions" == legacy
+
+
 def test_coverage_widening_needs_evidence_and_floor_breach():
     assert coverage_widening(None) == pytest.approx(1.0)
     assert coverage_widening({}) == pytest.approx(1.0)
@@ -140,6 +164,10 @@ def test_evaluate_persists_live_calibration(engine, settings):
     assert cal["IR_GOLD_18K"]["1h"]["n"] == 1
     assert cal["IR_GOLD_18K"]["1h"]["dir_hit_rate"] == pytest.approx(1.0)
     assert "updated_at" in cal["IR_GOLD_18K"]["1d"]
+
+    # the coverage rate travels with its OWN denominator, not just with n
+    assert cal["IR_GOLD_18K"]["1d"]["coverage_n"] == 10
+    assert cal["IR_GOLD_18K"]["1d"]["coverage_status"] == "insufficient_evidence"
 
     # persisted to app_settings and readable by the prediction pass
     assert load_live_calibration(engine)["IR_GOLD_18K"]["1d"]["coverage"] == pytest.approx(0.8)

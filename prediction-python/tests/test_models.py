@@ -110,8 +110,36 @@ def test_empirical_interval_and_coverage_on_synthetic():
     cov = coverage(actuals.tolist(), intervals)
     assert 0.85 <= cov <= 0.95  # ~90% nominal
 
-    wf_cov = walk_forward_coverage(preds.tolist(), actuals.tolist(), alpha=0.1)
-    assert 0.80 <= wf_cov <= 0.97
+    # walk_forward_coverage returns evidence, not a bare rate: the denominator
+    # is the number of SCORED folds (600 folds - 10 spent building the residual
+    # pool), which is what makes the rate readable at all.
+    wf = walk_forward_coverage(preds.tolist(), actuals.tolist(), alpha=0.1)
+    assert wf.scored == 590
+    assert wf.status == "measured"
+    assert 0.80 <= wf.rate <= 0.97
+
+
+def test_coverage_evidence_withholds_a_rate_its_denominator_cannot_support():
+    """A 90% band expects one miss in ten, so "1 of 1" is not a coverage rate.
+
+    P(zero misses | truly 90%) is 0.9**1 = 0.90 at one scored fold and 0.31 at
+    eleven — a perfect score is the ordinary outcome, not evidence.
+    """
+    from app.models.intervals import MIN_SCORED_FOR_COVERAGE, CoverageEvidence
+
+    thin = CoverageEvidence(hits=1, scored=1)
+    assert thin.observed_rate == 1.0        # what happened
+    assert thin.rate is None                # what may be published
+    assert thin.sufficient is False
+    assert thin.status == "insufficient_evidence"
+
+    none_scored = CoverageEvidence(hits=0, scored=0)
+    assert none_scored.observed_rate is None
+    assert none_scored.status == "not_scored"
+
+    solid = CoverageEvidence(hits=27, scored=MIN_SCORED_FOR_COVERAGE + 10)
+    assert solid.status == "measured"
+    assert solid.rate == pytest.approx(27 / (MIN_SCORED_FOR_COVERAGE + 10))
 
 
 def test_empirical_interval_small_sample_fallback():

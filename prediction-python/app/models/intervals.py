@@ -43,6 +43,7 @@ residuals are not the optimistically small ones the winner minimized.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import numpy as np
@@ -185,6 +186,94 @@ def adaptive_alpha(
                          ACI_MIN_ALPHA, ACI_MAX_ALPHA))
 
 
+# --- coverage evidence -------------------------------------------------------
+# A coverage RATE is meaningless without the denominator that produced it, and
+# below a certain denominator it is meaningless with it too.
+#
+# A nominal 90% band expects one miss every ten scored points. So "coverage =
+# 1.0" over a handful of points is not weak evidence that the band is wide —
+# it is no evidence at all about the level: at 11 scored points a perfectly
+# calibrated 90% band produces zero misses with probability 0.9**11 = 0.31,
+# i.e. roughly one run in three. Production run 37 published
+# ``interval_coverage = 1.0`` for XAUUSD 1d off exactly ONE scored fold.
+#
+# MIN_SCORED_FOR_COVERAGE is the smallest denominator at which a rate may be
+# published at all. At 20 points two misses are expected and P(zero | truly
+# 90%) falls to 0.9**20 = 0.12, so a perfect score is at least an unusual
+# outcome rather than a routine one; the 95% Wilson interval around an
+# observed 0.90 at n=20 is [0.70, 0.97] — still wide, but a measurement
+# instead of a coin flip. It is deliberately the same bar the live loops
+# already use before they trust a coverage number (predicting.MIN_COVERAGE_N,
+# ACI_MIN_N, Go's models.minCoverageN), so the whole system has ONE evidence
+# threshold for coverage.
+#
+# A bar this high obliges the CALLER to bring a fold set that can clear it.
+# When the published block was scored from the ~12-fold holdout tail it never
+# could — 2 scored folds against 20, for every candidate at every horizon —
+# which is a plumbing failure, not a reason to lower the bar. See
+# ``training.fold_metrics``.
+MIN_SCORED_FOR_COVERAGE = 20
+
+
+@dataclass(frozen=True)
+class CoverageEvidence:
+    """A coverage measurement that cannot be read without its denominator.
+
+    Deliberately not a float: the caller has to reach for :attr:`rate` (which
+    withholds a rate that no denominator supports) or for the raw
+    ``hits``/``scored`` pair, and cannot accidentally publish a bare number.
+
+    ``offered`` and ``warmup`` exist because ``scored`` is smaller than the
+    number of folds and the gap needs explaining rather than discovering: the
+    first ``warmup`` folds only build the residual pool, so a 40-fold
+    validation scores 30 and an 11-fold one scores 1.
+    """
+
+    hits: int
+    scored: int
+    min_scored: int = MIN_SCORED_FOR_COVERAGE
+    offered: int = 0     # points handed to the scorer (folds, matured rows, ...)
+    warmup: int = 0      # of those, the ones that only fed the residual pool
+
+    @property
+    def sufficient(self) -> bool:
+        """Is the denominator large enough to say anything about the level?"""
+        return self.scored >= self.min_scored
+
+    @property
+    def observed_rate(self) -> Optional[float]:
+        """What actually happened, however thin — for diagnostics, not display."""
+        return self.hits / self.scored if self.scored else None
+
+    @property
+    def rate(self) -> Optional[float]:
+        """The publishable rate; ``None`` unless the evidence supports one."""
+        return self.observed_rate if self.sufficient else None
+
+    @property
+    def status(self) -> str:
+        if not self.scored:
+            return "not_scored"
+        return "measured" if self.sufficient else "insufficient_evidence"
+
+    def as_published(self) -> dict:
+        """The stored/JSON form: a rate that always travels with its numbers.
+
+        A nested block, not flat sibling keys, so that no consumer can pick up
+        a bare ``interval_coverage`` float and attribute it to whichever fold
+        set the neighbouring metrics were computed on.
+        """
+        return {
+            "rate": self.rate,
+            "hits": self.hits,
+            "scored_folds": self.scored,
+            "total_folds": self.offered,
+            "residual_warmup_folds": self.warmup,
+            "min_scored_folds": self.min_scored,
+            "status": self.status,
+        }
+
+
 def coverage(
     actuals: Sequence[float], intervals: Sequence[tuple[float, float]]
 ) -> Optional[float]:
@@ -201,18 +290,28 @@ def walk_forward_coverage(
     actuals: Sequence[float],
     alpha: float = DEFAULT_ALPHA,
     min_history: int = 10,
-) -> Optional[float]:
+    min_scored: int = MIN_SCORED_FOR_COVERAGE,
+) -> CoverageEvidence:
     """Coverage where each fold's interval uses only residuals of PRIOR folds
     (no peeking), mirroring how intervals are used in production.
 
-    Returns ``None`` when no fold could be scored — previously this returned a
-    hard ``0.0``, which the Models page rendered as "0% coverage" for models
-    that were never actually scored.
+    Returns a :class:`CoverageEvidence`, NOT a bare rate. The distinction
+    matters because the number of scored folds is *not* the number of folds:
+    the first ``min_history`` folds only contribute residuals, so a 11-fold
+    validation scores ONE fold. Callers that published the bare float were
+    reporting "100% interval coverage" off a single observation.
+
+    Corollary for callers: this needs a LONG fold set. Handed a ~12-fold
+    holdout tail it can score at most 2 folds and will never clear
+    ``min_scored`` — which is why the published measurement runs over the full
+    walk-forward fold set (see ``training.fold_metrics``).
     """
     residuals: list[float] = []
     hits = 0
     total = 0
+    offered = 0
     for p, a in zip(preds, actuals):
+        offered += 1
         if len(residuals) >= min_history:
             lo, hi = empirical_interval(float(p), residuals, alpha)
             total += 1
@@ -220,4 +319,5 @@ def walk_forward_coverage(
                 hits += 1
         if p != 0:
             residuals.append((float(a) - float(p)) / float(p))
-    return hits / total if total else None
+    return CoverageEvidence(hits=hits, scored=total, min_scored=min_scored,
+                            offered=offered, warmup=offered - total)

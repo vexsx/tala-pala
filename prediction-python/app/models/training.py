@@ -199,14 +199,38 @@ def _fold_step(series: pd.Series, horizon_steps: int, max_folds: int = MAX_FOLDS
     return max(1, (last_now - first_now) // max_folds + 1)
 
 
-def fold_metrics(folds: Sequence[Fold]) -> dict:
-    """mae, rmse, smape, mase, directional_accuracy, interval_coverage.
+def fold_metrics(
+    folds: Sequence[Fold], coverage_folds: Optional[Sequence[Fold]] = None
+) -> dict:
+    """mae, rmse, smape, mase, directional_accuracy, interval coverage.
 
     ``mase`` (Hyndman & Koehler 2006) scales MAE by the in-sample naive error
     of the SAME folds: < 1 means "better than repeating the last observation".
     It is scale-free and comparable across symbols and horizons, unlike sMAPE.
-    ``interval_coverage`` is ``None`` when no fold could be scored (previously
-    a hard 0.0, which the UI rendered as "0% coverage" for unscored models).
+
+    Interval coverage measures something different from every other metric
+    here, on a different fold set, so it is published under its own name as
+    ONE nested block — ``interval_coverage_walk_forward`` — carrying
+    ``rate`` (``None`` unless the denominator supports one), ``hits``,
+    ``scored_folds``, ``total_folds``, ``residual_warmup_folds``,
+    ``min_scored_folds`` and ``status``. No bare float sits in the flat
+    namespace where it could be read next to ``n_folds`` and attributed to the
+    wrong fold set; run 37 shipped ``interval_coverage = 1.0`` from a single
+    scored fold that way.
+
+    ``coverage_folds`` is the fold set the coverage walk runs over, defaulting
+    to ``folds``. The error metrics belong to the embargoed HOLDOUT (12 folds,
+    the point of Addendum 14), but interval coverage is a property of the
+    interval CONSTRUCTION, measured walk-forward with no peeking — and
+    ``walk_forward_coverage`` spends its first ten folds building the residual
+    pool, so a 12-fold tail can score at most 2 against a bar of 20. Scored
+    from the tail it was structurally unpublishable for every candidate at
+    every horizon forever; scored from the full walk-forward set the same
+    honest denominator clears comfortably (40 folds -> 30 scored). The
+    residuals are still strictly causal per fold; what the full set costs is
+    that the selection portion carries the winner's selection optimism, which
+    is why the field is named for the walk it came from and reports
+    ``total_folds`` next to ``n_folds``.
     """
     if not folds:
         return {}
@@ -219,6 +243,10 @@ def fold_metrics(folds: Sequence[Fold]) -> dict:
     dir_hits = np.sign(preds - bases) == np.sign(actuals - bases)
     mae = float(np.mean(np.abs(errors)))
     naive_mae = float(np.mean(np.abs(actuals - bases)))  # naive = carry the base forward
+    cov_folds = list(folds if coverage_folds is None else coverage_folds)
+    cov = walk_forward_coverage(
+        [f.pred for f in cov_folds], [f.actual for f in cov_folds]
+    )
     return {
         "n_folds": len(folds),
         "mae": mae,
@@ -226,7 +254,7 @@ def fold_metrics(folds: Sequence[Fold]) -> dict:
         "smape": smape,
         "mase": float(mae / naive_mae) if naive_mae > 0 else None,
         "directional_accuracy": float(np.mean(dir_hits)),
-        "interval_coverage": walk_forward_coverage(preds.tolist(), actuals.tolist()),
+        "interval_coverage_walk_forward": cov.as_published(),
     }
 
 
@@ -329,8 +357,12 @@ def evaluate_candidates(
             results[name] = {
                 "folds": folds,
                 "metrics": fold_metrics(folds),
-                "sel_metrics": fold_metrics(sel),
-                "holdout_metrics": fold_metrics(hold) if hold else None,
+                # interval coverage always walks the FULL fold set: the
+                # selection and holdout blocks are far too short to score it
+                # (see fold_metrics), and it is a property of the interval
+                # construction rather than of the selection split.
+                "sel_metrics": fold_metrics(sel, coverage_folds=folds),
+                "holdout_metrics": fold_metrics(hold, coverage_folds=folds) if hold else None,
             }
 
     naive = results.get("naive")
@@ -372,8 +404,10 @@ def evaluate_candidates(
                 results["ensemble"] = {
                     "folds": ens_folds,
                     "metrics": fold_metrics(ens_folds),
-                    "sel_metrics": fold_metrics(sel),
-                    "holdout_metrics": fold_metrics(hold) if hold else None,
+                    "sel_metrics": fold_metrics(sel, coverage_folds=ens_folds),
+                    "holdout_metrics": (
+                        fold_metrics(hold, coverage_folds=ens_folds) if hold else None
+                    ),
                     "weights": weights,
                 }
     return results

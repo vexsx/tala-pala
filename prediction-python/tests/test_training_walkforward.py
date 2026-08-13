@@ -62,8 +62,8 @@ def test_walk_forward_respects_horizon_gap():
 def test_fold_metrics_shape():
     series = _rw_series(160)
     metrics = fold_metrics(walk_forward(series, "sma", 1))
-    for key in ("mae", "rmse", "smape", "directional_accuracy", "interval_coverage",
-                "n_folds"):
+    for key in ("mae", "rmse", "smape", "directional_accuracy",
+                "interval_coverage_walk_forward", "n_folds"):
         assert key in metrics
     assert metrics["smape"] > 0
     assert 0.0 <= metrics["directional_accuracy"] <= 1.0
@@ -279,7 +279,64 @@ def test_fold_metrics_reports_mase_and_nullable_coverage():
     naive_like = [Fold(i, _t(i), 100.0, 100.0, 101.0) for i in range(5)]
     m = fold_metrics(naive_like)
     assert m["mase"] == pytest.approx(1.0)      # exactly naive performance
-    assert m["interval_coverage"] is None       # too few folds to score honestly
+    cov = m["interval_coverage_walk_forward"]
+    assert cov["rate"] is None                  # too few folds to score honestly
+    assert cov["scored_folds"] == 0
+    assert cov["total_folds"] == 5              # ... out of five offered
+    assert cov["status"] == "not_scored"
+
+
+def _coverage_folds(n: int) -> list[Fold]:
+    """``n`` folds whose residual pool is +/-1% and whose scored folds all hit.
+
+    The first ten folds only fill the residual pool (walk_forward_coverage's
+    min_history), so exactly ``n - 10`` folds are ever checked.
+    """
+    folds = []
+    for i in range(n):
+        if i < 10:
+            actual = 101.0 if i % 2 == 0 else 99.0   # residual pool: +/-1%
+        else:
+            actual = 100.2                            # comfortably inside +/-1%
+        folds.append(Fold(i, _t(i), 100.0, 100.0, actual))
+    return folds
+
+
+def test_interval_coverage_is_not_published_off_a_single_scored_fold():
+    """Production run 37 stored interval_coverage=1.0 for an 11-fold model.
+
+    Walk-forward scoring spends the first ten folds building the residual pool,
+    so ONE fold was ever checked — yet the metric was a bare 1.0 sitting next
+    to n_folds=11, and the Models page read it as "100% interval coverage".
+    A 90% band expects one miss every ten scored folds, so a single scored
+    fold cannot distinguish a 90% band from a 100% one.
+    """
+    m = fold_metrics(_coverage_folds(11))
+    assert m["n_folds"] == 11
+    cov = m["interval_coverage_walk_forward"]
+    assert cov["rate"] is None                       # was 1.0 before the fix
+    # the denominator is published, and it is NOT n_folds — that conflation is
+    # what made the bug invisible
+    assert cov["scored_folds"] == 1
+    assert cov["hits"] == 1
+    assert cov["total_folds"] == 11
+    assert cov["residual_warmup_folds"] == 10
+    assert cov["status"] == "insufficient_evidence"
+    assert cov["min_scored_folds"] == 20
+
+
+def test_interval_coverage_is_published_once_the_denominator_supports_it():
+    """The rule withholds thin rates, it does not suppress real measurements.
+
+    Unit-level: this hand-builds the fold list. That is exactly why it could
+    not catch the plumbing defect — the published path never handed
+    fold_metrics 30 folds — so the end-to-end proof lives in
+    ``test_interval_coverage_survives_the_publication_path`` below.
+    """
+    cov = fold_metrics(_coverage_folds(30))["interval_coverage_walk_forward"]
+    assert cov["scored_folds"] == 20
+    assert cov["status"] == "measured"
+    assert cov["rate"] == pytest.approx(cov["hits"] / 20)
 
 
 def test_degenerate_candidate_cannot_win():
@@ -409,3 +466,33 @@ def test_ensemble_freezes_member_params_from_selection_data_only():
     altered = base.copy()
     altered.iloc[sel_end + 1:] *= 1.35        # violent holdout-only change
     assert tuned_params(base) == tuned_params(altered)
+
+
+def test_interval_coverage_survives_the_publication_path():
+    """The stored block is holdout_metrics, and the holdout tail is far too
+    short to score interval coverage: 40 walk-forward folds -> 12 holdout
+    folds -> walk_forward_coverage spends its first 10 building the residual
+    pool -> 2 scored folds against a bar of 20. Every candidate, every
+    horizon, forever ("not_scored" at 30 folds, where the holdout is 9).
+
+    Interval coverage is a property of the INTERVAL CONSTRUCTION, measured
+    walk-forward with no peeking, so it is published from the full fold set —
+    named for what it measures and carrying its own denominators.
+    """
+    from app.models.training import report_metrics
+
+    series = _rw_series(100)                       # -> exactly 40 folds at h=1
+    results = evaluate_candidates(series, 1, candidates=("naive", "sma"))
+    metrics = report_metrics(results["naive"])     # what train_all actually stores
+
+    assert metrics["n_folds"] == 12                # holdout tail: sMAPE/MASE basis
+    cov = metrics["interval_coverage_walk_forward"]
+    assert cov["total_folds"] == 40                # the real validation depth
+    assert cov["residual_warmup_folds"] == 10      # folds that only fill the pool
+    assert cov["scored_folds"] == 30               # 40 - 10, not 12 - 10
+    assert cov["status"] == "measured"
+    assert cov["min_scored_folds"] == 20
+    assert cov["rate"] == pytest.approx(cov["hits"] / cov["scored_folds"])
+    # the bare rate is gone from the flat namespace: it could be read next to
+    # n_folds and silently attributed to the wrong fold set
+    assert "interval_coverage" not in metrics

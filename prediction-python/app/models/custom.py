@@ -29,6 +29,9 @@ from .predicting import (
     _confidence,
     _direction,
     _drivers,
+    blended_confidence,
+    live_calibration_for,
+    load_live_calibration,
     provider_gap_pct,
 )
 from .training import (
@@ -44,7 +47,30 @@ log = logging.getLogger(__name__)
 
 MIN_DAYS = 1
 MAX_DAYS = 90
-CUSTOM_MAX_FOLDS = 25  # cheaper than the nightly 40 — this runs interactively
+
+# Matches the nightly MAX_FOLDS, and it has to.
+#
+# At 25 folds this path could NEVER publish a coverage rate. ``report_metrics``
+# hands back a block whose coverage was walked over the full fold set, and
+# ``walk_forward_coverage`` spends its first ``min_history=10`` folds building
+# the residual pool — so 25 folds scores at most 15 against
+# ``MIN_SCORED_FOR_COVERAGE`` = 20, for every horizon and every candidate,
+# forever. ``interval_coverage_walk_forward.rate`` was structurally null.
+#
+# Measured cost of the fix (9 FAST_CANDIDATES, this machine, warm process):
+#
+#   daily points   days   25 folds   40 folds   scored 25 -> 40
+#   300            7d      8.7s      11.6s      14 -> 29
+#   300            30d     6.4s       9.4s      14 -> 26
+#   700            7d      9.3s      14.9s      15 -> 30
+#   700            30d     8.9s      14.0s      15 -> 29
+#
+# +3 to +6 seconds on a request that already takes 6-9, against a Go client
+# timeout of 5 minutes — modest, and it buys a real measurement in place of a
+# permanently null field. It is still not a guarantee: a short history with a
+# long horizon produces fewer folds than the budget asks for and the rate stays
+# null. That case is now stated in the response instead of being silent.
+CUSTOM_MAX_FOLDS = 40
 
 # Fast families only: interactive latency matters and the heavyweight members
 # (rf/gbr/quantile_gbr/arima/sarimax) rarely beat these on this data scale.
@@ -57,6 +83,72 @@ FAST_CANDIDATES = (
 DEFAULT_FEE_PCT = 0.5
 DEFAULT_SPREAD_PCT = 1.0
 DEFAULT_SLIPPAGE_PCT = 0.1
+
+
+def _calibration_driver(days: int, live_cal: Optional[dict]) -> dict:
+    """Say whether the shipped confidence was calibrated against live outcomes.
+
+    Two states, and only two, because the lookup is exact-horizon (see
+    :func:`~app.models.predicting.live_calibration_for`): either this day count
+    has matured predictions of its own and the confidence is blended toward
+    their hit rate, or it does not and the confidence is the validation
+    heuristic, unblended and labelled as such.
+
+    There used to be a third state — "calibrated against the NEAREST horizon
+    with live outcomes" — and it was unbounded: a 90-day forecast could be, and
+    was, calibrated on the 1-hour hit rate. It is gone. Saying which horizon
+    was substituted did not make the substituted number a measurement of this
+    one.
+    """
+    if not live_cal:
+        return {
+            "factor": "confidence_calibration",
+            "note": (
+                f"not calibrated against live outcomes: no {days}-day "
+                "predictions of this system's own have matured yet, so this "
+                "confidence is the validation heuristic alone (validation "
+                "directional accuracy blended with interval tightness) and no "
+                "other horizon's outcomes were substituted for it"
+            ),
+        }
+    n = int(live_cal.get("n") or 0)
+    hit = live_cal.get("dir_hit_rate")
+    rate = f", live directional hit rate {float(hit):.0%}" if hit is not None else ""
+    return {
+        "factor": "confidence_calibration",
+        "note": f"calibrated against {n} matured {days}d prediction(s){rate}",
+    }
+
+
+def _coverage_warning(metrics: dict, days: int) -> Optional[str]:
+    """Explain a withheld interval-coverage rate, rather than shipping a null.
+
+    ``metrics['interval_coverage_walk_forward']['rate']`` is ``None`` whenever
+    the walk-forward validation could not score ``min_scored_folds`` of them
+    (:data:`~app.models.intervals.MIN_SCORED_FOR_COVERAGE`, read back off the
+    block so the warning quotes the bar that measurement actually used). Raising
+    ``CUSTOM_MAX_FOLDS`` to the nightly budget makes that reachable for ordinary
+    requests, but a short history with a long horizon still cannot get there —
+    and a null field with nothing next to it is indistinguishable from a bug
+    (it WAS one: at 25 folds the field was null for every request that ever
+    existed).
+    """
+    cov = metrics.get("interval_coverage_walk_forward")
+    if not isinstance(cov, dict) or cov.get("rate") is not None:
+        return None
+    scored = int(cov.get("scored_folds") or 0)
+    total = int(cov.get("total_folds") or 0)
+    warmup = int(cov.get("residual_warmup_folds") or 0)
+    need = int(cov.get("min_scored_folds") or 0)
+    return (
+        f"This {days}-day forecast does not carry a measured interval-coverage "
+        f"rate: walk-forward validation produced {total} fold(s), the first "
+        f"{warmup} of which only build the residual pool, leaving {scored} "
+        f"scored against the {need} needed before a coverage rate says anything "
+        "about a 90% band. The interval is built exactly as the scheduled "
+        "forecasts' are; what is missing is a measurement of how often it "
+        "contained the truth."
+    )
 
 
 def predict_custom(
@@ -138,12 +230,32 @@ def predict_custom(
     direction = _direction(expected_change_pct)
     rel_width = (upper - lower) / point if point else 1.0
     dir_acc = float(metrics.get("directional_accuracy", 0.5))
-    confidence = _confidence(dir_acc, rel_width)
     regime = detect_regime(series)
 
+    # Confidence has to MEAN the same thing here as on the scheduled path.
+    # It did not: _predict_one blends the validation heuristic toward live
+    # outcomes and stores THAT as raw_confidence, which is the feature the
+    # meta-gate trains on, while this path shipped the unblended heuristic
+    # straight into score_meta_gate. The gate then z-scored a raw value against
+    # a blended distribution and refused every custom forecast — measured at
+    # |z| = 6.1 on horizons backed by 309 training rows — while telling the
+    # user their confidence was abnormal. The scale difference was the
+    # application's, not the forecast's.
+    #
+    # Calibration is EXACT-horizon (``live_calibration_for``), so on a day count
+    # the scheduler never runs there is no block and no blend. That is also what
+    # keeps this path self-consistent: the gate's confidence column is fitted on
+    # blended values, so an unblended confidence is off the trained scale — and
+    # the same horizons that have no live calibration are the ones the gate has
+    # no rows for, so it declines and leaves the number alone rather than
+    # scoring a scale it never saw.
+    cal_all = load_live_calibration(engine)
+    live_cal = live_calibration_for(cal_all, "IR_GOLD_18K", f"{days}d")
+    confidence = blended_confidence(_confidence(dir_acc, rel_width), live_cal, regime)
+
     # apply the learned self-assessment gate (see models/metagate.py)
-    from .metagate import apply_meta_gate
-    from .predicting import load_meta_gate
+    from .metagate import score_meta_gate
+    from .predicting import _gate_driver, load_meta_gate
 
     from ..core.market_hours import is_acceptably_fresh
     from ..db import utcnow as _utcnow
@@ -153,19 +265,36 @@ def predict_custom(
         last_obs is not None
         and is_acceptably_fresh("IR_GOLD_18K", last_obs, _utcnow(), settings)
     )
+    drivers = _drivers(model, series, regime)
+    drivers.append(_calibration_driver(days, live_cal))
     gate = load_meta_gate(engine)
-    if gate and direction != "flat":
-        p_hit = apply_meta_gate(
+    if direction != "flat":
+        # This path is the one most likely to be OUTSIDE the gate's support:
+        # the user can ask for any horizon in 1..90 days while the gate only
+        # ever trains on the seven the scheduler emits. So the verdict is
+        # published as a driver whatever it says — a gate that silently
+        # declined and a gate that never existed cannot both look like
+        # "nothing here" while a scored one quietly moves the number.
+        verdict = score_meta_gate(
             gate, point, lower, upper, expected_change_pct,
             confidence, f"{days}d", regime, fresh, "IR_GOLD_18K",
         )
-        if p_hit is not None:
+        drivers.append(_gate_driver(verdict, gate))
+        if verdict.p_hit is not None:
             import numpy as np
 
-            confidence = float(np.clip(0.5 * confidence + 0.5 * p_hit, 0.05, 0.95))
+            confidence = float(np.clip(0.5 * confidence + 0.5 * verdict.p_hit, 0.05, 0.95))
+            if verdict.p_hit < 0.45:
+                warnings.append(
+                    "The system's self-assessment (learned from its own past "
+                    "predictions) rates this call below coin-flip reliability."
+                )
     n_folds = int(metrics.get("n_folds", 0))
     if n_folds and n_folds < 20:
         warnings.append(f"Model validated on only {n_folds} walk-forward folds.")
+    cov_warning = _coverage_warning(metrics, days)
+    if cov_warning:
+        warnings.append(cov_warning)
 
     # Monte Carlo outcome probabilities (bootstrap over historical returns):
     # the honest answer to "how often would a move like this clear costs?"
@@ -221,7 +350,7 @@ def predict_custom(
         "confidence": round(confidence, 3),
         "regime": regime,
         "metrics": metrics,
-        "drivers": _drivers(model, series, regime),
+        "drivers": drivers,
         "decision_lean": lean,
         "decision_note": lean_note,
         "monte_carlo": monte_carlo,

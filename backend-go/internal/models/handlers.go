@@ -86,6 +86,16 @@ var canonicalHorizons = map[string]int{
 	"1h": 0, "4h": 1, "eod": 2, "1d": 3, "3d": 4, "7d": 5, "30d": 6,
 }
 
+// minCoverageN is the smallest denominator at which an interval-coverage RATE
+// may be published. The bands are nominally 90%, which expects one miss every
+// ten matured predictions: at n=11 a perfectly calibrated band shows zero
+// misses with probability 0.9^11 = 0.31, so "100% coverage" over a handful of
+// predictions cannot distinguish a 90% band from a 100% one and reads as a
+// guarantee it has not earned. Below this the rate is withheld and the count
+// is reported instead. Mirrors intervals.MIN_SCORED_FOR_COVERAGE in
+// prediction-python — one evidence bar for coverage across both services.
+const minCoverageN = 20
+
 // Performance implements GET /api/v1/models/performance?symbol=: per-horizon
 // active model metrics vs baseline for ONE symbol (default IR_GOLD_18K), live
 // accuracy from that symbol's matured predictions, and the most recent
@@ -121,6 +131,9 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 	rows.Close()
 
 	// Live accuracy from matured predictions, per horizon, same symbol.
+	// coverage_n is selected explicitly rather than reusing n: they are equal
+	// today only because lower_bound/upper_bound are NOT NULL, and a coverage
+	// rate must travel with the denominator that actually produced it.
 	liveRows, err := h.Pool.Query(ctx, `
 		SELECT horizon,
 		       count(*) AS n,
@@ -130,7 +143,8 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 		               OR (direction = 'down' AND actual_value < point_forecast / (1 + expected_change_pct/100.0))
 		               OR (direction = 'flat')
 		             THEN 1.0 ELSE 0.0 END)::float8 AS directional_accuracy,
-		       avg(CASE WHEN actual_value BETWEEN lower_bound AND upper_bound THEN 1.0 ELSE 0.0 END)::float8 AS interval_coverage
+		       avg(CASE WHEN actual_value BETWEEN lower_bound AND upper_bound THEN 1.0 ELSE 0.0 END)::float8 AS interval_coverage,
+		       count(*) FILTER (WHERE lower_bound IS NOT NULL AND upper_bound IS NOT NULL) AS coverage_n
 		FROM predictions
 		WHERE actual_value IS NOT NULL AND symbol = $1
 		GROUP BY horizon`, symbol)
@@ -142,17 +156,29 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 	live := map[string]map[string]any{}
 	for liveRows.Next() {
 		var horizon string
-		var n int
+		var n, coverageN int
 		var mape, dirAcc, coverage *float64
-		if err := liveRows.Scan(&horizon, &n, &mape, &dirAcc, &coverage); err != nil {
+		if err := liveRows.Scan(&horizon, &n, &mape, &dirAcc, &coverage, &coverageN); err != nil {
 			liveRows.Close()
 			h.Log.Error("models_perf_live_scan", "error", err)
 			httpserver.Internal(w, "database error")
 			return
 		}
+		// Withhold the rate itself until the denominator can support it; the
+		// count and the status always ship so the UI can say WHY there is no
+		// number instead of rendering a bare, unearned percentage.
+		coverageStatus := "measured"
+		if coverageN < minCoverageN {
+			coverage = nil
+			coverageStatus = "insufficient_evidence"
+		}
 		live[horizon] = map[string]any{
 			"n": n, "mape_pct": mape,
-			"directional_accuracy": dirAcc, "interval_coverage": coverage,
+			"directional_accuracy":     dirAcc,
+			"interval_coverage":        coverage,
+			"interval_coverage_n":      coverageN,
+			"interval_coverage_status": coverageStatus,
+			"interval_coverage_min_n":  minCoverageN,
 		}
 	}
 	liveRows.Close()
