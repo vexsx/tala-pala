@@ -2,6 +2,7 @@
 package predictions
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -182,6 +183,17 @@ func (h *Handler) Custom(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(apiErr.Status)
 			_, _ = w.Write([]byte(apiErr.Body))
+			return
+		}
+		// A caller that walked away is not an application fault. The custom
+		// forecast takes ~50s on production history, so an abandoned tab or a
+		// component unmount aborts the request routinely — and every abort was
+		// being written to app_issues at ERROR, where it read as the
+		// prediction service failing. All 7 "errors" in a representative 24h
+		// window were this. Log it at DEBUG (below the WARN+ mirror) and skip
+		// the response: nobody is listening for it.
+		if errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
+			h.Log.Debug("predictions_custom_abandoned", "days", days)
 			return
 		}
 		h.Log.Error("predictions_custom", "error", err)
