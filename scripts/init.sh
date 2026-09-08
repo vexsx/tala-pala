@@ -32,7 +32,15 @@ echo "[init] creating admin user $EMAIL ..."
 docker compose exec -T api /app/createuser -email "$EMAIL" -password "$PASSWORD" -role admin || \
   echo "[init] user may already exist — continuing."
 
-echo "[init] seeding historical data (bundled samples + free global sources) ..."
+# Iranian daily history (IR_GOLD_18K, USD_IRT) from TGJU/pricedb, plus the
+# bundled sample CSVs when there is no usable network. This no longer touches
+# XAUUSD: the seeder used to fill it from whichever of TGJU 'ons' (spot),
+# Stooq (spot) or Yahoo GC=F (COMEX futures) answered first, which splices
+# three different instruments into one symbol and corrupts every long-run gold
+# statistic measured across the join. XAUUSD history is pulled below by
+# backfill/history instead — same GC=F series the live collector uses, an
+# honest 23:00 UTC availability stamp, and a raw_observations audit row.
+echo "[init] seeding Iranian daily history (TGJU/pricedb + bundled samples) ..."
 docker compose exec -T prediction-service python -m app.seed.seed_history || \
   echo "[init] seed reported issues — check logs; live collection will still accumulate data."
 
@@ -46,6 +54,10 @@ run_job() {
   echo
 }
 run_job collect '{"jobs":[]}'
+# XAUUSD and the macro context symbols: Yahoo daily history through the job
+# that stamps availability honestly and writes the raw audit row (see the
+# comment above the seeder).
+run_job backfill/history '{"symbols":["XAUUSD","DXY","BRENT_OIL","XAGUSD","US10Y"],"range":"5y"}'
 run_job features/generate '{}'
 run_job train '{"horizons":[]}'
 run_job predict '{"horizons":[]}'

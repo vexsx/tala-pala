@@ -103,6 +103,17 @@ type EconomicHandlers interface {
 	Observations(http.ResponseWriter, *http.Request)
 }
 
+// RelativeValueHandlers serves the numeraire and relative-value engine:
+// arithmetic over stored daily closes -- indexing, returns, drawdown and a
+// rolling-window percentile -- in a chosen unit of account. Nothing behind
+// these routes forecasts, trains or writes; they are the same class of
+// computation as the candles and indicators the price routes already serve.
+type RelativeValueHandlers interface {
+	Performance(http.ResponseWriter, *http.Request)
+	RelativeValue(http.ResponseWriter, *http.Request)
+	Numeraires(http.ResponseWriter, *http.Request)
+}
+
 // Deps bundles everything the router needs.
 type Deps struct {
 	Logger  *slog.Logger
@@ -123,6 +134,7 @@ type Deps struct {
 	Issues       IssueHandlers
 	Intelligence IntelligenceHandlers
 	Economic     EconomicHandlers
+	RelValue     RelativeValueHandlers
 
 	// Limiters are created by the caller so it can Stop() them on shutdown.
 	GlobalLimiter *RateLimiter
@@ -215,6 +227,14 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			// knowable at a cutoff, so a historical fold can never see a
 			// revision published after it.
 			r.Get("/api/v1/series/{code}/observations", d.Economic.Observations)
+
+			// The numeraire and relative-value engine. /markets/numeraires is
+			// registered so a client can discover which units of account this
+			// deployment can actually back before it offers them in a menu;
+			// asking for one it cannot back is a 400, never a page of nulls.
+			r.Get("/api/v1/markets/numeraires", d.RelValue.Numeraires)
+			r.Get("/api/v1/markets/performance", d.RelValue.Performance)
+			r.Get("/api/v1/relative-value", d.RelValue.RelativeValue)
 
 			r.Get("/api/v1/portfolio", d.Portfolio.Get)
 			r.Post("/api/v1/portfolio/transactions", d.Portfolio.CreateTransaction)

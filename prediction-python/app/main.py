@@ -59,6 +59,20 @@ class BackfillRequest(BaseModel):
     range: str = "5y"
 
 
+class TGJUBackfillRequest(BaseModel):
+    """Deep-history gap-fill from TGJU (empty symbols = all three Iranian ones).
+
+    ``ignore_sources`` is the operator override for a junk join reference: a
+    ``prices`` source named here is not eligible to become the live value the
+    backfill is checked against.  It cannot move the write boundary — no
+    request may make this job write into a day that already holds a row.
+    """
+
+    symbols: list[str] = Field(default_factory=list)
+    dry_run: bool = False
+    ignore_sources: list[str] = Field(default_factory=list)
+
+
 class NewsCollectRequest(BaseModel):
     """Optional narrowing of a news collection pass (empty = every collector)."""
 
@@ -204,6 +218,57 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
         enough history to be trained and ablated honestly.
         """
         return run_backfill(engine, settings, body.symbols or None, body.range)
+
+    @app.post("/internal/backfill/tgju-history")
+    def backfill_tgju_history(req: Optional[TGJUBackfillRequest] = None) -> dict:
+        """Gap-fill the deep Iranian daily history TGJU has and we do not.
+
+        Empty ``symbols`` means IR_GOLD_18K, USD_IRT and IR_COIN_EMAMI. Rows
+        are only ever written for days strictly before the symbol's earliest
+        existing observation, so the live, densely-collected era is never
+        touched by a second same-day source, and
+        a symbol whose backfill does not join continuously onto its live
+        series is refused with both values reported rather than written.
+
+        Manual/occasional and deliberately NOT scheduled: it exists so the P1
+        purchasing-power and inflation-catch-up analytics have more than the
+        few years of history live collection has accumulated.
+
+        Three guards run before anything is promoted: bar dates must fall in
+        a plausible window (a Jalali date parses as a valid Gregorian one),
+        the backfilled span must be internally coherent bar to bar, and the
+        last backfilled value must join continuously onto the first trusted
+        live value. Any of them refuses the symbol with the evidence; only a
+        series that is genuinely already covered reports ``up_to_date``.
+
+        A successful write also RECORDS the splice — the instrument note says
+        in words where the series definition changes, and
+        ``app_settings['series_splices']`` carries the machine-readable
+        register — because the era before the join and the era after it are
+        not the same measurement.
+
+        ``dry_run`` runs every check and reports exactly what would be
+        written, without writing. Re-running writes nothing.
+
+        A symbol this job will not backfill is a 400 naming it — XAUUSD in
+        particular, because ours is a Yahoo COMEX futures proxy and TGJU's
+        'ons' is spot (see app/jobs/tgju_backfill.py).
+        """
+        from .jobs.tgju_backfill import run_tgju_backfill
+
+        try:
+            return run_tgju_backfill(
+                engine,
+                settings,
+                symbols=(req.symbols or None) if req else None,
+                dry_run=bool(req.dry_run) if req else False,
+                ignore_sources=(req.ignore_sources or None) if req else None,
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
 
     @app.post("/internal/news/ingest")
     def news_ingest(body: BackfillRequest) -> dict:

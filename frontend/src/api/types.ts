@@ -937,3 +937,299 @@ export interface TrendPerformanceResponse {
  * toman under every candle.
  */
 export type CandleOverlayField = Exclude<keyof CandleOverlays, 'supertrend_dir'>
+
+// ---------- P1: numéraire & purchasing power ----------
+
+/**
+ * Window presets accepted by GET /markets/performance and /relative-value.
+ * An explicit `from`/`to` pair overrides the preset server-side.
+ */
+export type MarketPeriod = '1m' | '3m' | '6m' | '1y' | '3y' | '5y' | '10y' | 'max'
+
+export const MARKET_PERIODS: MarketPeriod[] = ['1m', '3m', '6m', '1y', '3y', '5y', '10y', 'max']
+
+export const MARKET_PERIOD_LABELS: Record<MarketPeriod, string> = {
+  '1m': '1 month',
+  '3m': '3 months',
+  '6m': '6 months',
+  '1y': '1 year',
+  '3y': '3 years',
+  '5y': '5 years',
+  '10y': '10 years',
+  max: 'All history'
+}
+
+/**
+ * The unit a return is expressed in. Never hard-code the offered set: the
+ * deployment answers GET /markets/numeraires with the ones it can actually
+ * back, and offering one it cannot would fill the table with nulls.
+ *
+ * Go's vocabulary is closed — IRT, USD, GOLD — and a request naming anything
+ * else earns a 400, so the string here is the server's `key` and nothing else.
+ */
+export type Numeraire = string
+
+/**
+ * One row of GET /markets/numeraires, and the `numeraire_series` block echoed
+ * on GET /markets/performance.
+ *
+ * Copied from Go: `relvalue.numeraireItem`, which embeds `relvalue.numeraireBlock`
+ * — backend-go/internal/relvalue/numeraires.go and
+ * backend-go/internal/relvalue/performance.go. Marshalled by `buildNumeraireList`.
+ *
+ * THE IDENTIFIER IS `key`. This interface used to declare `code`, `label`,
+ * `series_code` and a scalar `note`, none of which Go emits; the page matched
+ * nothing, fell back to `undefined` and asked for `numeraire=undefined` for the
+ * rest of the session. Those four names are gone rather than deprecated, so the
+ * compiler finds any reader still using them.
+ */
+export interface NumeraireOption {
+  key: Numeraire
+  /** What one converted value MEANS: 'toman', 'USD', 'grams of 18k gold'. */
+  unit?: string | null
+  /**
+   * The display names. Go's numeraireBlock marshals `name_en`/`name_fa`; the
+   * P1 contract note for this page spells the same two fields
+   * `label_en`/`label_fa`. Both are read (see `numeraireLabel`) because the
+   * two sides disagree today and a page that reads only one of them breaks
+   * the moment the other wins.
+   */
+  name_en?: string | null
+  name_fa?: string | null
+  label_en?: string | null
+  label_fa?: string | null
+  /**
+   * The backing instrument whose daily close performs the conversion, or null
+   * for the identity numéraire (IRT converts an IRT-quoted asset by doing
+   * nothing to it). NOT `series_code`.
+   */
+  series?: string | null
+  /** Provenance of that backing series — USD_IRT is a documented proxy. */
+  quality_tier?: string | null
+  is_proxy?: boolean | null
+  /** YYYY-MM-DD, not a timestamp: Go formats these with dateLayout. */
+  coverage_from?: string | null
+  coverage_to?: string | null
+  observations?: number | null
+  /** An ARRAY. Go emits `notes []string`; there is no scalar `note`. */
+  notes?: string[] | null
+  /** Item-only. Gate the menu on this: false means the request earns a 400. */
+  available?: boolean
+  /**
+   * Item-only. Names the missing series when `available` is false. Go emits
+   * null; the contract note writes it as "". Both are falsy — test for content,
+   * never for `=== null`.
+   */
+  unavailable_reason?: string | null
+  /** Item-only. True for IRT, the hub, which needs no backing series. */
+  is_identity?: boolean
+}
+
+/** GET /markets/numeraires — `relvalue.numeraireListResponse`. */
+export interface NumerairesResponse {
+  items: NumeraireOption[]
+  count?: number
+  /** Whole-registry caveats, e.g. USD_IRT missing makes IRT a partial answer. */
+  warnings?: string[] | null
+  as_of?: string | null
+  /**
+   * The key to select when the client has no valid choice of its own. It is
+   * the one ADDITION this page asked Go for, and it may be absent (or name a
+   * numéraire that is not available) on a deployment that has not shipped it —
+   * so it is a preference, not a guarantee. See `resolveNumeraire`.
+   */
+  default?: Numeraire | null
+}
+
+/**
+ * One instrument's performance over the requested window.
+ *
+ * Copied from Go: `relvalue.performanceItem`, which embeds
+ * `relvalue.instrumentRef` — backend-go/internal/relvalue/performance.go and
+ * backend-go/internal/relvalue/instruments.go.
+ *
+ * EVERY metric is nullable and a null is NOT a zero: "no CPI vintage covers
+ * this window" and "the price did not move" are different facts and the UI
+ * must never render them the same way. `notes` carries the per-item reason a
+ * field is null, which is why the reason can be shown next to the dash instead
+ * of the field silently disappearing.
+ *
+ * `start_value` and `end_value` are in the SELECTED NUMÉRAIRE, not in
+ * `quote_currency`: Go takes them from the converted series, and an instrument
+ * whose quote currency has no conversion chain into the numéraire never
+ * reaches `items` at all (it is named in `warnings` instead). Formatting these
+ * two with `quote_currency` prints toman digits under a dollar heading.
+ */
+export interface MarketPerformanceItem {
+  code: string
+  name_en: string
+  name_fa: string
+  domain: string
+  /** The instrument's own quote currency. Says NOTHING about start/end_value. */
+  quote_currency: string
+  unit: string
+  /** official | official_mirror | commercial | proxy | estimate | experimental */
+  quality_tier: string
+  is_proxy: boolean
+  is_derived?: boolean
+  /** In the selected numéraire. */
+  start_value: number | null
+  /** In the selected numéraire. */
+  end_value: number | null
+  /** Return in the selected numéraire, undeflated. */
+  nominal_return_pct: number | null
+  /** The value re-expressed in USD before the return is taken. */
+  usd_return_pct: number | null
+  /** Its OWN window: shorter than the item's whenever USD_IRT quoted later. */
+  usd_return_from?: string | null
+  usd_return_to?: string | null
+  usd_return_observations?: number | null
+  /** The value re-expressed in grams of 18k gold before the return is taken. */
+  gold_return_pct: number | null
+  gold_return_from?: string | null
+  gold_return_to?: string | null
+  gold_return_observations?: number | null
+  /** CPI-deflated. Its own window (below) is often NARROWER than the request. */
+  real_return_pct: number | null
+  real_return_from: string | null
+  real_return_to: string | null
+  /**
+   * Sample stdev of log returns between CONSECUTIVE OBSERVATIONS — these
+   * symbols do not quote every day. NOT annualised: do not scale it in the UI.
+   *
+   * Go renamed this from `daily_volatility_pct`, which claimed a daily step it
+   * did not have. Both spellings are declared and both are read, so the column
+   * shows a number on either side of that rename instead of a page of dashes.
+   */
+  observation_volatility_pct?: number | null
+  /** @deprecated Go's former name for observation_volatility_pct. */
+  daily_volatility_pct?: number | null
+  max_drawdown_pct: number | null
+  /** Go marshals a plain int: 0 observations is a measured zero, not a null. */
+  observations: number | null
+  /** YYYY-MM-DD. */
+  coverage_from: string | null
+  coverage_to: string | null
+  /** Includes the registry's own caveat about the instrument, first. */
+  notes: string[] | null
+}
+
+/**
+ * GET /markets/performance?period=&numeraire=[&from=&to=] —
+ * `relvalue.performanceResponse`.
+ */
+export interface MarketPerformanceResponse {
+  period: MarketPeriod | string | null
+  /** The numéraire actually served. This, not the request, dates the numbers. */
+  numeraire: Numeraire
+  /** Provenance of the unit of account itself, including its `unit` string. */
+  numeraire_series?: NumeraireOption | null
+  from: string | null
+  to: string | null
+  /** Which CPI series deflates `real_return_pct`, and how far it reaches. */
+  cpi_series: string | null
+  cpi_coverage_to: string | null
+  /**
+   * The deflator's full identity. Emitted by Go's cpiProvenanceBlock. A real
+   * return is uninterpretable without at least base_period and quality_tier:
+   * WB_CPI_IRN is the World Bank's 2010=100 rebase, NOT the Statistical Centre
+   * of Iran's own 1400=100 index, and the two are not comparable level-for-level.
+   */
+  cpi_provenance: {
+    code: string
+    name_en: string
+    name_fa: string
+    measure: string
+    unit: string
+    frequency: string
+    calendar: string
+    base_period: string
+    provider_code: string
+    provider_series_id: string
+    quality_tier: string
+    splice_policy: string
+    seasonal_adjustment: string
+    notes: string
+    coverage_to: string | null
+  } | null
+  as_of: string | null
+  items: MarketPerformanceItem[]
+  count?: number
+  /** Names every instrument left OUT of `items`, and why. Never null. */
+  warnings: string[] | null
+}
+
+/** The provenance half of a relative-value side. */
+export interface RelativeValueLeg {
+  code: string
+  name_en: string
+  name_fa: string
+  quality_tier: string
+  is_proxy: boolean
+  unit: string
+}
+
+export interface RelativeValuePoint {
+  /** Unix seconds. */
+  t: number
+  a_indexed: number | null
+  b_indexed: number | null
+  ratio: number | null
+  gap_pct: number | null
+}
+
+/**
+ * Why a percentile is (or is not) reportable.
+ *
+ * Rolling windows over one price history overlap, so 880 of them are not 880
+ * observations. `independent_windows` is the honest denominator and the gate
+ * is on that number; when `sufficient` is false the percentile is null and the
+ * UI states the shortfall in words rather than hiding the field.
+ */
+export interface PercentileBasis {
+  window_days: number | null
+  overlapping_windows: number | null
+  independent_windows: number | null
+  min_independent_windows: number | null
+  sufficient: boolean
+  note?: string | null
+}
+
+/** GET /relative-value?a=&b=[&period=|&from=&to=][&points=] */
+export interface RelativeValueResponse {
+  a: RelativeValueLeg
+  b: RelativeValueLeg
+  /** The date both series are indexed to 100 at. */
+  base_date: string | null
+  from: string | null
+  to: string | null
+  as_of: string | null
+  series: RelativeValuePoint[]
+  a_growth_pct: number | null
+  b_growth_pct: number | null
+  /** (1+a_growth)/(1+b_growth)-1, in percent. Negative = A lagged B. */
+  gap_pct: number | null
+  /** Null unless percentile_basis.sufficient is true. */
+  gap_percentile: number | null
+  percentile_basis: PercentileBasis | null
+  ratio_drawdown_pct: number | null
+  warnings: string[] | null
+}
+
+/** GET /instruments — the symbol vocabulary the selectors are drawn from. */
+export interface InstrumentItem {
+  code: string
+  kind: string
+  name_en: string
+  name_fa: string
+  domain: string
+  quote_currency: string
+  unit: string
+  decimals: number
+  calendar_class: string
+  quality_tier: string
+  is_proxy: boolean
+  is_derived: boolean
+  enabled: boolean
+  notes: string
+}

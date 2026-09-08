@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import re
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from ..core.normalize import rial_to_toman
 from ..db import utcnow
@@ -41,6 +41,14 @@ LIVE_URLS = (
     "https://call4.tgju.org/ajax.json",
 )
 HISTORY_URL = "https://api.tgju.org/v1/market/indicator/summary-table-data/{slug}"
+
+
+# Rows requested per history call.  1200 covers roughly the last three years,
+# which is all the seed script ever wanted.  It is NOT enough for the whole
+# table — verified from production on 2026-09-09: geram18 3498 rows, sekee
+# 4284 — so the deep-history backfill passes its own, larger cap and checks
+# the counts (see app/jobs/tgju_backfill.py).
+DEFAULT_HISTORY_ROWS = 1200
 
 TEHRAN_OFFSET = timezone(timedelta(hours=3, minutes=30))  # no DST since 2022
 
@@ -161,6 +169,51 @@ def parse_history(payload: Any, slug: str) -> list[tuple[date, float]]:
     return out
 
 
+class HistoryPage(NamedTuple):
+    """One ``summary-table-data`` response plus the evidence about truncation.
+
+    Parsed rows alone cannot say whether a history is COMPLETE: a payload cut
+    short by the ``length`` parameter and a payload that simply is that short
+    look identical once parsed.  ``returned_rows`` (what the payload actually
+    carried) and ``records_total`` (what the server says the table holds) are
+    kept beside the rows so a caller can compare the two and refuse a
+    truncated series rather than silently store a fragment of one.
+
+    ``returned_rows`` counts the payload's rows BEFORE parsing, because
+    :func:`parse_history` legitimately drops unparseable ones; comparing the
+    parsed count against ``records_total`` would report a truncation every
+    time the provider emitted one junk row.
+    """
+
+    rows: list[tuple[date, float]]
+    returned_rows: int
+    records_total: Optional[int]
+
+
+def _records_total(payload: Any) -> Optional[int]:
+    """The DataTables row count the server reports, or None if it did not."""
+    if not isinstance(payload, dict):
+        return None
+    for key in ("recordsTotal", "recordsFiltered"):
+        value = payload.get(key)
+        if isinstance(value, bool):  # bool is an int subclass; not a count
+            continue
+        if isinstance(value, int) and value >= 0:
+            return value
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+    return None
+
+
+def history_page(payload: Any, slug: str) -> HistoryPage:
+    """Parse a history payload, keeping the counts that prove completeness."""
+    rows = parse_history(payload, slug)
+    data = payload.get("data") if isinstance(payload, dict) else None
+    returned = len(data) if isinstance(data, list) else len(rows)
+    return HistoryPage(rows=rows, returned_rows=returned,
+                       records_total=_records_total(payload))
+
+
 def normalize_history_value(slug: str, raw_close: float) -> float:
     """Apply the same rial->toman normalization used for live quotes."""
     _, _, raw_currency = SLUG_MAP[slug]
@@ -191,16 +244,32 @@ class TGJUProvider(Provider):
             errors.append(f"{url}: no parseable indicators")
         raise ProviderError(f"tgju: no observations ({'; '.join(errors) or 'empty'})")
 
-    def fetch_history(self, slug: str, max_rows: int = 1200) -> list[tuple[date, float]]:
-        """Daily close history (raw provider units — normalize via
-        :func:`normalize_history_value`)."""
+    def fetch_history_page(
+        self, slug: str, max_rows: int = DEFAULT_HISTORY_ROWS
+    ) -> HistoryPage:
+        """Daily close history WITH the counts that reveal truncation.
+
+        Raw provider units — normalize via :func:`normalize_history_value`.
+        """
         if slug not in SLUG_MAP:
             raise ValueError(f"unknown tgju slug: {slug}")
         payload = self._get_json(
             HISTORY_URL.format(slug=slug),
-            params={"start": 0, "length": max_rows},
+            params={"start": 0, "length": int(max_rows)},
         )
-        rows = parse_history(payload, slug)
-        if not rows:
+        page = history_page(payload, slug)
+        if not page.rows:
             raise ProviderError(f"tgju: empty history for {slug}")
-        return rows
+        return page
+
+    def fetch_history(
+        self, slug: str, max_rows: int = DEFAULT_HISTORY_ROWS
+    ) -> list[tuple[date, float]]:
+        """Daily close history (raw provider units — normalize via
+        :func:`normalize_history_value`).
+
+        Truncation-blind by construction: it returns rows and nothing that
+        could contradict them, so a caller that needs the WHOLE table must use
+        :meth:`fetch_history_page` and compare its counts.
+        """
+        return self.fetch_history_page(slug, max_rows=max_rows).rows

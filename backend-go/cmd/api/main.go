@@ -4,8 +4,8 @@ package main
 
 import (
 	"context"
-	"flag"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -31,6 +31,7 @@ import (
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/portfolio"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/predictions"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/prices"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/relvalue"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/scheduler"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/signalsvc"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/storage"
@@ -140,6 +141,7 @@ func run() error {
 			NewsCollectionEnabled: cfg.NewsCollectionEnabled,
 		},
 		Economic: &economic.Handler{Pool: pool, Log: logger},
+		RelValue: &relvalue.Handler{Pool: pool, Log: logger},
 
 		GlobalLimiter: globalLimiter,
 		LoginLimiter:  loginLimiter,

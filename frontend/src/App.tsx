@@ -24,6 +24,8 @@ import TradePanel from './pages/TradePanel'
 import Forecast from './pages/Forecast'
 import Technical from './pages/Technical'
 import Drivers from './pages/Drivers'
+import Markets from './pages/Markets'
+import RelativeValue from './pages/RelativeValue'
 import Portfolio from './pages/Portfolio'
 import Alerts from './pages/Alerts'
 import Models from './pages/Models'
@@ -37,6 +39,8 @@ const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean; adminOnly?: b
   { to: '/forecast', label: 'Forecast' },
   { to: '/technical', label: 'Technical' },
   { to: '/drivers', label: 'Drivers' },
+  { to: '/markets', label: 'Purchasing power' },
+  { to: '/relative-value', label: 'Relative value' },
   { to: '/portfolio', label: 'Portfolio' },
   { to: '/alerts', label: 'Alerts' },
   { to: '/models', label: 'Models' },
@@ -191,6 +195,8 @@ export default function App() {
               <Route path="/forecast" element={<Forecast />} />
               <Route path="/technical" element={<Technical />} />
               <Route path="/drivers" element={<Drivers />} />
+              <Route path="/markets" element={<Markets />} />
+              <Route path="/relative-value" element={<RelativeValue />} />
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/alerts" element={<Alerts />} />
               <Route path="/models" element={<Models />} />

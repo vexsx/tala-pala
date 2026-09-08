@@ -2452,3 +2452,255 @@ input[type='checkbox'] {
     min-height: 32px;
   }
 }
+
+/* ---------- P1: purchasing power & relative value ---------- */
+
+/* Persian instrument names sit inside LTR rows; without an isolate the bidi
+   algorithm drags neighbouring Latin codes and digits into the RTL run. */
+.bidi-fa {
+  unicode-bidi: isolate;
+  direction: rtl;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.provenance {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* A proxy must never look like an official release: outlined, uppercase,
+   and carrying the word — not a colour on its own. */
+.proxy-marker {
+  border-style: dashed;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+/* An absent metric. Dimmed so it never reads as a measured number, but it is
+   still a dash — never a zero. */
+.metric-absent {
+  color: var(--muted);
+  cursor: help;
+  border-bottom: 1px dotted var(--border);
+}
+
+.mkt-preamble,
+.rv-preamble {
+  max-width: 76ch;
+  margin: 0;
+}
+
+.mkt-controls,
+.rv-controls {
+  align-items: flex-end;
+  gap: 16px;
+}
+
+.mkt-numeraire {
+  min-width: 180px;
+}
+
+.field-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mkt-coverage,
+.mkt-cpi,
+.mkt-footer,
+.rv-footer {
+  max-width: 90ch;
+}
+
+.mkt-rankings .mkt-rank .stat-value {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 2px 0;
+}
+
+/* Sortable headers: the whole cell is the target, the glyph shows the state. */
+.th-sort {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.th-sort:hover {
+  color: var(--text);
+}
+
+.th-sort:focus-visible {
+  outline: 2px solid var(--info);
+  outline-offset: 2px;
+}
+
+.num .th-sort {
+  flex-direction: row-reverse;
+}
+
+.th-sort-mark {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+.mkt-asset {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mkt-asset-name {
+  font-weight: 600;
+}
+
+.mkt-asset-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 3px;
+}
+
+.mkt-why {
+  padding: 1px 8px;
+}
+
+.mkt-note-row td {
+  white-space: normal;
+  background: var(--bg-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mkt-table tbody tr.mkt-note-row:hover td {
+  background: var(--bg-2);
+}
+
+.mkt-note-window {
+  margin-bottom: 4px;
+}
+
+.mkt-note-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.mkt-note-list li {
+  margin: 2px 0;
+}
+
+/* The numéraire's own caveats — that USD_IRT is a free-market proxy, that a
+   gram count is 18-karat and not troy ounces. They are shown, not folded into
+   a title attribute nobody hovers. */
+.mkt-coverage .mkt-note-list {
+  margin-top: 4px;
+}
+
+.mkt-numeraire-notes li {
+  max-width: 90ch;
+}
+
+.rv-headline-card {
+  gap: 10px;
+}
+
+.rv-headline {
+  font-size: 18px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+
+.rv-legs {
+  gap: 20px;
+}
+
+.rv-leg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rv-leg-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.rv-leg-name {
+  font-weight: 600;
+}
+
+.rv-kv {
+  margin-bottom: 12px;
+}
+
+.rv-percentile {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  padding: 12px 14px;
+}
+
+/* The insufficient-evidence state is a first-class result, not an error: it is
+   marked, explained, and never replaced by a number. */
+.rv-percentile-insufficient {
+  border-color: var(--warn);
+}
+
+.rv-percentile-head {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.rv-basis-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rv-basis-list li {
+  margin: 2px 0;
+}
+
+@media (max-width: 900px) {
+  .mkt-controls,
+  .rv-controls {
+    align-items: stretch;
+  }
+}
+
+/* Deflator provenance under the purchasing-power heading. A real return that
+   does not say which index deflated it is not a research number. */
+.mkt-cpi-prov {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.mkt-cpi-prov .tag-quality {
+  text-transform: capitalize;
+}
+.mkt-cpi-note {
+  margin-top: 2px;
+  max-width: 78ch;
+}
