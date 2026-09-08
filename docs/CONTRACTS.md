@@ -569,6 +569,31 @@ and tgju returns strictly as a fallback.
 - CI's `PRODUCTION_BASELINE` was pinned at `16` while production ran `23`, so the incremental-upgrade
   job had not tested production's real upgrade path for seven migrations. Now `23`.
 
+**Deployed and measured (2026-09-09, commit `8b2fd4d`).** All three services stamped at HEAD.
+Schema 25. First ingest: **380 World Bank observations** across 7 countries (Iran 1960–2025, and the
+2010 value is exactly `100`, confirming the parsed base). A second ingest wrote **0 rows and reported
+380 unchanged** — idempotency proven against the real database, not a fixture. IMF: 354 observations,
+42 of them flagged projections. `GET /series/IMF_PCPIPCH_IRN/observations` returns **46 rows ending
+2025** by default and **52 ending 2031 with 6 flagged** under `include_projections=1`; an `as_of`
+before ingest returns an empty page with a null cursor. Gold was unaffected throughout (18k and
+USD_IRT 3 minutes old, all seven prediction horizons 8 minutes old).
+
+**imf.org refuses this project's User-Agent.** The first production ingest failed all 7 IMF series
+with `access denied`. Measured from the production host, six consecutive calls per UA:
+`python-httpx/0.28.1` → 200×6; `IranGoldPredictor/1.0 (+self-hosted analytics)` → 403×3;
+`IranGoldPredictor/1.0`, `tala-pala/1.0`, `tala-pala/1.0 (self-hosted research)` → 403; **no**
+User-Agent → 403; a Chrome UA → 403 with an "Access Denied" body. The WAF decides on the string.
+The `imf_weo` adapter therefore stops overriding the client's own identity — the request genuinely
+is httpx — rather than inventing a string that happens to pass. That is declining to *add* a header
+a WAF mishandles, not browser impersonation: the Chrome UA is precisely the one refused, so there is
+nothing to gain by lying. Scoped to this one provider; every other adapter keeps the honest project
+UA. If the IMF blocks this too, the series fail per-series and loudly.
+
+**tgju is enabled but contributing nothing, by design.** In the two hours after deployment the only
+sources writing to `prices` were yahoo, bitmax and hamrahgold. At priority 22 tgju is consulted only
+when the current primary for a symbol fails, which is the redundancy `0025` restores — an absence of
+tgju rows is the expected steady state, not a fault.
+
 **Known limitations, recorded rather than hidden.**
 - `source_documents` is created but **never written**: both P0 sources are JSON APIs at stable URLs,
   and a row claiming an archived artifact that does not exist would be worse than no row. Every
