@@ -607,3 +607,93 @@ tgju rows is the expected steady state, not a fault.
 - The four new routes are absent from `backend-go/docs/openapi.yaml`, which already omits
   `/intelligence/news`, `/market/candles`, `/market/funds`, `/market/trend-alignment` and
   `/chart/drawings`. Pre-existing, not a regression from this work.
+
+## Addendum 28 — numéraire engine, purchasing power and relative value (2026-09-09)
+
+P1 of the redesign (`docs/REDESIGN.md`). Adds the multi-numéraire valuation engine, the inflation
+catch-up gap, the first two pages of the new platform, and the deep history all three depend on.
+The gold pipeline is untouched.
+
+**Deep history recovered — the cause was truncation, not the source.** The flagship analytics were
+statistically empty on the history we held (`IR_GOLD_18K` and `USD_IRT` from 2022-04,
+`IR_COIN_EMAMI` from 2026-04). TGJU had always served more; `fetch_history`'s `max_rows=1200`
+silently truncated the original seed. Verified at the join, the oldest stored rows are *already*
+TGJU-sourced and match to the digit — 2022-04-20 gold `1,293,840` toman on both sides, 2022-04-04
+USD `27,717` on both sides — which confirms the rial→toman conversion exactly.
+
+`POST /internal/backfill/tgju-history` gap-fills **strictly before** each symbol's existing first
+observation, so the dense live era is untouched; stamps daily closes at **23:00 UTC** (the honest
+convention `jobs/backfill.py` documents, not `seed_history.py`'s legacy 12:00, which for a Tehran
+instrument lands *before* the close); writes `raw_observations` with the raw rial value; and refuses
+a symbol whose backfilled span is not internally coherent rather than writing a scale break.
+
+> **XAUUSD is deliberately not backfilled.** Ours is collected from Yahoo `GC=F`, a COMEX **futures**
+> proxy; TGJU's `ons` is spot. Splicing them would manufacture a level discontinuity at the join and
+> silently corrupt every long-run gold statistic. A spot series needs its own symbol.
+
+Measured, 2026-09-09: `IR_GOLD_18K` 16,105 → **18,364** rows (from **2013-07-22**), `USD_IRT`
+14,915 → **17,622** (from **2011-11-26**), `IR_COIN_EMAMI` 2,396 → **6,573** (from **2010-04-04**).
+Join jumps 1.05% / 1.9% / 8.0%; coherence over 2,257 compared pairs, max bar-to-bar ratio 1.1752,
+zero breaks. Dry run wrote nothing; a second real run wrote nothing.
+
+**The splice is recorded, not hidden.** The definition of these series genuinely changes at the
+join — `USD_IRT` is cash-dollar daily closes before it and the 24/7 USDT/toman market after;
+`IR_GOLD_18K` is a TGJU aggregate before and a single live dealer feed after. The job writes that
+splice to `app_settings` and onto the instrument's `notes`, so any statistic computed across the
+date can say so.
+
+**Engine** (`backend-go/internal/relvalue`, three authenticated read endpoints). Go serves arithmetic
+over stored observations — the same boundary that already lets it compute candles, indicators and a
+rolling correlation. It still computes no forecast and trains no model.
+- **Conversion** carries the numéraire's last observation **forward only**; a day with no prior quote
+  is dropped, never guessed.
+- **Real returns** are deflated by the annual World Bank CPI over the sub-window CPI actually covers,
+  reported with their own `real_return_from`/`real_return_to` because coverage ends 2025 while today
+  is 2026. The annual index is **never** interpolated to daily.
+- **Cross-numéraire returns** disclose the window they were measured over — they can legitimately
+  differ from the nominal window when the conversion series starts later.
+- **Rates are excluded.** `US10Y`, `IR_GOLD_FUND_FLOW` and the IMF `PCPIPCH` series are quoted in
+  percent; a "return" on them would be a percent change of a percentage. Index-quoted series (`DXY`,
+  the World Bank CPI levels) are excluded from currency columns for the same reason.
+- **Volatility is per observation and is not annualised** — the Iranian symbols trade on calendars
+  where √252 is simply wrong, and this repo already corrected one card that implied otherwise.
+
+**The catch-up gap, and its evidence bar.** `gap = (1 + a_growth) / (1 + b_growth) - 1`. Its
+percentile is published **only** when at least 5 genuinely independent windows of the requested
+length exist — the same refuse-below-the-denominator rule `models/intervals.py` applies to coverage.
+Overlapping windows are reported separately and explicitly are not independent observations, and
+`independent_windows` can never exceed `overlapping_windows`. No p-value is computed and nothing is
+projected forward.
+
+**Measured end-to-end in production, 2026-09-09.** Gold over one year: **+167.51%** nominal against
+USD **+126.34%**, implying **+18.19%** in USD — which is exactly what the USD column and the
+`/relative-value` gap independently report. Over ten years the ranking resolves: best
+purchasing-power preservation **Emami gold coin +303.00% real**, most inflation-lagged **Brent
+−1.93%**. Gold vs USD publishes percentile 70.0 off **13 independent windows** — a number that would
+have been withheld before the backfill, when only ~3 existed.
+
+**Retractions and corrections.**
+- `instrumentRef`'s caveat now marshals as a `notes` **array** on every endpoint. It was a scalar on
+  `/relative-value` and an array elsewhere — one key with two arities, which is a trap, not a saving.
+  Renaming the Go field does nothing: `encoding/json` collides on the **tag**, not the identifier.
+- `parse_history`'s bar dates are bounded in `seed_history.py` as well as the backfill job. A Jalali
+  date in the Gregorian column parses cleanly as year 1405 and would have written a price observed
+  six centuries ago. The whole payload is refused, not the offending rows dropped: a shifted column
+  makes every row suspect.
+- `scripts/init.sh` no longer seeds XAUUSD from TGJU, which was performing the exact spot→futures
+  splice the backfill refuses.
+
+**Known limitations.**
+- The `/relative-value` selectors offer instruments the server will refuse (rates, index levels).
+  It degrades honestly with an error rather than a blank, but the selector should filter them.
+- The three P1 endpoints are absent from `backend-go/docs/openapi.yaml`, which already omits five
+  other route groups.
+- Real returns are unavailable for any window ending inside the current year, because annual CPI
+  cannot cover it. The 1y view therefore ranks on drawdown only, and says so.
+
+**Process note.** Three rounds of adversarial review found 23 confirmed defects, including a
+**blocker**: the React pages consumed a numéraires payload Go never emitted, and 51 frontend tests
+passed anyway because the fixture invented the contract. A fixture that invents the server shape is
+worse than no fixture — it manufactures confidence. P1 fixtures are now verbatim copies of Go's
+marshalled output with a comment naming the type they came from, and the pages were verified in a
+real browser against the deployed API, not only in jsdom.
