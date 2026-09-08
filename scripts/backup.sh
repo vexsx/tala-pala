@@ -94,8 +94,12 @@ artifact_size() {
     size_of "$1"
     return 0
   fi
+  # </dev/null is load-bearing: the docker CLI forwards ITS stdin to the
+  # container, so without this it drains whatever the caller is reading from.
+  # This function is called inside a `while read ... done < active.psv` loop,
+  # where that meant swallowing every row after the first.
   as_out=$(docker compose exec -T -e P="$1" prediction-service \
-    sh -c 'test -f "$P" && wc -c < "$P"' 2>/dev/null) || return 1
+    sh -c 'test -f "$P" && wc -c < "$P"' 2>/dev/null </dev/null) || return 1
   printf '%s' "$as_out" | tr -d ' \r\n'
 }
 
@@ -104,7 +108,8 @@ artifact_copy() {  # $1 source path, $2 destination on the host
     cat "$1" > "$2"
     return 0
   fi
-  docker compose exec -T -e P="$1" prediction-service sh -c 'cat "$P"' > "$2"
+  # </dev/null for the same reason as artifact_size: the CLI forwards stdin.
+  docker compose exec -T -e P="$1" prediction-service sh -c 'cat "$P"' > "$2" </dev/null
 }
 
 # ---------------------------------------------------------------- verify ----
@@ -245,7 +250,9 @@ psql_query \
 ARTIFACT_COUNT=0
 : > "$WORK/artifacts.json"
 
-while IFS='|' read -r SYMBOL HORIZON MODEL VERSION APATH; do
+# Read on FD 3, not stdin. Belt and braces with the </dev/null redirects
+# above: a command added to this loop later cannot silently eat the row list.
+while IFS='|' read -r SYMBOL HORIZON MODEL VERSION APATH <&3; do
   # psql -tA emits a trailing blank line.
   [ -n "$SYMBOL" ] || continue
   LABEL="$SYMBOL/$HORIZON/$MODEL"
@@ -292,10 +299,18 @@ while IFS='|' read -r SYMBOL HORIZON MODEL VERSION APATH; do
     printf '    }'
   } >> "$WORK/artifacts.json"
   ARTIFACT_COUNT=$((ARTIFACT_COUNT + 1))
-done < "$WORK/active.psv"
+done 3< "$WORK/active.psv"
 
 if [ "$ARTIFACT_COUNT" -gt 0 ]; then printf '\n' >> "$WORK/artifacts.json"; fi
 [ "$ARTIFACT_COUNT" -gt 0 ] || echo "WARNING: no ACTIVE model artifacts to back up" >&2
+
+# The count MUST equal the number of ACTIVE rows. A bundle that silently holds
+# fewer restores a database pointing at artifacts nobody kept — the exact
+# failure this script exists to prevent, and one that shipped for weeks because
+# nothing compared these two numbers. Observed: 1 artifact for 14 active rows.
+ACTIVE_ROWS=$(grep -c '|' "$WORK/active.psv" 2>/dev/null || echo 0)
+[ "$ARTIFACT_COUNT" -eq "$ACTIVE_ROWS" ] \
+  || fail "captured $ARTIFACT_COUNT artifact(s) for $ACTIVE_ROWS ACTIVE model(s) — the bundle is incomplete and has NOT been promoted" 
 
 DUMP_SIZE=$(size_of "$STAGE/db.dump")
 DUMP_SHA=$(sha256_of "$STAGE/db.dump")
