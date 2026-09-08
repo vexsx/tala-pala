@@ -42,6 +42,15 @@ const (
 	// walks more rows than a normal request, hence its own budget rather than
 	// the 60s default.
 	TrendAlignmentTimeout = 3 * time.Minute
+	// Economic ingest walks several external providers (World Bank, IMF WEO),
+	// so it spends most of its budget on third-party HTTP rather than on
+	// computation. It archives NO source document: both P0 providers are JSON
+	// APIs at stable URLs, so the job writes nothing to source_documents and
+	// every source_document_id stays NULL rather than claiming an artifact that
+	// was never stored (app/jobs/economic.py says so in the same words). It is
+	// annual, low-volume data: the headroom is for slow or retrying sources,
+	// not for volume, and not for archiving.
+	EconomicIngestTimeout = 10 * time.Minute
 	DefaultTimeout        = 60 * time.Second
 )
 
@@ -250,4 +259,12 @@ func (c *Client) NewsCollect(ctx context.Context) (json.RawMessage, error) {
 // this succeeded.
 func (c *Client) TrendAlignment(ctx context.Context) (json.RawMessage, error) {
 	return c.Post(ctx, "/internal/trend-alignment/evaluate", nil, TrendAlignmentTimeout)
+}
+
+// IngestEconomic refreshes the economic-series store: it fetches each enabled
+// series from its provider and INSERTS new vintages, never updating a stored
+// row. Nothing it writes reaches model input, intervals or the buy/sell policy,
+// so a failure here must leave collect, predict and train untouched.
+func (c *Client) IngestEconomic(ctx context.Context) (json.RawMessage, error) {
+	return c.Post(ctx, "/internal/economic/ingest", nil, EconomicIngestTimeout)
 }

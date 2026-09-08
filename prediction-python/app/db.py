@@ -25,6 +25,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -349,6 +350,162 @@ trend_alignment_performance = Table(
     Column("updated_at", _TS, nullable=False, server_default=func.now()),
     CheckConstraint("basis IN ('full_mtf', 'daily_only')"),
     Index("idx_trend_alignment_performance_symbol_window", "symbol", "window_days"),
+)
+
+# --- tables mirroring database/migrations/0024_instruments_economic_series --
+
+# The instrument vocabulary every other reader projects.  0024 seeds it with
+# exactly the market symbols that exist today; ``app/economic/catalog.py``
+# adds the ``kind='economic_series'`` rows.  There is deliberately no foreign
+# key from ``prices.symbol`` yet (see the migration's own note), so nothing
+# here can turn an unregistered provider symbol into a collect failure.
+instruments = Table(
+    "instruments",
+    metadata,
+    Column("code", Text, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("name_en", Text, nullable=False),
+    Column("name_fa", Text, nullable=False, server_default=""),
+    Column("domain", Text, nullable=False),
+    Column("quote_currency", Text, nullable=False),
+    Column("unit", Text, nullable=False),
+    Column("decimals", Integer, nullable=False, server_default=text("0")),
+    Column("calendar_class", Text, nullable=False, server_default="always_open"),
+    Column("quality_tier", Text, nullable=False, server_default="official"),
+    Column("is_proxy", Boolean, nullable=False, server_default=text("FALSE")),
+    Column("is_derived", Boolean, nullable=False, server_default=text("FALSE")),
+    Column("enabled", Boolean, nullable=False, server_default=text("TRUE")),
+    Column("notes", Text, nullable=False, server_default=""),
+    Column("created_at", _TS, nullable=False, server_default=func.now()),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "kind IN ('market_price','economic_series','equity','index','basket','fx')"
+    ),
+    CheckConstraint(
+        "calendar_class IN ('always_open','tehran_bazaar','tse_session','global','none')"
+    ),
+    CheckConstraint(
+        "quality_tier IN ('official','official_mirror','commercial','proxy',"
+        "'estimate','experimental')"
+    ),
+    # Partial in Postgres (``WHERE enabled``).  The predicate is dialect-scoped
+    # so the SQLite mirror the tests build still gets the index, unfiltered.
+    Index(
+        "idx_instruments_kind_domain",
+        "kind",
+        "domain",
+        postgresql_where=text("enabled"),
+    ),
+)
+
+# The artifact a value was read from.  Same content re-fetched from the same
+# provider is the same document, which is what the unique constraint says.
+source_documents = Table(
+    "source_documents",
+    metadata,
+    _big_pk(),
+    Column("provider_code", Text, nullable=False),
+    Column("url", Text, nullable=False),
+    Column("title", Text, nullable=False, server_default=""),
+    Column("media_type", Text, nullable=False, server_default=""),
+    Column("byte_size", Integer, nullable=False, server_default=text("0")),
+    Column("content_sha256", Text, nullable=False),
+    Column("storage_path", Text, nullable=False, server_default=""),
+    Column("fetched_at", _TS, nullable=False, server_default=func.now()),
+    UniqueConstraint("provider_code", "content_sha256", name="source_documents_unique"),
+    Index("idx_source_documents_fetched", text("fetched_at DESC")),
+)
+
+economic_series = Table(
+    "economic_series",
+    metadata,
+    _big_pk(),
+    Column(
+        "code",
+        Text,
+        ForeignKey("instruments.code", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    ),
+    Column("frequency", Text, nullable=False),
+    Column("calendar", Text, nullable=False, server_default="gregorian"),
+    Column("measure", Text, nullable=False),
+    Column("seasonal_adjustment", Text, nullable=False, server_default="nsa"),
+    Column("base_period", Text, nullable=False, server_default=""),
+    Column("provider_code", Text, nullable=False),
+    Column("provider_series_id", Text, nullable=False, server_default=""),
+    # NULL means "not characterised", which is a different fact from zero.
+    Column("publication_lag_days", Integer),
+    Column("revisable", Boolean, nullable=False, server_default=text("TRUE")),
+    Column("splice_policy", Text, nullable=False, server_default="none"),
+    Column("enabled", Boolean, nullable=False, server_default=text("TRUE")),
+    Column("created_at", _TS, nullable=False, server_default=func.now()),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("frequency IN ('D','W','M','Q','A')"),
+    CheckConstraint("calendar IN ('gregorian','jalali')"),
+    CheckConstraint("measure IN ('index','level','yoy_pct','mom_pct','ratio','rate')"),
+    CheckConstraint("seasonal_adjustment IN ('nsa','sa','unknown')"),
+    CheckConstraint("splice_policy IN ('none','chain_growth')"),
+    Index(
+        "idx_economic_series_provider",
+        "provider_code",
+        postgresql_where=text("enabled"),
+    ),
+)
+
+# Bitemporal, append-only.  A revision inserts a row with vintage+1; nothing is
+# ever updated in place, so the first print stays readable forever.  Every
+# point-in-time read filters on ``available_at`` and nothing else — the same
+# rule migration 0017 states for news_articles.
+economic_observations = Table(
+    "economic_observations",
+    metadata,
+    _big_pk(),
+    Column(
+        "series_id",
+        BigInteger().with_variant(Integer, "sqlite"),
+        ForeignKey("economic_series.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("ref_period_start", Date, nullable=False),
+    Column("ref_period_end", Date, nullable=False),
+    Column("ref_period_label", Text, nullable=False, server_default=""),
+    Column("value", _NUM, nullable=False),
+    # NULL when the source does not state a publication moment, which is the
+    # normal case for both P0 providers.
+    Column("published_at", _TS),
+    Column("available_at", _TS, nullable=False),
+    Column("vintage", Integer, nullable=False, server_default=text("1")),
+    Column("is_nowcast", Boolean, nullable=False, server_default=text("FALSE")),
+    Column("is_projection", Boolean, nullable=False, server_default=text("FALSE")),
+    Column(
+        "source_document_id",
+        BigInteger().with_variant(Integer, "sqlite"),
+        # RESTRICT, matching migration 0024. SET NULL would let a delete on
+        # source_documents mutate a stored observation after insert — the one
+        # append-only violation this table is written to forbid — and a mirror
+        # that encodes the opposite rule means no test could ever catch the
+        # regression.
+        ForeignKey("source_documents.id", ondelete="RESTRICT"),
+    ),
+    Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("vintage >= 1"),
+    UniqueConstraint(
+        "series_id", "ref_period_start", "vintage", name="economic_obs_unique"
+    ),
+    CheckConstraint(
+        "ref_period_end >= ref_period_start", name="economic_obs_period"
+    ),
+    # Mirrored with the same column order and direction as the migration: the
+    # point-in-time read in app/economic/store.py is written to match it.
+    Index(
+        "idx_econ_obs_pit",
+        "series_id",
+        text("ref_period_start DESC"),
+        text("available_at DESC"),
+        text("vintage DESC"),
+    ),
+    Index("idx_econ_obs_available", text("available_at DESC")),
 )
 
 # --- helpers ----------------------------------------------------------------

@@ -248,6 +248,34 @@ groups:
             training run: a regime change usually needs a retrain, not a wider
             interval.
 
+  - name: tala-pala-economic
+    interval: 1m
+    rules:
+      # Self-gating in the same way the news rule is: the Python-side gauge is
+      # only advanced when a pass had NO per-series errors, and the series never
+      # exists until the first clean run, so a deployment that has not ingested
+      # yet never alerts.
+      #
+      # 26h, not 24h: the job runs daily at 03:40 UTC, so a single missed run
+      # must be visible without a routine 24h-boundary flap.
+      - alert: EconomicIngestNotSucceeding
+        expr: time() - talapala_prediction_job_last_success_timestamp_seconds{job="economic"} > 93600
+        for: 30m
+        labels:
+          severity: warning
+          service: prediction
+        annotations:
+          summary: "Economic-series ingestion has not cleanly succeeded for {{ $value | humanizeDuration }}"
+          description: >-
+            Either api.worldbank.org / imf.org are unreachable from this host, or
+            a series is failing its own guard — a World Bank rebase refuses the
+            series by design rather than storing restated levels under a stale
+            base_period label. This never blocks price collection, prediction or
+            training: the job has its own lock and timeout. Check
+            `docker compose logs prediction-service | grep -i economic` and the
+            consecutive_failures column in data_providers for 'worldbank' and
+            'imf_weo'.
+
   - name: tala-pala-news
     interval: 1m
     rules:

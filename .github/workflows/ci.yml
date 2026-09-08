@@ -68,7 +68,11 @@ jobs:
       # Schema version currently applied in production: the upgrade check
       # replays everything above it the way the next deploy will. Bump this
       # after a release migrates prod.
-      PRODUCTION_BASELINE: "16"
+      # The schema version production is actually running. Keep this in step
+      # with the deployed database (SELECT version FROM schema_migrations) or
+      # the incremental-upgrade job stops testing the path production will take.
+      # Verified against 85.137.30.142 on 2026-09-08: version 23.
+      PRODUCTION_BASELINE: "23"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

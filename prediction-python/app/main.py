@@ -72,6 +72,12 @@ class TrendAlignmentRequest(BaseModel):
     symbols: list[str] = Field(default_factory=list)
 
 
+class EconomicIngestRequest(BaseModel):
+    """Optional narrowing of an economic ingest (empty = every enabled series)."""
+
+    codes: list[str] = Field(default_factory=list)
+
+
 class BacktestRequest(BaseModel):
     horizon: str = "1d"
     fee_pct: float = 0.5
@@ -250,6 +256,49 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
         return run_trend_alignment(
             engine, settings, symbols=(req.symbols or None) if req else None
         )
+
+    @app.post("/internal/economic/ingest")
+    def economic_ingest(req: Optional[EconomicIngestRequest] = None) -> dict:
+        """Ingest the declared economic catalog (migration 0024).
+
+        ``codes`` empty means every enabled series. Each series is fetched and
+        written in its own transaction, so one bad source cannot roll back the
+        others; per-series counts and any failures come back in the response.
+
+        Safe to call repeatedly: a value the source has not changed inserts
+        nothing, and a value it HAS changed inserts a new vintage beside the
+        print it replaced rather than overwriting it.
+
+        A code that is not in the catalog is refused with 400 — an unknown
+        series is never quietly dropped from the list the caller asked for.
+
+        A pass in which EVERY series failed answers 502, not 200: the Go
+        scheduler records job success from the status code, and a run that
+        ingested nothing must not enter that history as a success. The body
+        still carries the full per-series report, so the failure is
+        diagnosable. A partial failure stays 200 with an ``errors`` list —
+        one provider being down is not a failed job.
+        """
+        from .jobs.economic import EconomicIngestFailed, ingest_economic
+
+        try:
+            return ingest_economic(engine, settings, (req.codes or None) if req else None)
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except EconomicIngestFailed as exc:
+            return JSONResponse(
+                status_code=502,
+                content=exc.report
+                | {
+                    "error": {
+                        "code": "upstream_failed",
+                        "message": str(exc),
+                    }
+                },
+            )  # type: ignore[return-value]
 
     @app.get("/internal/data/coverage")
     def data_coverage() -> dict:

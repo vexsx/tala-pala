@@ -31,6 +31,11 @@ func TestLoad_DefaultsAndRequired(t *testing.T) {
 	if cfg.Crons.Collect != "*/10 * * * *" || cfg.Crons.Train != "30 2 * * *" {
 		t.Fatalf("bad cron defaults: %+v", cfg.Crons)
 	}
+	// Economic series publish monthly at best, with lags of months, so the
+	// ingest is daily and offset from train (02:30) and cleanup (04:00).
+	if cfg.Crons.Economic != "40 3 * * *" {
+		t.Fatalf("bad economic cron default: %q", cfg.Crons.Economic)
+	}
 	if cfg.MigrationsDir != "/app/migrations" {
 		t.Fatalf("bad migrations dir: %s", cfg.MigrationsDir)
 	}
@@ -131,6 +136,7 @@ func TestLoad_CORSAndOverrides(t *testing.T) {
 	env["RATE_LIMIT_RPM"] = "120"
 	env["ALLOW_OPEN_REGISTRATION"] = "true"
 	env["SCHEDULE_COLLECT_CRON"] = "*/5 * * * *"
+	env["SCHEDULE_ECONOMIC_CRON"] = "15 5 * * *"
 	cfg, err := Load(env, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +146,9 @@ func TestLoad_CORSAndOverrides(t *testing.T) {
 	}
 	if cfg.RateLimitRPM != 120 || !cfg.AllowOpenRegistration || cfg.Crons.Collect != "*/5 * * * *" {
 		t.Fatalf("overrides not applied: %+v", cfg)
+	}
+	if cfg.Crons.Economic != "15 5 * * *" {
+		t.Fatalf("SCHEDULE_ECONOMIC_CRON not applied: %q", cfg.Crons.Economic)
 	}
 }
 

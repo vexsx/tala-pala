@@ -166,3 +166,30 @@ func TestPostDoesNotRetryTimeout(t *testing.T) {
 		t.Fatalf("service saw %d requests, want 1: a timeout must not start a second run", got)
 	}
 }
+
+// The economic ingest is a POST to its own internal path, carrying the shared
+// token like every other internal call. A typo in the path is a silent 404 in
+// production -- the scheduler would record a failed job with no clue why -- so
+// the path is asserted rather than assumed.
+func TestIngestEconomicPostsToItsOwnPath(t *testing.T) {
+	var gotPath, gotMethod, gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod, gotToken = r.URL.Path, r.Method, r.Header.Get("X-Internal-Token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok", testLogger())
+	if _, err := c.IngestEconomic(context.Background()); err != nil {
+		t.Fatalf("IngestEconomic: %v", err)
+	}
+	if gotPath != "/internal/economic/ingest" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotToken != "tok" {
+		t.Fatalf("X-Internal-Token = %q", gotToken)
+	}
+}

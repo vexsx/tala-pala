@@ -1,0 +1,1068 @@
+[
+ {
+  "page": 1,
+  "pages": 1,
+  "per_page": 200,
+  "total": 66,
+  "sourceid": "2",
+  "lastupdated": "2026-07-13"
+ },
+ [
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2025",
+   "value": 123.741984916697,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2024",
+   "value": 122.213261700573,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2023",
+   "value": 120.213669474403,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2022",
+   "value": 118.28944516653,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2021",
+   "value": 112.345016399902,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2020",
+   "value": 112.143231100025,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2019",
+   "value": 114.524660532343,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2018",
+   "value": 116.779772707568,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2017",
+   "value": 113.302920986271,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2016",
+   "value": 111.117434855702,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2015",
+   "value": 109.348732137854,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2014",
+   "value": 105.072324180443,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2013",
+   "value": 102.663561221631,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2012",
+   "value": 101.545425889605,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2011",
+   "value": 100.877346595685,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2010",
+   "value": 100,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2009",
+   "value": 99.129658167554,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2008",
+   "value": 97.605246567666,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2007",
+   "value": 86.9531235204222,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2006",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2005",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2004",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2003",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2002",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2001",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "2000",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1999",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1998",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1997",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1996",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1995",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1994",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1993",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1992",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1991",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1990",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1989",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1988",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1987",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1986",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1985",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1984",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1983",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1982",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1981",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1980",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1979",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1978",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1977",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1976",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1975",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1974",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1973",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1972",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1971",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1970",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1969",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1968",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1967",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1966",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1965",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1964",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1963",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1962",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1961",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  },
+  {
+   "indicator": {
+    "id": "FP.CPI.TOTL",
+    "value": "Consumer price index (2010 = 100)"
+   },
+   "country": {
+    "id": "AE",
+    "value": "United Arab Emirates"
+   },
+   "countryiso3code": "ARE",
+   "date": "1960",
+   "value": null,
+   "unit": "",
+   "obs_status": "",
+   "decimal": 1
+  }
+ ]
+]

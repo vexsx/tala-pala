@@ -92,6 +92,17 @@ type IntelligenceHandlers interface {
 	News(http.ResponseWriter, *http.Request)
 }
 
+// EconomicHandlers serves the instrument vocabulary and the point-in-time
+// economic-series store. All four are plain reads: the ingest that fills those
+// tables is a Python job, and nothing behind these routes computes, splices or
+// revises a number.
+type EconomicHandlers interface {
+	Instruments(http.ResponseWriter, *http.Request)
+	SeriesList(http.ResponseWriter, *http.Request)
+	Series(http.ResponseWriter, *http.Request)
+	Observations(http.ResponseWriter, *http.Request)
+}
+
 // Deps bundles everything the router needs.
 type Deps struct {
 	Logger  *slog.Logger
@@ -111,6 +122,7 @@ type Deps struct {
 	Admin        AdminHandlers
 	Issues       IssueHandlers
 	Intelligence IntelligenceHandlers
+	Economic     EconomicHandlers
 
 	// Limiters are created by the caller so it can Stop() them on shutdown.
 	GlobalLimiter *RateLimiter
@@ -193,6 +205,16 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			// Read-only news view; gated by NEWS_API_ENABLED inside the handler
 			// so an operator can turn it off without a redeploy of the router.
 			r.Get("/api/v1/intelligence/news", d.Intelligence.News)
+
+			// The instrument vocabulary, so a client stops hard-coding symbol
+			// lists, and the economic-series registry it indexes.
+			r.Get("/api/v1/instruments", d.Economic.Instruments)
+			r.Get("/api/v1/series", d.Economic.SeriesList)
+			r.Get("/api/v1/series/{code}", d.Economic.Series)
+			// The point-in-time read: ?as_of= selects the vintage that was
+			// knowable at a cutoff, so a historical fold can never see a
+			// revision published after it.
+			r.Get("/api/v1/series/{code}/observations", d.Economic.Observations)
 
 			r.Get("/api/v1/portfolio", d.Portfolio.Get)
 			r.Post("/api/v1/portfolio/transactions", d.Portfolio.CreateTransaction)

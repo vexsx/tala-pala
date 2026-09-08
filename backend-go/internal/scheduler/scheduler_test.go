@@ -173,16 +173,17 @@ func TestNewsJobIsRegisteredSeparatelyWithItsOwnTimeout(t *testing.T) {
 	cfg.Crons.Cleanup = "0 4 * * *"
 	cfg.Crons.News = "*/15 * * * *"
 	cfg.Crons.TrendAlignment = "7 * * * *"
+	cfg.Crons.Economic = "40 3 * * *"
 
 	s, err := New(cfg, nil, nil, nil, obs.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// One entry per job: collect, predict, signals, evaluate, train, alerts,
-	// cleanup, news, trend-alignment. A dropped job silently stops the work it
-	// does, so the count is asserted rather than assumed.
-	if got := len(s.cron.Entries()); got != 9 {
-		t.Fatalf("registered %d cron entries, want 9 (a job was dropped?)", got)
+	// cleanup, news, trend-alignment, economic. A dropped job silently stops
+	// the work it does, so the count is asserted rather than assumed.
+	if got := len(s.cron.Entries()); got != 10 {
+		t.Fatalf("registered %d cron entries, want 10 (a job was dropped?)", got)
 	}
 	if internalclient.NewsTimeout <= 0 {
 		t.Fatal("news job must declare a positive timeout")
@@ -191,5 +192,33 @@ func TestNewsJobIsRegisteredSeparatelyWithItsOwnTimeout(t *testing.T) {
 	// news job needs more headroom than the 60s per-call default.
 	if internalclient.NewsTimeout < time.Minute {
 		t.Fatalf("NewsTimeout %v is too short for a throttled multi-query pass", internalclient.NewsTimeout)
+	}
+	// The economic ingest is separate for the same reason: it walks external
+	// macro providers, and one that is slow, down or has restated its history
+	// must not delay or fail collect, predict or train.
+	if internalclient.EconomicIngestTimeout <= 0 {
+		t.Fatal("economic job must declare a positive timeout")
+	}
+}
+
+// A cron spec that robfig/cron cannot parse must fail scheduler construction
+// rather than silently registering nothing, which is the only validation the
+// cron settings get.
+func TestNewRejectsAnUnparseableCronSpec(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Crons.Collect = "*/10 * * * *"
+	cfg.Crons.Predict = "5 * * * *"
+	cfg.Crons.Signals = "10 * * * *"
+	cfg.Crons.Evaluate = "20 * * * *"
+	cfg.Crons.Train = "30 2 * * *"
+	cfg.Crons.Alerts = "*/5 * * * *"
+	cfg.Crons.Cleanup = "0 4 * * *"
+	cfg.Crons.News = "*/15 * * * *"
+	cfg.Crons.TrendAlignment = "7 * * * *"
+	cfg.Crons.Economic = "every night please"
+
+	if _, err := New(cfg, nil, nil, nil, obs.NewMetrics(),
+		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("an unparseable cron spec was accepted")
 	}
 }

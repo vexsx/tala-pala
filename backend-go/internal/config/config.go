@@ -22,6 +22,7 @@ type CronConfig struct {
 	Cleanup        string
 	News           string
 	TrendAlignment string
+	Economic       string
 }
 
 // Config is the fully-parsed application configuration.
@@ -171,6 +172,13 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 			// 1H leg only changes when an hourly candle CLOSES, so a
 			// minutely run would re-read the same closed candles all hour.
 			TrendAlignment: get("SCHEDULE_TREND_ALIGNMENT_CRON", "7 * * * *"),
+			// Daily at 03:40 UTC. Economic series are monthly, quarterly or
+			// annual with publication lags measured in months (CBI's monetary
+			// bulletin ran 5.5 months behind), so polling more often than daily
+			// would re-read the same periods. The minute is offset from train
+			// (02:30) and cleanup (04:00) so the ingest does not contend with
+			// them for the prediction service.
+			Economic: get("SCHEDULE_ECONOMIC_CRON", "40 3 * * *"),
 		},
 	}
 

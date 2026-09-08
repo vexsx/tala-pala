@@ -457,3 +457,128 @@ The count is now the smallest of three ceilings rather than one: cores − 1, `M
 One price per 100 minutes for a day, out of the mechanism that exists to end a freeze. An accepted level shift is a level **reset**, and `collect._since_last_level_reset` now trims the window at the most recent one. Nothing new is remembered to do it: a value more than `MAX_JUMP_PCT` from the last good one is classified `suspect` and cannot reach `prices` on its own, so a step that large between two *consecutive accepted* prices is by construction a level shift this system chose to accept, and the newest such step is the reset. Reading it back out of `prices` beats a marker — no new state to keep in sync, no migration, and a series that re-levelled before this code shipped is healed the first time it is asked. Same threshold as the jump test on purpose: the window the robust test measures dispersion over is exactly the run of values the jump test considers one continuous level.
 
 The property this whole mechanism exists to preserve is re-checked rather than assumed. A one-off spike is still rejected — before the fix and after it, and also in the newly reachable state where it arrives immediately *after* a reset, because the jump test is then measured against the level actually in force. Trimming below five values does disable the MAD test for a few observations (`is_mad_outlier` needs five), leaving the jump test alone on guard right after a re-level; that is the intended reading of "accepted", and the robust test comes back — measured against the new level's own dispersion — as soon as five values exist at it. A 5.7% move, inside `MAX_JUMP_PCT` and therefore invisible to the jump test, is caught by it again at that point.
+
+## Addendum 27 — instrument vocabulary and a bitemporal economic layer (2026-09-09)
+
+The first increment of the Iran Macro & Multi-Asset redesign (`docs/REDESIGN.md`). It adds storage
+and a read API for revisable economic data, and a single symbol registry. **Nothing in the gold
+pipeline changed**: `FORECAST_SYMBOLS`, the candidate roster, the tournament, the gates, the signal
+engine, collection and the existing routes are untouched, and the new job has its own cron, lock and
+timeout so a failure here cannot disturb collect/predict/train.
+
+**Why `prices` could not carry this.** `prices` is keyed `(symbol, observed_at, source)`: one value,
+one instant, never revised. A macro observation has three times that all differ — the period it
+describes, the moment it was published, and the revision it belongs to. Measured, and the reason
+this is not over-engineering: CBI's monetary bulletin for Esfand 1404 was the latest available on
+2026-09-08, a **5.5-month** publication lag; Codal republished one monthly report **485 days** after
+its period end. A backtest reading the latest revised number at a historical cutoff reads the future.
+
+**Migration `0024`** adds four tables.
+- `instruments` — the single symbol vocabulary, seeded with the 12 symbols production already
+  carries, using the currency and unit those rows actually hold. It replaces seven in-code
+  registries (`KnownSymbols`, `SANITY_RANGES`, `JOB_SYMBOLS`, `FORECAST_SYMBOLS`, `FEATURE_SYMBOLS`,
+  the `market_hours` frozensets, `CHART_SYMBOLS`). **No FK from `prices.symbol` yet, deliberately**:
+  every existing symbol is seeded so a FK would pass today, but it would also turn "a provider
+  emitted an unregistered symbol" from a silent new series into a hard collect failure. The FK lands
+  once every writer goes through the registry.
+- `economic_series` — frequency, calendar, `measure`, seasonal adjustment, base period, provider,
+  publication lag, `splice_policy`. `measure` is part of series **identity**, not a display option:
+  Iran publishes point-to-point *and* twelve-month-average inflation and they diverged 87.9% vs
+  66.0% in Tir 1405. They are two series.
+- `economic_observations` — append-only, `UNIQUE (series_id, ref_period_start, vintage)`. A revision
+  inserts a new row with `vintage+1`; nothing is ever updated in place, so the first print stays
+  readable forever. Verified: across a 61-pass re-ingest sweep spanning five calendar-year rollovers
+  the row set was byte-identical after every pass.
+- `source_documents` — `ON DELETE RESTRICT` from observations, because `SET NULL` would be the one
+  path by which a stored observation is mutated after insert, erasing the citation that makes the
+  value defensible.
+
+**The point-in-time rule.** A read at cutoff `T` returns, per reference period, the highest `vintage`
+among rows with `available_at <= T`. Filtering is on `available_at` and **never** `published_at`
+(nullable, and the sources do not supply it) — the same rule Addendum 17 fixed for news.
+`record_observation` **refuses** a write whose `available_at` predates the newest stored vintage for
+that period, naming both timestamps: a clock that ran backwards is an operational fault, and
+absorbing it silently would let a later vintage be served at a cutoff before the first print existed
+(reproduced before the guard was added).
+
+**Projections are not observations.** IMF WEO carries values to 2031 in the same series as history.
+`is_projection` is frozen with the row at the moment it was written and is never recomputed against
+a later clock, and "unchanged" is decided on the **value alone**. Both halves were necessary: with
+the flags in the equality test, a calendar rollover rewrote an unchanged 2026 forecast as vintage 2
+with `is_projection=false`, manufacturing a revision the source never made and serving a forecast as
+measured history. Both read layers exclude projections **by default** (Go `include_projections=0`,
+Python `point_in_time(include_projections=False)`).
+
+> Honest limit, stated rather than papered over: the DataMapper API does not expose the WEO
+> "estimates start after" marker, so for IMF series `is_projection=false` means only *"the period was
+> complete when we fetched it"* — **not** *"this is a measurement"*. The IMF has held no Article IV
+> consultation with Iran since 2018. The series-level `quality_tier='estimate'` and the catalog note
+> carry that; no heuristic is invented to guess where reported data ends.
+
+**Providers.** `worldbank` and `imf_weo`, category `global_macro`, both verified answering on
+2026-09-08. World Bank `FP.CPI.TOTL` for Iran returns **66 non-null annual observations, 1960–2025,
+base 2010=100** (the 2010 value is exactly `100`). The base is **parsed from the payload and compared
+to the catalog constant on every run** — a World Bank rebase refuses the series loudly rather than
+storing restated levels under a stale label, because no `as_of` read could then distinguish the two
+bases. IMF DataMapper **ignores its country path segment**: `/PCPIPCH/IRN` returns all 228 economies
+with `SDN` first, so the adapter selects by country key and raises when it is absent — trusting the
+URL would have stored Sudan's inflation as Iran's.
+
+**Endpoints** (Go, authenticated, read-only projections — Go computes nothing here):
+- `GET /api/v1/instruments?kind=&domain=&enabled=` — the vocabulary. `kind` is a closed CHECK set so
+  an unknown value is a 400; `domain` is not validated (no CHECK constraint, so "nothing is in that
+  domain" is a true answer). Absent `enabled` applies no filter.
+- `GET /api/v1/series?domain=&provider=` and `GET /api/v1/series/{code}` — registry plus coverage.
+  Coverage counts `DISTINCT ref_period_start`, not vintage rows: counting rows would make a 66-year
+  annual series report 72 observations, and the more honest the store is the wronger it would get.
+- `GET /api/v1/series/{code}/observations?as_of=&from=&to=&limit=&before=&include_projections=`
+  — the point-in-time read. Refuses rather than substitutes: an unparseable `as_of`, `from > to`, a
+  limit outside 1..5000, an unknown code. **A bare integer that is not a plausible epoch is refused**
+  (`?as_of=2026` previously became 1970-01-01 and returned an empty series, which a backtest harness
+  reads as "no history"); the trade is that unix cutoffs before 2001-09-09 must use RFC3339, and the
+  message says so. `has_more` plus a `before` cursor signal truncation — a silently truncated page
+  would let a client chart "full history" that starts decades late. Period bounds are echoed back as
+  `effective_window`. Every payload carries provenance: source, quality tier, base period, splice
+  policy, `notes`, the effective `as_of` and the vintages actually used.
+
+**Internal:** `POST /internal/economic/ingest` body `{"codes":[...]}` (empty = all enabled). Per
+series in its own transaction; provider health is aggregated across the whole pass and written once,
+so a late success can no longer erase earlier failures. A pass in which every series fails is
+reported as a job failure.
+
+**Migration `0025`** re-enables `tgju`, disabled by `0023` after 2,047 consecutive failures. Re-tested
+from the production host on 2026-09-08: `call2/call3/call4.tgju.org` all `200` (~179 KB) and
+`api.tgju.org/.../price_dollar_rl` `200` with 3,945 daily OHLC rows, 2011-11-26 → 2026-09-07. The
+2026-08 block was IP-scoped, not a shutdown. **Priority moves 10 → 22**, and that correction matters:
+tgju emits `sekee` → `IR_COIN_EMAMI`, and neither hamrahgold nor milligold emits the coin at all, so
+re-enabling at priority 10 would have taken the coin away from alanchand (20) — an unrequested change
+of primary source bundled into an unrelated feature. At 22 every symbol keeps the source it has today
+and tgju returns strictly as a fallback.
+
+**Retractions.**
+- ~~"tgju.org answers scripted clients with access denied"~~ (`0023`) — true when written, false now;
+  see the measurements above.
+- ~~"tsetmc.com is geo-blocked outside Iran"~~ (`.env.example`, Addendum 7) — **false**.
+  `cdn.tsetmc.com` answered ~25 endpoints unauthenticated and unthrottled from outside Iran; only a
+  literal `curl/x.y` User-Agent is refused. BrsApi is a convenience, not a necessity.
+- ~~"Nothing here reaches ... the buy/sell decision policy"~~ (Addendum 20, trend alignment) — stale.
+  `app/signals/engine.py` scores a full alignment as one weighted factor (`trend_contribution`).
+  Still true, and the part that matters: it reaches no model input, model selection, prediction
+  confidence or interval, and the contribution is capped so it can talk the engine out of a call but
+  never into one.
+- CI's `PRODUCTION_BASELINE` was pinned at `16` while production ran `23`, so the incremental-upgrade
+  job had not tested production's real upgrade path for seven migrations. Now `23`.
+
+**Known limitations, recorded rather than hidden.**
+- `source_documents` is created but **never written**: both P0 sources are JSON APIs at stable URLs,
+  and a row claiming an archived artifact that does not exist would be worse than no row. Every
+  `source_document_id` is NULL. The SCI/CBI PDF and XLSX paths need the archive first — and because
+  SCI filenames rotate and old paths 404, that archiving must begin before any point-in-time macro
+  backtest can be honest.
+- `coverage.projection_count` counts periods holding at least one projection vintage, so a period
+  first published as a forecast and later observed is counted in both totals.
+- There are no DB-backed Go tests anywhere in this repo, so the new SQL is unit-tested as text and
+  verified against the live database after deployment, not in CI.
+- The four new routes are absent from `backend-go/docs/openapi.yaml`, which already omits
+  `/intelligence/news`, `/market/candles`, `/market/funds`, `/market/trend-alignment` and
+  `/chart/drawings`. Pre-existing, not a regression from this work.

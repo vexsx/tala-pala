@@ -128,6 +128,16 @@ func New(cfg *config.Config, rdb *redis.Client, client *internalclient.Client,
 			_, err := client.TrendAlignment(ctx)
 			return err
 		}},
+		// Economic ingest: revisable macro series from external providers,
+		// written as new vintages into their own tables. Its own job, its own
+		// lock and its own timeout for the same reason news has them -- a
+		// provider that is slow, down or has restated its history must not
+		// delay or fail price collection, prediction or training. Daily: these
+		// series publish monthly at best, with lags of months.
+		{"economic", cfg.Crons.Economic, internalclient.EconomicIngestTimeout, func(ctx context.Context) error {
+			_, err := client.IngestEconomic(ctx)
+			return err
+		}},
 	}
 
 	for _, j := range jobs {

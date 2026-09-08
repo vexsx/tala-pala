@@ -22,12 +22,14 @@ from .bitmax import BitmaxProvider
 from .brsapi import BrsApiProvider
 from .hamrahgold import HamrahGoldProvider
 from .gold_api import GoldAPIProvider
+from .imf_weo import IMFWeoProvider
 from .metals_dev import MetalsDevProvider
 from .milligold import MilligoldProvider
 from .navasan import NavasanProvider
 from .pricedb import PriceDBProvider
 from .stooq import StooqProvider
 from .tgju import TGJUProvider
+from .worldbank import WorldBankProvider
 from .yahoo import YahooProvider
 
 log = logging.getLogger(__name__)
@@ -82,6 +84,16 @@ def build_provider(code: str, settings: Settings) -> Optional[Provider]:
             funds=parse_funds_config(settings.tsetmc_funds),
             **kwargs,
         )
+    # Economic-series adapters (migration 0024, category 'global_macro'). They
+    # are built here so the ingest job uses the same construction path and the
+    # same timeout/courtesy/backoff settings as every price adapter. They can
+    # never be reached by a collect pass: no entry in JOB_PROVIDER_CATEGORIES
+    # names 'global_macro', and their inherited fetch() refuses outright rather
+    # than returning an empty quote list.
+    if code == "worldbank":
+        return WorldBankProvider(**kwargs)
+    if code == "imf_weo":
+        return IMFWeoProvider(**kwargs)
     if code == "navasan":
         if not settings.navasan_api_key:
             return None

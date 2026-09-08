@@ -25,6 +25,7 @@ All configuration is via environment variables (`.env` locally, Docker secrets i
 | `SCHEDULE_TRAIN_CRON` | `30 2 * * *` | Model retraining |
 | `SCHEDULE_ALERTS_CRON` | `*/5 * * * *` | User alert evaluation |
 | `SCHEDULE_CLEANUP_CRON` | `0 4 * * *` | Retention cleanup |
+| `SCHEDULE_ECONOMIC_CRON` | `40 3 * * *` | Economic-series ingestion (World Bank, IMF WEO). Daily is deliberate for annual series: it costs two small requests and catches a revision the day it lands |
 | `PREDICTION_PORT` | `8500` | Python service port (internal) |
 | `MODELS_DIR` | `/app/models` | Model artifact volume mount |
 | `HTTP_TIMEOUT_SECONDS` | `15` | Outbound provider request timeout |
