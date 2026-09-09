@@ -35,3 +35,25 @@ func TestSummarySignalSelectIsScopedToGold(t *testing.T) {
 		t.Error("symbol is filtered on, never selected: adding it changes the payload")
 	}
 }
+
+// The string guard above pins the SQL text. It cannot see the call site, and an
+// adversarial review proved that gap is reachable: leaving the constant alone
+// and binding "XAUUSD" at the call site kept the whole package green while
+// /api/v1/market/summary served silver's reading as the gold advisory.
+//
+// This asserts the half the string cannot: the symbol actually bound.
+func TestSummarySignalQueryBindsGold(t *testing.T) {
+	query, args := summarySignalQuery()
+
+	if len(args) != 1 {
+		t.Fatalf("summary advisory read takes exactly one bind; got %d: %v", len(args), args)
+	}
+	if got, ok := args[0].(string); !ok || got != "IR_GOLD_18K" {
+		t.Fatalf("the summary advisory must be bound to IR_GOLD_18K, got %v -- "+
+			"/api/v1/market/summary is the GOLD summary, and since migration 0026 "+
+			"the signals table holds a row per asset per pass", args[0])
+	}
+	if !strings.Contains(query, "WHERE symbol = $1") {
+		t.Fatalf("the advisory read lost its symbol filter:\n%s", query)
+	}
+}

@@ -323,3 +323,73 @@ describe('AdvisorCard timeframe selector', () => {
     )
   })
 })
+
+// Both of these were shipped defects on the /market/summary path, found by
+// adversarial review AFTER the advisory board had already fixed the same two
+// problems on its own path. The board's fix did not reach this card because the
+// summary endpoint is a different query and a different component, which is
+// exactly how a fix comes to cover one of two surfaces.
+describe('AdvisorCard — a number must never look more measured than it is', () => {
+  it('marks an assumed confidence as an assumption instead of rendering it like a measurement', () => {
+    renderCard({
+      signal: sig('hold', {
+        confidence: 0.3,
+        evidence_basis: 'technical_only',
+        confidence_basis: 'assumed',
+        confidence_reason:
+          'no model ran for this asset, so no confidence was measured; 0.3 is a fixed structural assumption'
+      })
+    })
+
+    expect(screen.getByText(/Assumption, not a measurement/i)).toBeInTheDocument()
+    expect(screen.getByText(/fixed structural assumption/i)).toBeInTheDocument()
+    // ...and it must NOT fall back to the measured-sounding phrasing.
+    expect(screen.queryByText(/^Confidence is /)).toBeNull()
+  })
+
+  it('keeps the measured phrasing when a model really did produce the confidence', () => {
+    renderCard({
+      signal: sig('hold', {
+        confidence: 0.62,
+        evidence_basis: 'model_backed',
+        confidence_basis: 'measured',
+        model_confidence: 0.62
+      })
+    })
+
+    expect(screen.getByText(/Confidence is /)).toBeInTheDocument()
+    expect(screen.queryByText(/Assumption, not a measurement/i)).toBeNull()
+  })
+
+  it('strips the model-based claim from a technical-only explanation', () => {
+    const claim =
+      'This is an uncertain, model-based assessment of current conditions — not financial advice, and actual outcomes can differ.'
+    renderCard({
+      signal: sig('hold', {
+        evidence_basis: 'technical_only',
+        supporting: [],
+        conflicting: [],
+        risks: [],
+        explanation: `Conditions currently favor waiting (score 52/100). ${claim}`
+      })
+    })
+
+    expect(screen.getByText(/Conditions currently favor waiting/)).toBeInTheDocument()
+    expect(screen.queryByText(/model-based assessment/i)).toBeNull()
+  })
+
+  it('leaves a model-backed explanation untouched', () => {
+    const claim = 'This is an uncertain, model-based assessment of current conditions.'
+    renderCard({
+      signal: sig('hold', {
+        evidence_basis: 'model_backed',
+        supporting: [],
+        conflicting: [],
+        risks: [],
+        explanation: `Conditions currently favor waiting (score 52/100). ${claim}`
+      })
+    })
+
+    expect(screen.getByText(/model-based assessment/i)).toBeInTheDocument()
+  })
+})

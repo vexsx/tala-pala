@@ -161,6 +161,21 @@ export interface SignalSummary {
   invalidation?: string
   review_at?: string | null
   data_fresh?: boolean
+  /**
+   * Provenance for `confidence` and for the explanation's model claim.
+   *
+   * Only gold reaches this endpoint, and gold normally has trained models — but
+   * when it has none, `confidence` falls back to a fixed structural constant
+   * (0.3) that stands in for a measurement nobody took. Rendered as a bare
+   * gauge it is indistinguishable from a measured value, which is the
+   * invented-precision failure this codebase has already fixed twice
+   * elsewhere. These fields let the card say which it is.
+   */
+  evidence_basis?: string
+  confidence_basis?: string
+  confidence_reason?: string
+  /** null when no model ran — distinct from a model measuring zero. */
+  model_confidence?: number | null
 }
 
 export interface MarketSummary {

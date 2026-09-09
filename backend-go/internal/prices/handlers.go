@@ -42,9 +42,42 @@ const summarySignalSymbol = "IR_GOLD_18K"
 // precisely the bug migration 0026 makes possible.
 const summarySignalSelect = `
 	SELECT id, generated_at, signal, score, confidence, explanation,
-	       supporting, conflicting, risks, invalidation, review_at, data_fresh
+	       supporting, conflicting, risks, invalidation, review_at, data_fresh,
+	       COALESCE(inputs->>'evidence_basis',   '') AS evidence_basis,
+	       COALESCE(inputs->>'confidence_basis', '') AS confidence_basis,
+	       COALESCE(inputs->>'confidence_reason','') AS confidence_reason,
+	       (inputs->>'model_confidence')::float8     AS model_confidence
 	  FROM signals WHERE symbol = $1
 	 ORDER BY generated_at DESC LIMIT 1`
+
+// The four basis columns are pulled out of `inputs` rather than left there
+// because this endpoint's consumer -- AdvisorCard -- renders `confidence` as a
+// labelled gauge. Without a basis beside it, a technical-only reading's
+// TECHNICAL_ONLY_CONFIDENCE (a fixed 0.3 that stands in for a measurement that
+// was never taken) renders identically to gold's genuinely measured value. That
+// is the invented-precision failure core/costs.py was written to end, and it
+// does not stop being one because the number reaches the page through a
+// different endpoint than /signals/overview.
+//
+// Selecting the whole `inputs` blob would work too and was rejected: it is the
+// engine's full audit record, tens of keys wide, and shipping it to the browser
+// to read four of them invites consumers to depend on the rest.
+
+// summarySignalQuery returns the statement together with the arguments it must
+// be called with.
+//
+// It exists because the guard that shipped with the symbol fix could not
+// actually catch the bug it was written for: it asserted strings.Contains on
+// summarySignalSelect, which pins the SQL TEXT and says nothing about the call
+// site. An adversarial review proved it -- leaving the constant untouched and
+// changing only the call to bind "XAUUSD" left the test green while the
+// endpoint served a non-gold reading as the gold advisory.
+//
+// Returning both halves from one function gives a database-free test something
+// real to assert: the symbol that is genuinely bound.
+func summarySignalQuery() (string, []any) {
+	return summarySignalSelect, []any{summarySignalSymbol}
+}
 
 // Handler serves the market-data endpoints.
 type Handler struct {
@@ -354,9 +387,9 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		e := map[string]any{
 			"value": p.Value, "currency": p.Currency, "unit": p.Unit,
-			"observed_at": p.ObservedAt.UTC(),
-			"source":      p.Source,
-			"stale":       !markethours.AcceptablyFresh(sym, p.ObservedAt, now, staleMin, h.MarketOpen, h.MarketClose),
+			"observed_at":  p.ObservedAt.UTC(),
+			"source":       p.Source,
+			"stale":        !markethours.AcceptablyFresh(sym, p.ObservedAt, now, staleMin, h.MarketOpen, h.MarketClose),
 			"market_state": MarketState(sym, now, h.MarketOpen, h.MarketClose),
 		}
 		if pv, ok := prev[sym]; ok {
@@ -509,6 +542,14 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 		Invalidation string
 		ReviewAt     *time.Time
 		DataFresh    bool
+		// Provenance for `confidence`. ModelConfidence is a pointer because it
+		// is genuinely NULL when no model ran -- the distinction between "no
+		// model measured this" and "a model measured zero" is the whole reason
+		// these fields exist.
+		EvidenceBasis    string
+		ConfidenceBasis  string
+		ConfidenceReason string
+		ModelConfidence  *float64
 	}
 	//
 	// THE SYMBOL FILTER IS THE POINT OF THIS QUERY.
@@ -529,10 +570,13 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 	// the fix here for the same reason -- a mislabelled reading is worse than a
 	// missing one, because nothing downstream can detect it. Migration 0026's
 	// own header makes the same argument about the DEFAULT it drops.
-	err = h.Pool.QueryRow(ctx, summarySignalSelect, summarySignalSymbol).
+	summaryQuery, summaryArgs := summarySignalQuery()
+	err = h.Pool.QueryRow(ctx, summaryQuery, summaryArgs...).
 		Scan(&sig.ID, &sig.GeneratedAt, &sig.Signal, &sig.Score, &sig.Confidence,
 			&sig.Explanation, &sig.Supporting, &sig.Conflicting, &sig.Risks,
-			&sig.Invalidation, &sig.ReviewAt, &sig.DataFresh)
+			&sig.Invalidation, &sig.ReviewAt, &sig.DataFresh,
+			&sig.EvidenceBasis, &sig.ConfidenceBasis, &sig.ConfidenceReason,
+			&sig.ModelConfidence)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		// Gold has no reading. Null, never another symbol's row as a stand-in.
@@ -547,6 +591,10 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 			"supporting": json.RawMessage(sig.Supporting), "conflicting": json.RawMessage(sig.Conflicting),
 			"risks": json.RawMessage(sig.Risks), "invalidation": sig.Invalidation,
 			"review_at": sig.ReviewAt, "data_fresh": sig.DataFresh,
+			// Provenance for the two numbers on this card a reader could
+			// otherwise mistake for measurements.
+			"evidence_basis": sig.EvidenceBasis, "confidence_basis": sig.ConfidenceBasis,
+			"confidence_reason": sig.ConfidenceReason, "model_confidence": sig.ModelConfidence,
 		}
 	}
 

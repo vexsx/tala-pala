@@ -93,7 +93,7 @@ const MARK_STYLE = {
   '--advisory-call-weight': String(MARK_SIZES.callWeight)
 } as CSSProperties
 
-const EVIDENCE_MODEL_BACKED = 'model_backed'
+export const EVIDENCE_MODEL_BACKED = 'model_backed'
 const EVIDENCE_TECHNICAL_ONLY = 'technical_only'
 const EVIDENCE_UNKNOWN = 'unknown'
 

@@ -39,6 +39,10 @@ import {
 } from '../lib/advice'
 import { pointForecastOf } from '../lib/forecastChart'
 import SignalBadge from './SignalBadge'
+import {
+  EVIDENCE_MODEL_BACKED,
+  withoutUnsupportedModelClaim
+} from './AdvisoryBoard'
 import GaugeBar from './GaugeBar'
 import Loading from './Loading'
 import ErrorMessage from './ErrorMessage'
@@ -472,6 +476,15 @@ export function AdvisorCard({
   const bias = biasOf(signal.signal)
   const headlinePrediction = pickHeadlinePrediction(predictions, bias)
   const cPct = confidencePct(signal.confidence)
+  // The engine appends "This is an uncertain, model-based assessment..." to
+  // every explanation. On a reading with no trained model behind it that is a
+  // self-contradiction in the most-read sentence on the card, so it is stripped
+  // by the same helper the advisory board uses -- one implementation, not two.
+  const { text: explanationText, removed: modelClaimRemoved } =
+    withoutUnsupportedModelClaim(
+      signal.explanation,
+      signal.evidence_basis ?? EVIDENCE_MODEL_BACKED
+    )
   const marketClosed = hasClosedMarketNote(signal)
 
   const supporting = (signal.supporting ?? []).slice(0, 4)
@@ -506,7 +519,18 @@ export function AdvisorCard({
       <div className="advisor-meters">
         <div className="advisor-meter">
           <GaugeBar value={cPct} label="Confidence" />
-          <span className="muted small">Confidence is {confidenceLabel(cPct)}.</span>
+          {signal.confidence_basis === 'assumed' ? (
+            // A fixed structural constant standing in for a measurement nobody
+            // took must never render like a measured one. The engine already
+            // carries the reason; show it rather than paraphrase it.
+            <span className="muted small">
+              <strong>Assumption, not a measurement.</strong>{' '}
+              {signal.confidence_reason ??
+                'No model ran for this reading, so no confidence was measured.'}
+            </span>
+          ) : (
+            <span className="muted small">Confidence is {confidenceLabel(cPct)}.</span>
+          )}
         </div>
         <div className="advisor-meter">
           <GaugeBar value={signal.score} label="Score" />
@@ -542,7 +566,7 @@ export function AdvisorCard({
           </div>
         </div>
       ) : (
-        signal.explanation && <p className="muted">{signal.explanation}</p>
+        explanationText && <p className="muted">{explanationText}</p>
       )}
 
       <div className="callout callout-warn advisor-invalid">
