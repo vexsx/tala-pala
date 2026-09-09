@@ -1035,10 +1035,28 @@ describe('Advisory board — provenance and staleness', () => {
     expect(within(await row(direct.symbol)).queryByText('PROXY')).toBeNull()
   })
 
+  // The fixture is CAPTURED FROM PRODUCTION (see fixtures/README.md), so it
+  // contains the states production was actually in at capture time -- and a
+  // healthy stack has no stale reading in it. Rather than reintroduce a
+  // hand-written payload just to get one, the stale row is DERIVED from a real
+  // one: every field stays as the server emitted it except the two that make it
+  // stale. That keeps the invention confined to the state under test instead of
+  // spreading through the whole fixture, which is how the previous three
+  // fixtures drifted away from what the server can emit.
   it('shows the stale reason on a stale reading and invents none on a fresh one', async () => {
-    const stale = pick('stale', (i) => !i.data_fresh)
     const fresh = pick('fresh', (i) => i.data_fresh)
-    renderBoard()
+    const real = pick('a row to age', (i) => i.symbol !== fresh.symbol)
+    const stale: SignalOverviewItem = {
+      ...real,
+      data_fresh: false,
+      stale_reason: 'no observation newer than 30 minutes at scoring time',
+    }
+    serve({ ...OVERVIEW, items: [fresh, stale] })
+    render(
+      <SettingsProvider>
+        <AdvisoryBoard />
+      </SettingsProvider>
+    )
 
     const card = await row(stale.symbol)
     expect(within(card).getByText(/Computed from stale inputs/)).toBeInTheDocument()

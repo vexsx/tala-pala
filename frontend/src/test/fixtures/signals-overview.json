@@ -1,6 +1,6 @@
 {
-  "as_of": "2026-09-09T06:00:00Z",
-  "oldest_reading_at": "2026-09-08T21:00:00Z",
+  "as_of": "2026-09-09T21:39:33.408316Z",
+  "oldest_reading_at": "2026-09-09T21:39:32.387019Z",
   "stale_after_hours": 6,
   "items": [
     {
@@ -12,23 +12,28 @@
       "quality_tier": "official_mirror",
       "is_proxy": false,
       "signal": "hold",
-      "score": 54,
-      "confidence": 0.62,
+      "score": 52,
+      "confidence": 0.552,
       "evidence_basis": "model_backed",
       "data_fresh": true,
-      "generated_at": "2026-09-09T06:00:00Z",
-      "reading_age_hours": 0.08,
+      "generated_at": "2026-09-09T21:39:32.387019Z",
+      "reading_age_hours": 0.02,
       "reading_stale": false,
-      "headline": "Conditions currently favor waiting (score 54/100).",
-      "top_supporting": "Average model confidence is 62%.",
-      "top_conflicting": "Forecast move (+0.26%) is positive but below the ~0.5% round-trip cost threshold.",
-      "omitted_factors": [],
-      "cost_pct": 0.49,
+      "headline": "Conditions currently favor waiting (score 52/100).",
+      "top_supporting": "Forecast horizons largely agree on direction.",
+      "top_conflicting": "Models forecast a -2.71% move.",
+      "omitted_factors": [
+        {
+          "factor": "gold_fund_flow",
+          "reason": "IR_GOLD_FUND_FLOW is the retail/institutional flow ratio of the Tehran gold ETFs. It describes who is trading those funds and says nothing about IR_GOLD_18K."
+        }
+      ],
+      "cost_pct": 0.3762,
       "cost_basis": {
         "basis": "observed_spread",
         "source": "hamrahgold",
-        "observed_at": "2026-09-09T04:12:00Z",
-        "reason": "observed hamrahgold buy/sell spread, 1.8h old"
+        "observed_at": "2026-09-09T21:35:04.090508Z",
+        "reason": "observed hamrahgold buy/sell spread, 0.1h old"
       },
       "stale_reason": null
     },
@@ -40,15 +45,15 @@
       "unit": "usd",
       "quality_tier": "proxy",
       "is_proxy": true,
-      "signal": "buy",
-      "score": 62,
+      "signal": "hold",
+      "score": 56,
       "confidence": 0.3,
       "evidence_basis": "technical_only",
       "data_fresh": true,
-      "generated_at": "2026-09-09T06:00:00Z",
-      "reading_age_hours": 0.08,
+      "generated_at": "2026-09-09T21:39:32.844053Z",
+      "reading_age_hours": 0.02,
       "reading_stale": false,
-      "headline": "Conditions currently favor buying (score 62/100).",
+      "headline": "Conditions currently favor waiting (score 56/100).",
       "top_supporting": "Price is above SMA20 and SMA50 (established uptrend).",
       "top_conflicting": "No model forecast available for any horizon.",
       "omitted_factors": [
@@ -87,15 +92,15 @@
       "quality_tier": "official_mirror",
       "is_proxy": false,
       "signal": "hold",
-      "score": 49,
+      "score": 56,
       "confidence": 0.3,
       "evidence_basis": "technical_only",
       "data_fresh": true,
-      "generated_at": "2026-09-08T21:00:00Z",
-      "reading_age_hours": 9.08,
-      "reading_stale": true,
-      "headline": "Conditions currently favor waiting (score 49/100).",
-      "top_supporting": "Price is above SMA20.",
+      "generated_at": "2026-09-09T21:39:33.102303Z",
+      "reading_age_hours": 0.02,
+      "reading_stale": false,
+      "headline": "Conditions currently favor waiting (score 56/100).",
+      "top_supporting": "Price is above SMA20 and SMA50 (established uptrend).",
       "top_conflicting": "No model forecast available for any horizon.",
       "omitted_factors": [
         {
@@ -132,17 +137,17 @@
       "unit": "ozt",
       "quality_tier": "proxy",
       "is_proxy": true,
-      "signal": "hold",
-      "score": 57,
-      "confidence": 0.577,
+      "signal": "sell",
+      "score": 39,
+      "confidence": 0.251,
       "evidence_basis": "model_backed",
       "data_fresh": true,
-      "generated_at": "2026-09-09T06:00:00Z",
-      "reading_age_hours": 0.08,
+      "generated_at": "2026-09-09T21:39:33.273618Z",
+      "reading_age_hours": 0.02,
       "reading_stale": false,
-      "headline": "Conditions currently favor waiting (score 57/100).",
-      "top_supporting": "Forecast horizons largely agree on direction.",
-      "top_conflicting": "Forecast move (+0.43%) is positive but below the ~2.2% round-trip cost threshold.",
+      "headline": "Conditions currently favor reducing exposure (score 39/100).",
+      "top_supporting": "RSI14 at 24 is oversold.",
+      "top_conflicting": "Models forecast a -0.82% move.",
       "omitted_factors": [
         {
           "factor": "local_premium_z",
@@ -171,15 +176,15 @@
       "quality_tier": "proxy",
       "is_proxy": true,
       "signal": "hold",
-      "score": 50,
-      "confidence": 0.09,
+      "score": 48,
+      "confidence": 0.3,
       "evidence_basis": "technical_only",
-      "data_fresh": false,
-      "generated_at": "2026-09-09T06:00:00Z",
-      "reading_age_hours": 0.08,
+      "data_fresh": true,
+      "generated_at": "2026-09-09T21:39:33.408316Z",
+      "reading_age_hours": 0.02,
       "reading_stale": false,
-      "headline": "Input data is stale, so the engine holds regardless of model output.",
-      "top_supporting": null,
+      "headline": "Conditions currently favor waiting (score 48/100).",
+      "top_supporting": "Positive 10-period momentum (+1.4%).",
       "top_conflicting": "No model forecast available for any horizon.",
       "omitted_factors": [
         {
@@ -206,7 +211,7 @@
         "observed_at": null,
         "reason": "no dealer publishes a two-sided quote for XAGUSD into this system: collected from the Yahoo SI=F front-month settlement, a single settlement price with no bid/ask; broker commission and futures roll cost are not observed by this system; using the conservative assumption"
       },
-      "stale_reason": "the most recent XAGUSD observation is 31.4h old, past this symbol's freshness budget"
+      "stale_reason": null
     }
   ],
   "unavailable": [
