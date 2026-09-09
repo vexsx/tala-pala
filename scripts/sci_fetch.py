@@ -219,7 +219,16 @@ def main() -> int:
         "cd /opt/tala-pala && "
         "TOKEN=$(sudo grep -E '^INTERNAL_API_TOKEN=' .env | cut -d= -f2-) && "
         f"sudo docker compose cp {remote_path} prediction-service:{container_path} && "
-        f"sudo docker compose exec -T api sh -c {shlex.quote(inner)}"
+        # -e TOKEN="$TOKEN" is load-bearing. The inner command is shlex-quoted so
+        # the HOST shell cannot expand anything inside it -- that is the whole
+        # point of the quoting -- which also means $TOKEN stays literal unless
+        # the CONTAINER has it in its environment. Without this the request goes
+        # out with the header "X-Internal-Token: $TOKEN" and earns a 401.
+        #
+        # Passing it this way also keeps the secret off this machine entirely:
+        # it is read from the server's own .env by the server's own shell and
+        # never appears in a local process argument.
+        f'sudo docker compose exec -T -e TOKEN="$TOKEN" api sh -c {shlex.quote(inner)}'
     )
     subprocess.run(["ssh", args.host, remote], check=True)
     return 0
