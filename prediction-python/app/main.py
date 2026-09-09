@@ -8,8 +8,8 @@ the Docker-internal network and only the Go API talks to it.
 from __future__ import annotations
 
 import hmac
-import os
 import logging
+import os
 from typing import Optional
 
 from fastapi import FastAPI, Request, Response
@@ -29,7 +29,6 @@ from .metrics import render_metrics
 from .models.predicting import predict_all
 from .models.training import train_all
 from .providers.registry import providers_health
-from .signals.engine import generate_signal
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +77,12 @@ class NewsCollectRequest(BaseModel):
 
     sources: list[str] = Field(default_factory=list)
     dry_run: bool = False
+
+
+class SignalsRequest(BaseModel):
+    """Optional narrowing of a signals pass (empty = every eligible symbol)."""
+
+    symbols: list[str] = Field(default_factory=list)
 
 
 class TrendAlignmentRequest(BaseModel):
@@ -188,8 +193,47 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
             )  # type: ignore[return-value]
 
     @app.post("/internal/signals/generate")
-    def signals_generate() -> dict:
-        return generate_signal(engine, settings)
+    def signals_generate(req: Optional[SignalsRequest] = None) -> dict:
+        """Score every eligible asset (Addendum 28), or just the ones named.
+
+        ``symbols`` empty means the seven symbols in
+        ``app/signals/universe.py``: the assets that both have real price
+        history and are things a reader can hold. One symbol failing does not
+        stop the others — each is assembled and written in its own
+        transaction — and a symbol that cannot support enough factors to say
+        anything publishes NOTHING, with its reason, rather than a hold that
+        would look like a considered neutral verdict.
+
+        A symbol that is not eligible is refused with 400 naming it and, where
+        there is one, the stated reason it is excluded (DXY and US10Y are
+        macro context rather than holdings; IR_GOLD_FUND_FLOW is a ratio in
+        percent, so a "buy" on it means nothing). It is never quietly dropped
+        from the list the caller asked for.
+
+        A pass in which EVERY attempted symbol raised answers 502, not 200:
+        the Go scheduler records job success from the status code, and a pass
+        that published nothing because everything broke must not enter that
+        history as a success. The body still carries the full per-symbol
+        report. A pass where symbols were merely WITHHELD is a success — the
+        engine ran and its answer was "not enough to say".
+        """
+        from .jobs.signals import SignalsGenerationFailed, run_signals
+
+        try:
+            return run_signals(
+                engine, settings, (req.symbols or None) if req else None
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except SignalsGenerationFailed as exc:
+            return JSONResponse(
+                status_code=502,
+                content=exc.report
+                | {"error": {"code": "generation_failed", "message": str(exc)}},
+            )  # type: ignore[return-value]
 
     @app.post("/internal/backtest")
     def backtest(req: Optional[BacktestRequest] = None) -> dict:

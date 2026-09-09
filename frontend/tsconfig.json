@@ -8,6 +8,10 @@
 
     "moduleResolution": "bundler",
     "allowImportingTsExtensions": true,
+    // The signal tests import src/test/fixtures/*.json — the payloads the Go
+    // handlers produced by marshalling their own structs — so the fixture, not
+    // a hand-written copy of it, is what the assertions run against.
+    "resolveJsonModule": true,
     "isolatedModules": true,
     "moduleDetection": "force",
     "noEmit": true,

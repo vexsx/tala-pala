@@ -1233,3 +1233,153 @@ export interface InstrumentItem {
   enabled: boolean
   notes: string
 }
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/signals/overview — the advisory board contract.
+//
+// Derived field-for-field from backend-go/internal/signalsvc/overview.go
+// (OverviewResponse, OverviewItem, CostBasis, OmittedFactor, UnavailableEntry)
+// and checked against src/test/fixtures/signals-overview.json, which the Go
+// side produced by marshalling those structs. Every `| null` below is a Go
+// pointer field: if it is nullable here, the server can and does send null.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a trained model stood behind a reading. The single most important
+ * fact on the board: "hold" from a model and "hold" from an RSI are not the
+ * same claim, and only IR_GOLD_18K and XAUUSD carry active models.
+ * `unknown` means the stored inputs could not be read at all — Go refuses to
+ * assert "no model evidence" about a row it could not parse.
+ */
+export type EvidenceBasis = 'model_backed' | 'technical_only' | 'unknown'
+
+/**
+ * Provenance of the round-trip cost hurdle. `assumed` is a conservative
+ * fee-plus-spread guess, `observed_spread` is a real two-sided dealer quote,
+ * and `unrecorded` means the number is real but its origin was not written
+ * down. A UI that cannot tell the first two apart presents a guess with the
+ * authority of a quote.
+ */
+export type CostBasisKind = 'observed_spread' | 'assumed' | 'unrecorded'
+
+/** One factor the scorer did not weigh, and why it was skipped. */
+export interface OmittedFactor {
+  factor: string
+  reason: string
+}
+
+export interface SignalCostBasis {
+  /** CostBasisKind in practice; widened because the server owns this vocabulary. */
+  basis: CostBasisKind | string
+  /** Provider code when observed; null when the figure was assumed. */
+  source: string | null
+  /** When the quote behind an observed spread was taken (UTC, RFC3339). */
+  observed_at: string | null
+  /** The generator's own sentence explaining the choice. */
+  reason: string | null
+}
+
+/** One eligible symbol's latest reading. */
+export interface SignalOverviewItem {
+  symbol: string
+  /** Display metadata joined from `instruments`. */
+  name_en: string
+  name_fa: string
+  quote_currency: string
+  unit: string
+  quality_tier: string
+  is_proxy: boolean
+  /** The reading itself, passed through verbatim from the stored row. */
+  signal: SignalLevel | string
+  score: number
+  /** 0..1 from the generator; run it through confidencePct() before display. */
+  confidence: number
+  evidence_basis: EvidenceBasis | string
+  /**
+   * About the INPUTS the scorer was handed: false means the prices feeding
+   * this reading were stale when it was computed. It says nothing about how
+   * old the READING is — `reading_stale` answers that, and the two are
+   * independent.
+   */
+  data_fresh: boolean
+  generated_at: string
+  /** How long ago this row was written, at request time. */
+  reading_age_hours?: number
+  /**
+   * True once the reading has outlived the window the engine wrote it for
+   * (`stale_after_hours` on the envelope). Still shown, and flagged: an old
+   * reading with its age attached is information; an old reading presented as
+   * current is not. Optional so an older API does not blank the board.
+   */
+  reading_stale?: boolean
+  /**
+   * The scorer's own one-line call, from `inputs.headline` — the model-free
+   * first sentence, not the blended `explanation`, which always closes with
+   * "This is an uncertain, model-based assessment...". Rows written before
+   * that field existed still fall back to the explanation server-side, which
+   * is why AdvisoryBoard filters this against the row's own evidence basis.
+   */
+  headline: string
+  /** First entry of the stored supporting/conflicting lists, in factor order. */
+  top_supporting: string | null
+  top_conflicting: string | null
+  /** Never null. An empty list means every factor this asset can carry was computed. */
+  omitted_factors: OmittedFactor[]
+  cost_pct: number | null
+  cost_basis: SignalCostBasis | null
+  stale_reason: string | null
+}
+
+/**
+ * Which KIND of absence an `unavailable` entry describes. The four are not
+ * interchangeable, and a single sentence written over the whole list is
+ * guaranteed to contradict some of the entries under it: "this system holds no
+ * data for it" is true of cars and false of DXY, which is collected daily and
+ * refused for being an index level rather than a price.
+ *
+ *   not_collected      — no series exists here at all (cars, housing).
+ *   not_scored         — collected and registered, deliberately not scored.
+ *   no_current_reading — signal-eligible, nothing published inside the
+ *                        server's max age: never scored, or no longer scored.
+ *   not_registered     — signal-eligible but absent from `instruments`, so it
+ *                        cannot even be named. An operational fault.
+ */
+export type SignalUnavailableCategory =
+  | 'not_collected'
+  | 'not_scored'
+  | 'no_current_reading'
+  | 'not_registered'
+
+/**
+ * Something a reader might reasonably expect on the board, and why it is
+ * absent, with the API's own reason attached.
+ */
+export interface SignalUnavailableEntry {
+  symbol_or_class: string
+  /**
+   * Optional for one reason only: a static frontend can be served against a
+   * backend that predates the field (nginx holds the built bundle, the API
+   * rolls separately). The board renders an uncategorised entry under its own
+   * heading rather than guessing which of the four it is.
+   */
+  category?: SignalUnavailableCategory | string
+  reason: string
+}
+
+export interface SignalsOverviewResponse {
+  /**
+   * NEWEST generated_at among the items; null when nothing has been published.
+   * A maximum, not a common timestamp — see `oldest_reading_at`, and never
+   * stamp it over a row (each item carries its own `generated_at`).
+   */
+  as_of: string | null
+  /** Oldest generated_at among the items; equal to `as_of` on a normal pass. */
+  oldest_reading_at?: string | null
+  /**
+   * The server's own threshold behind each item's `reading_stale`, in hours,
+   * published so a client renders the server's rule rather than inventing one.
+   */
+  stale_after_hours?: number
+  items: SignalOverviewItem[]
+  unavailable: SignalUnavailableEntry[]
+}

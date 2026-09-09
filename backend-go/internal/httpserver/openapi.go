@@ -62,8 +62,9 @@ Authenticated endpoints require <code>Authorization: Bearer &lt;JWT&gt;</code>.<
 <ul>
   <li><span class="m">GET</span> <code>/api/v1/predictions</code></li>
   <li><span class="m">GET</span> <code>/api/v1/predictions/{horizon}?limit=50</code></li>
-  <li><span class="m">GET</span> <code>/api/v1/signals/current</code></li>
-  <li><span class="m">GET</span> <code>/api/v1/signals/history?limit=50</code></li>
+  <li><span class="m">GET</span> <code>/api/v1/signals/current?symbol=IR_GOLD_18K</code></li>
+  <li><span class="m">GET</span> <code>/api/v1/signals/history?symbol=IR_GOLD_18K&amp;limit=50</code></li>
+  <li><span class="m">GET</span> <code>/api/v1/signals/overview</code></li>
   <li><span class="m">GET</span> <code>/api/v1/models</code></li>
   <li><span class="m">GET</span> <code>/api/v1/models/performance?symbol=</code></li>
 </ul>

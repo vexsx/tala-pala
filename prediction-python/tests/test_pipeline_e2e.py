@@ -88,14 +88,30 @@ def test_full_pipeline(client, seeded, engine, monkeypatch):
     with engine.connect() as conn:
         assert len(conn.execute(select(predictions)).all()) == len(preds)
 
-    # signals
+    # signals: the pass now covers every eligible asset (Addendum 28) and
+    # returns a per-symbol report rather than one gold payload.
     resp = client.post("/internal/signals/generate", headers=AUTH)
     assert resp.status_code == 200
-    sig = resp.json()
-    assert sig["signal"] in ("strong_buy", "buy", "hold", "sell", "strong_sell")
-    assert "not financial advice" in sig["explanation"]
+    report = resp.json()
+    gold = report["symbols"]["IR_GOLD_18K"]
+    assert gold["status"] == "published"
+    assert gold["signal"] in ("strong_buy", "buy", "hold", "sell", "strong_sell")
+
+    # Exactly the three seeded series are written, each under its own symbol.
+    # USD_IRT and XAUUSD are scored from the same history the gold features
+    # already read; the four symbols with no rows here publish NOTHING and say
+    # why, rather than a hold assembled from an empty table.
     with engine.connect() as conn:
-        assert len(conn.execute(select(signals)).all()) == 1
+        rows = conn.execute(select(signals)).all()
+    written = {r._mapping["symbol"] for r in rows}
+    assert written == {"IR_GOLD_18K", "USD_IRT", "XAUUSD"}
+    for row in rows:
+        assert "not financial advice" in row._mapping["explanation"]
+    for symbol in ("IR_COIN_EMAMI", "XAGUSD",
+                   "IR_GOLD_FUND_AYAR", "IR_GOLD_FUND_TALA"):
+        assert report["symbols"][symbol]["status"] == "withheld", symbol
+        assert report["symbols"][symbol]["reason"], symbol
+    assert report["failed"] == 0
 
     # backtest
     resp = client.post(

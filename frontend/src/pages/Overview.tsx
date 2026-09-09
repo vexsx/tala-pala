@@ -30,6 +30,7 @@ import OsintStream from '../components/OsintStream'
 import { TrendAlignmentCard } from '../components/TrendAlignment'
 import ShortTermDesk from '../components/ShortTermDesk'
 import AdvisorPanel from '../components/AdvisorCard'
+import AdvisoryBoard from '../components/AdvisoryBoard'
 import ActionPlannerPanel from '../components/ActionPlanner'
 import PriceChart, { type ChartPoint } from '../components/PriceChart'
 import Loading from '../components/Loading'
@@ -202,6 +203,8 @@ export default function Overview() {
         loading={summary.loading}
         portfolio={portfolio.data}
       />
+
+      <AdvisoryBoard />
 
       <ShortTermDesk />
 

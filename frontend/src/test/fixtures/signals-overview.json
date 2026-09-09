@@ -1,0 +1,269 @@
+{
+  "as_of": "2026-09-09T06:00:00Z",
+  "oldest_reading_at": "2026-09-08T21:00:00Z",
+  "stale_after_hours": 6,
+  "items": [
+    {
+      "symbol": "IR_GOLD_18K",
+      "name_en": "Iranian 18k gold, per gram",
+      "name_fa": "طلای ۱۸ عیار",
+      "quote_currency": "IRT",
+      "unit": "gram",
+      "quality_tier": "official_mirror",
+      "is_proxy": false,
+      "signal": "hold",
+      "score": 54,
+      "confidence": 0.62,
+      "evidence_basis": "model_backed",
+      "data_fresh": true,
+      "generated_at": "2026-09-09T06:00:00Z",
+      "reading_age_hours": 0.08,
+      "reading_stale": false,
+      "headline": "Conditions currently favor waiting (score 54/100).",
+      "top_supporting": "Average model confidence is 62%.",
+      "top_conflicting": "Forecast move (+0.26%) is positive but below the ~0.5% round-trip cost threshold.",
+      "omitted_factors": [],
+      "cost_pct": 0.49,
+      "cost_basis": {
+        "basis": "observed_spread",
+        "source": "hamrahgold",
+        "observed_at": "2026-09-09T04:12:00Z",
+        "reason": "observed hamrahgold buy/sell spread, 1.8h old"
+      },
+      "stale_reason": null
+    },
+    {
+      "symbol": "USD_IRT",
+      "name_en": "US dollar, free market",
+      "name_fa": "دلار آزاد",
+      "quote_currency": "IRT",
+      "unit": "usd",
+      "quality_tier": "proxy",
+      "is_proxy": true,
+      "signal": "buy",
+      "score": 62,
+      "confidence": 0.3,
+      "evidence_basis": "technical_only",
+      "data_fresh": true,
+      "generated_at": "2026-09-09T06:00:00Z",
+      "reading_age_hours": 0.08,
+      "reading_stale": false,
+      "headline": "Conditions currently favor buying (score 62/100).",
+      "top_supporting": "Price is above SMA20 and SMA50 (established uptrend).",
+      "top_conflicting": "No model forecast available for any horizon.",
+      "omitted_factors": [
+        {
+          "factor": "forecast_vs_cost",
+          "reason": "No forecasting model is trained for USD_IRT: app.models.training.FORECAST_SYMBOLS covers IR_GOLD_18K, XAUUSD. This reading is technical-only and carries no model evidence."
+        },
+        {
+          "factor": "local_premium_z",
+          "reason": "The local premium is measured against the 18k parity price (XAUUSD / troy ounce x USD_IRT x 0.750). No such theoretical price is defined for USD_IRT, so it has no premium to be rich or cheap against."
+        },
+        {
+          "factor": "gold_fund_flow",
+          "reason": "IR_GOLD_FUND_FLOW is the retail/institutional flow ratio of the Tehran gold ETFs. It describes who is trading those funds and says nothing about USD_IRT."
+        },
+        {
+          "factor": "ma_alignment",
+          "reason": "The 1D/4H/1H stack needs a 220-period slow MA on all three timeframes; app.jobs.trend_alignment.SUPPORTED_SYMBOLS covers IR_GOLD_18K, XAUUSD because only those have the continuous history for it."
+        }
+      ],
+      "cost_pct": 2.2,
+      "cost_basis": {
+        "basis": "assumed",
+        "source": null,
+        "observed_at": null,
+        "reason": "no dealer publishes a two-sided quote for USD_IRT into this system: collected as a single mid price from the 24/7 USDT/toman market; no order book and no dealer buy/sell pair is stored, so the real round trip (exchange fee both sides plus the book's spread) has never been measured here; using the conservative assumption"
+      },
+      "stale_reason": null
+    },
+    {
+      "symbol": "IR_COIN_EMAMI",
+      "name_en": "Emami gold coin",
+      "name_fa": "سکه امامی",
+      "quote_currency": "IRT",
+      "unit": "coin",
+      "quality_tier": "official_mirror",
+      "is_proxy": false,
+      "signal": "hold",
+      "score": 49,
+      "confidence": 0.3,
+      "evidence_basis": "technical_only",
+      "data_fresh": true,
+      "generated_at": "2026-09-08T21:00:00Z",
+      "reading_age_hours": 9.08,
+      "reading_stale": true,
+      "headline": "Conditions currently favor waiting (score 49/100).",
+      "top_supporting": "Price is above SMA20.",
+      "top_conflicting": "No model forecast available for any horizon.",
+      "omitted_factors": [
+        {
+          "factor": "forecast_vs_cost",
+          "reason": "No forecasting model is trained for IR_COIN_EMAMI: app.models.training.FORECAST_SYMBOLS covers IR_GOLD_18K, XAUUSD. This reading is technical-only and carries no model evidence."
+        },
+        {
+          "factor": "local_premium_z",
+          "reason": "The local premium is measured against the 18k parity price (XAUUSD / troy ounce x USD_IRT x 0.750). No such theoretical price is defined for IR_COIN_EMAMI, so it has no premium to be rich or cheap against."
+        },
+        {
+          "factor": "gold_fund_flow",
+          "reason": "IR_GOLD_FUND_FLOW is the retail/institutional flow ratio of the Tehran gold ETFs. It describes who is trading those funds and says nothing about IR_COIN_EMAMI."
+        },
+        {
+          "factor": "ma_alignment",
+          "reason": "The 1D/4H/1H stack needs a 220-period slow MA on all three timeframes; app.jobs.trend_alignment.SUPPORTED_SYMBOLS covers IR_GOLD_18K, XAUUSD because only those have the continuous history for it."
+        }
+      ],
+      "cost_pct": 2.2,
+      "cost_basis": {
+        "basis": "assumed",
+        "source": null,
+        "observed_at": null,
+        "reason": "no dealer publishes a two-sided quote for IR_COIN_EMAMI into this system: no source here publishes a two-sided Emami-coin quote; hamrahgold quotes 18k gold only, and the coin is a different market -- it carries a minting premium and its own, wider, bazaar margin; using the conservative assumption"
+      },
+      "stale_reason": null
+    },
+    {
+      "symbol": "XAUUSD",
+      "name_en": "Gold, COMEX front month (spot proxy)",
+      "name_fa": "انس طلا",
+      "quote_currency": "USD",
+      "unit": "ozt",
+      "quality_tier": "proxy",
+      "is_proxy": true,
+      "signal": "hold",
+      "score": 57,
+      "confidence": 0.577,
+      "evidence_basis": "model_backed",
+      "data_fresh": true,
+      "generated_at": "2026-09-09T06:00:00Z",
+      "reading_age_hours": 0.08,
+      "reading_stale": false,
+      "headline": "Conditions currently favor waiting (score 57/100).",
+      "top_supporting": "Forecast horizons largely agree on direction.",
+      "top_conflicting": "Forecast move (+0.43%) is positive but below the ~2.2% round-trip cost threshold.",
+      "omitted_factors": [
+        {
+          "factor": "local_premium_z",
+          "reason": "The local premium is measured against the 18k parity price (XAUUSD / troy ounce x USD_IRT x 0.750). No such theoretical price is defined for XAUUSD, so it has no premium to be rich or cheap against."
+        },
+        {
+          "factor": "gold_fund_flow",
+          "reason": "IR_GOLD_FUND_FLOW is the retail/institutional flow ratio of the Tehran gold ETFs. It describes who is trading those funds and says nothing about XAUUSD."
+        }
+      ],
+      "cost_pct": 2.2,
+      "cost_basis": {
+        "basis": "assumed",
+        "source": null,
+        "observed_at": null,
+        "reason": "no dealer publishes a two-sided quote for XAUUSD into this system: collected from the Yahoo GC=F front-month settlement, a single settlement price with no bid/ask; broker commission and futures roll cost are not observed by this system; using the conservative assumption"
+      },
+      "stale_reason": null
+    },
+    {
+      "symbol": "XAGUSD",
+      "name_en": "Silver, COMEX front month (spot proxy)",
+      "name_fa": "انس نقره",
+      "quote_currency": "USD",
+      "unit": "ozt",
+      "quality_tier": "proxy",
+      "is_proxy": true,
+      "signal": "hold",
+      "score": 50,
+      "confidence": 0.09,
+      "evidence_basis": "technical_only",
+      "data_fresh": false,
+      "generated_at": "2026-09-09T06:00:00Z",
+      "reading_age_hours": 0.08,
+      "reading_stale": false,
+      "headline": "Input data is stale, so the engine holds regardless of model output.",
+      "top_supporting": null,
+      "top_conflicting": "No model forecast available for any horizon.",
+      "omitted_factors": [
+        {
+          "factor": "forecast_vs_cost",
+          "reason": "No forecasting model is trained for XAGUSD: app.models.training.FORECAST_SYMBOLS covers IR_GOLD_18K, XAUUSD. This reading is technical-only and carries no model evidence."
+        },
+        {
+          "factor": "local_premium_z",
+          "reason": "The local premium is measured against the 18k parity price (XAUUSD / troy ounce x USD_IRT x 0.750). No such theoretical price is defined for XAGUSD, so it has no premium to be rich or cheap against."
+        },
+        {
+          "factor": "gold_fund_flow",
+          "reason": "IR_GOLD_FUND_FLOW is the retail/institutional flow ratio of the Tehran gold ETFs. It describes who is trading those funds and says nothing about XAGUSD."
+        },
+        {
+          "factor": "ma_alignment",
+          "reason": "The 1D/4H/1H stack needs a 220-period slow MA on all three timeframes; app.jobs.trend_alignment.SUPPORTED_SYMBOLS covers IR_GOLD_18K, XAUUSD because only those have the continuous history for it."
+        }
+      ],
+      "cost_pct": 2.2,
+      "cost_basis": {
+        "basis": "assumed",
+        "source": null,
+        "observed_at": null,
+        "reason": "no dealer publishes a two-sided quote for XAGUSD into this system: collected from the Yahoo SI=F front-month settlement, a single settlement price with no bid/ask; broker commission and futures roll cost are not observed by this system; using the conservative assumption"
+      },
+      "stale_reason": "the most recent XAGUSD observation is 31.4h old, past this symbol's freshness budget"
+    }
+  ],
+  "unavailable": [
+    {
+      "symbol_or_class": "IR_GOLD_FUND_AYAR",
+      "category": "no_current_reading",
+      "reason": "Signal-eligible, but no reading has been published for it in the last 24 hours. Either it has never been scored, or the engine has stopped publishing for it (it withholds a reading rather than writing a hold it cannot support). Its last reading, if any, is deliberately not shown: a buy or sell call that old is not a current call."
+    },
+    {
+      "symbol_or_class": "IR_GOLD_FUND_TALA",
+      "category": "no_current_reading",
+      "reason": "Signal-eligible, but no reading has been published for it in the last 24 hours. Either it has never been scored, or the engine has stopped publishing for it (it withholds a reading rather than writing a hold it cannot support). Its last reading, if any, is deliberately not shown: a buy or sell call that old is not a current call."
+    },
+    {
+      "symbol_or_class": "DXY",
+      "category": "not_scored",
+      "reason": "DXY is an index level, not a price a reader holds or pays a round-trip cost on; it is carried as macro context for the models."
+    },
+    {
+      "symbol_or_class": "US10Y",
+      "category": "not_scored",
+      "reason": "US10Y is a yield in percent, not a price; a buy or sell call on a yield has no unambiguous meaning, and it is carried as macro context for the models."
+    },
+    {
+      "symbol_or_class": "BRENT_OIL",
+      "category": "not_scored",
+      "reason": "BRENT_OIL is collected as macro context for the models rather than as a holding this platform covers; it is the front-month future, which is not what a reader of these signals transacts in."
+    },
+    {
+      "symbol_or_class": "IR_GOLD_FUND_FLOW",
+      "category": "not_scored",
+      "reason": "IR_GOLD_FUND_FLOW is the retail/institutional flow RATIO in percent -- migration 0024 registers it as kind='index' for exactly this reason -- not a fund price, so a buy or sell call on it would be meaningless. It is scored as one caution-only factor inside the two gold-fund readings instead."
+    },
+    {
+      "symbol_or_class": "IR_GOLD_FUND_KAHRABA",
+      "category": "not_scored",
+      "reason": "IR_GOLD_FUND_KAHRABA is registered from TSETMC_FUNDS but has never collected an observation, so there is no history any factor could be read from."
+    },
+    {
+      "symbol_or_class": "cars",
+      "category": "not_collected",
+      "reason": "Not collected. No vehicle price series exists in this system -- no provider in the roster publishes one, and `prices` holds zero rows for any car."
+    },
+    {
+      "symbol_or_class": "housing",
+      "category": "not_collected",
+      "reason": "Not collected. No housing or per-square-metre series exists in this system; `instruments` reserves the 'housing' domain but nothing has ever been ingested into it."
+    },
+    {
+      "symbol_or_class": "tehran_equities",
+      "category": "not_collected",
+      "reason": "Not collected. The only Tehran-listed instruments here are the gold ETFs; no share price for any TSE-listed company is ingested, so no equity can be read."
+    },
+    {
+      "symbol_or_class": "ir_silver",
+      "category": "not_collected",
+      "reason": "Not collected. There is no local Iranian silver series: XAGUSD is the COMEX front-month contract quoted in USD per troy ounce, not a Tehran toman silver price."
+    }
+  ]
+}

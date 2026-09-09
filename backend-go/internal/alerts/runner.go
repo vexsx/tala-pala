@@ -14,6 +14,24 @@ import (
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/storage"
 )
 
+// alertSignalSymbol is the asset the alert snapshot's signal fields describe.
+//
+// Every alert this runner can evaluate is a gold alert: Gold, PremiumPct and
+// VolatilityAnnPct in the Snapshot are all IR_GOLD_18K (see the queries below),
+// and signal_change / confidence_above are read on the same page beside them.
+// Naming the symbol once keeps the snapshot internally consistent instead of
+// leaving one field to whatever the signal job wrote most recently.
+const alertSignalSymbol = "IR_GOLD_18K"
+
+// alertSignalSelect is the snapshot's signal read. It is a constant so that a
+// test can assert the symbol filter is present without a database -- the same
+// guard signalsvc puts on its own statements, because an unfiltered "latest
+// row" is precisely the bug migration 0026 makes possible.
+const alertSignalSelect = `
+	SELECT signal, confidence, generated_at
+	  FROM signals WHERE symbol = $1
+	 ORDER BY generated_at DESC LIMIT 2`
+
 // Runner loads the shared snapshot, evaluates every enabled alert and writes
 // alert_events. It is invoked by the scheduler.
 type Runner struct {
@@ -178,10 +196,27 @@ func (rn *Runner) loadSnapshot(ctx context.Context) (Snapshot, error) {
 		}
 	}
 
-	// Last two signals for signal_change / confidence_above.
-	sigRows, err := rn.Pool.Query(ctx, `
-		SELECT signal, confidence, generated_at
-		FROM signals ORDER BY generated_at DESC LIMIT 2`)
+	// The last two IR_GOLD_18K signals, for signal_change / confidence_above.
+	//
+	// THE SYMBOL FILTER IS LOAD-BEARING, and its absence was worse here than
+	// anywhere else in this codebase. `signals` held one row per pass until
+	// migration 0026; the engine now writes seven rows per pass, one per symbol
+	// (prediction-python/app/signals/universe.py). An unfiltered "newest two
+	// rows" therefore returns two DIFFERENT ASSETS from the SAME pass, so
+	// LatestSignal and PreviousSignal stop being consecutive readings of one
+	// instrument. Evaluate()'s signal_change case compares them for inequality:
+	// silver "sell" against gold "hold" is not a change of view, it is two
+	// unrelated instruments, and it would fire "Signal changed: hold -> sell"
+	// at every subscriber on every pass where any two symbols disagree.
+	// confidence_above is the same defect one row shallower -- it would gate on
+	// whichever asset was scored last.
+	//
+	// Same reasoning as Addendum 13's `_load_latest_predictions` fix: XAUUSD
+	// rows written after the gold rows every cycle overwrote the per-horizon
+	// map, and the Tehran signal was scored from global-gold forecasts. Rows
+	// from different assets are not interchangeable just because they share a
+	// table and a clock; the query has to say which asset it means.
+	sigRows, err := rn.Pool.Query(ctx, alertSignalSelect, alertSignalSymbol)
 	if err != nil {
 		return snap, err
 	}

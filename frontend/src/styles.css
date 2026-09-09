@@ -2704,3 +2704,239 @@ input[type='checkbox'] {
   margin-top: 2px;
   max-width: 78ch;
 }
+
+/* ---------- Advisory board (Overview) ----------
+   Every asset the signal engine covers, one card each. The load-bearing mark
+   is the evidence badge: it is spelled out in words (MODEL-BACKED /
+   TECHNICAL-ONLY), never carried by colour alone, so the distinction survives
+   greyscale, colour blindness and a screen reader. Same rule for the cost
+   hurdle's basis — ASSUMPTION is a word before it is an amber pill. */
+
+.advisory-preamble,
+.advisory-counts {
+  max-width: 78ch;
+  line-height: 1.6;
+}
+
+.advisory-counts {
+  margin: 0.75rem 0 0;
+}
+
+.advisory-cost-summary {
+  margin: 0.35rem 0 0;
+  max-width: 78ch;
+  line-height: 1.6;
+}
+
+.advisory-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+}
+
+.advisory-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.advisory-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.advisory-name-en {
+  font-weight: 600;
+}
+
+.advisory-marks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* THE EVIDENCE BADGE IS THE LARGEST MARK ON THE ROW, AND THE BUY/SELL WORD IS
+   NOT. Both rules below are deliberate inversions of what the shared
+   components ship with (.signal-badge is 13px/700 and .badge is 11px/600
+   globally), scoped to this card so no other page changes.
+
+   The reason is the whole point of the board: five of the seven assets have no
+   trained model behind them, so a reader who acts on the imperative without
+   registering TECHNICAL-ONLY has been misled by typography. Prominence is what
+   a reader actually reads first, so prominence is where the distinction has to
+   live.
+
+   THE NUMBERS ARE NOT WRITTEN HERE. They arrive as custom properties set by
+   AdvisoryBoard.tsx from its exported MARK_SIZES, which is where the
+   relationship between them is documented and asserted; the fallbacks below
+   are the same values, for a card rendered outside that component. Do not
+   replace a var() with a literal — that is how the two halves of this contract
+   would drift apart again. */
+.advisory-item .advisory-evidence {
+  font-size: var(--advisory-evidence-size, 14px);
+  font-weight: var(--advisory-evidence-weight, 700);
+  letter-spacing: 0.07em;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+
+.advisory-item .signal-badge {
+  font-size: var(--advisory-call-size, 11px);
+  font-weight: var(--advisory-call-weight, 600);
+  padding: 2px 10px;
+}
+
+/* The imperative never stands alone: it is labelled, so "Buy" reads as this
+   board's reading of an asset rather than as an instruction to the reader. */
+.advisory-call {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.advisory-call-label {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.advisory-evidence-note,
+.advisory-headline,
+.advisory-headline-absent,
+.advisory-claim-note,
+.advisory-arg,
+.advisory-cost-reason,
+.advisory-omitted-none {
+  margin: 0;
+  line-height: 1.55;
+}
+
+/* Disclosure, not decoration: the page edited the generator's wording here and
+   says so, set apart from the prose it applies to. */
+.advisory-claim-note {
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
+.advisory-headline {
+  font-size: 13px;
+}
+
+.advisory-scores {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.advisory-cost {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.advisory-cost-basis {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.advisory-omitted {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+
+.advisory-omitted > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.advisory-omitted > summary:hover {
+  color: var(--text);
+}
+
+.advisory-omitted-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.advisory-omitted-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
+.advisory-omitted-name {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.advisory-item-foot {
+  margin-top: auto;
+}
+
+.advisory-unavailable {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.advisory-unavailable-group {
+  margin-top: 14px;
+}
+
+.advisory-unavailable-group-title {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.advisory-unavailable-group-blurb {
+  margin: 4px 0 0;
+  max-width: 78ch;
+  line-height: 1.55;
+}
+
+.advisory-unavailable-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+
+.advisory-unavailable-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  line-height: 1.5;
+}
+
+.advisory-unavailable-name {
+  font-weight: 600;
+  color: var(--text);
+}

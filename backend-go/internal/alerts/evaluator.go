@@ -42,7 +42,11 @@ type PricePoint struct {
 	ObservedAt time.Time
 }
 
-// SignalInfo summarises one signals row.
+// SignalInfo summarises one `signals` row. Always IR_GOLD_18K here: the
+// snapshot filters on alertSignalSymbol, so LatestSignal and PreviousSignal are
+// consecutive readings of ONE asset. Since migration 0026 the table holds seven
+// symbols per pass, and two rows from the same pass would be two different
+// instruments -- which signal_change below would report as a change of view.
 type SignalInfo struct {
 	Signal      string
 	Confidence  float64
@@ -70,8 +74,8 @@ type ModelPerf struct {
 type Snapshot struct {
 	Now              time.Time
 	Gold             *PricePoint // latest IR_GOLD_18K
-	LatestSignal     *SignalInfo
-	PreviousSignal   *SignalInfo
+	LatestSignal     *SignalInfo // newest IR_GOLD_18K reading
+	PreviousSignal   *SignalInfo // the one before it, same symbol
 	PremiumPct       *float64
 	VolatilityAnnPct *float64 // annualized volatility (percent, e.g. 45.0)
 	StaleMinutes     int      // configured stale threshold

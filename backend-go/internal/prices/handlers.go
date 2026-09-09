@@ -27,6 +27,25 @@ var KnownSymbols = map[string]bool{
 	"IR_GOLD_FUND_KAHRABA": true, "IR_GOLD_FUND_FLOW": true,
 }
 
+// summarySignalSymbol is the asset /api/v1/market/summary is about.
+//
+// Every other key in that payload -- current_18k, the premium, the 24h change,
+// the theoretical parity price -- describes Tehran 18k gold, and the frontend
+// renders the `signal` block beside them as THE advisory for that price. The
+// symbol is therefore named here, once, rather than being whatever the last
+// writer happened to leave at the top of a table.
+const summarySignalSymbol = "IR_GOLD_18K"
+
+// summarySignalSelect is the summary's advisory read. Kept as a constant so a
+// test can assert the symbol filter without a database -- the same guard
+// signalsvc puts on its own statements, because an unfiltered "latest row" is
+// precisely the bug migration 0026 makes possible.
+const summarySignalSelect = `
+	SELECT id, generated_at, signal, score, confidence, explanation,
+	       supporting, conflicting, risks, invalidation, review_at, data_fresh
+	  FROM signals WHERE symbol = $1
+	 ORDER BY generated_at DESC LIMIT 1`
+
 // Handler serves the market-data endpoints.
 type Handler struct {
 	Pool                *pgxpool.Pool
@@ -475,7 +494,8 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 	provRows.Close()
 	out["providers"] = providers
 
-	// Latest signal row (full shape, matching /api/v1/signals/current).
+	// Latest IR_GOLD_18K signal row (full shape, matching
+	// /api/v1/signals/current, whose ?symbol= defaults to the same asset).
 	var sig struct {
 		ID           int64
 		GeneratedAt  time.Time
@@ -490,15 +510,32 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 		ReviewAt     *time.Time
 		DataFresh    bool
 	}
-	err = h.Pool.QueryRow(ctx, `
-		SELECT id, generated_at, signal, score, confidence, explanation,
-		       supporting, conflicting, risks, invalidation, review_at, data_fresh
-		FROM signals ORDER BY generated_at DESC LIMIT 1`).
+	//
+	// THE SYMBOL FILTER IS THE POINT OF THIS QUERY.
+	//
+	// `signals` was single-asset from migration 0002 until 0026: one row per
+	// pass, always Tehran 18k gold, so "the newest row" WAS the gold reading by
+	// construction and this statement needed no WHERE clause. Migration 0026
+	// added the NOT NULL `symbol` column and the engine now scores seven
+	// symbols on every pass (prediction-python/app/signals/universe.py), so the
+	// newest row is whichever asset the job happened to score LAST. Unfiltered,
+	// this endpoint would hand a reader looking at the gold summary silver's or
+	// the dollar's buy/sell call, rendered under gold's price.
+	//
+	// This is Addendum 13's `_load_latest_predictions` defect, exactly: XAUUSD
+	// rows were written after the gold rows every cycle, overwrote the
+	// per-horizon map, and the Tehran signal was scored from global-gold
+	// forecasts. The fix there was to name the symbol in the query, and it is
+	// the fix here for the same reason -- a mislabelled reading is worse than a
+	// missing one, because nothing downstream can detect it. Migration 0026's
+	// own header makes the same argument about the DEFAULT it drops.
+	err = h.Pool.QueryRow(ctx, summarySignalSelect, summarySignalSymbol).
 		Scan(&sig.ID, &sig.GeneratedAt, &sig.Signal, &sig.Score, &sig.Confidence,
 			&sig.Explanation, &sig.Supporting, &sig.Conflicting, &sig.Risks,
 			&sig.Invalidation, &sig.ReviewAt, &sig.DataFresh)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
+		// Gold has no reading. Null, never another symbol's row as a stand-in.
 		out["signal"] = nil
 	case err != nil:
 		h.Log.Error("summary_signal", "error", err)

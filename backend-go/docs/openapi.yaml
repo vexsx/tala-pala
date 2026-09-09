@@ -391,22 +391,34 @@ paths:
   /api/v1/signals/current:
     get:
       tags: [signals]
-      summary: Latest trading signal
+      summary: Latest trading signal for one symbol
+      description: >
+        Readings are published for seven signal-eligible symbols. ?symbol=
+        defaults to IR_GOLD_18K, and the response shape is unchanged from
+        before multi-asset support: no `symbol` field is added, because the
+        caller already knows which symbol it asked for and the existing
+        consumers of this payload must keep working byte for byte. An unknown
+        symbol, or one that is not signal-eligible (DXY is an index, US10Y a
+        yield, IR_GOLD_FUND_FLOW a ratio), is refused with 400 and the reason.
       security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: symbol, in: query, schema: { $ref: "#/components/schemas/SignalSymbol" } }
       responses:
         "200":
           description: Latest signal
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Signal" }
+        "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
   /api/v1/signals/history:
     get:
       tags: [signals]
-      summary: Signal history
+      summary: Signal history for one symbol
       security: [{ bearerAuth: [] }]
       parameters:
+        - { name: symbol, in: query, schema: { $ref: "#/components/schemas/SignalSymbol" } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
       responses:
         "200":
@@ -419,6 +431,48 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/Signal" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+  /api/v1/signals/overview:
+    get:
+      tags: [signals]
+      summary: Latest reading per signal-eligible symbol
+      description: >
+        One item per eligible symbol, carrying the display metadata joined from
+        the instrument registry, whether a trained model stood behind the
+        reading, the factors that could NOT be scored and why, and whether the
+        round-trip cost hurdle was observed or assumed.
+
+
+        An item is returned only while its reading is CURRENT: nothing older
+        than 24 hours is served, and anything past the engine's own six-hour
+        review window carries `reading_stale` with its age in
+        `reading_age_hours`. `as_of` is the newest reading in the response, not
+        a timestamp common to all of them, so `oldest_reading_at` publishes the
+        other end of the range.
+
+
+        `unavailable` accounts for everything this board does not publish, each
+        entry saying which KIND of absence it is in `category`: an eligible
+        symbol with no current reading, a symbol missing from the instrument
+        registry, a registered symbol this service collects but deliberately
+        does not score (DXY, US10Y, BRENT_OIL, IR_GOLD_FUND_FLOW,
+        IR_GOLD_FUND_KAHRABA), and the asset classes it never collects at all
+        (cars, housing, Tehran-listed equities, local Iranian silver). The
+        category matters because the reasons are not interchangeable — the
+        first four of those symbols are collected daily, so "not collected"
+        would be the opposite of the truth about them.
+
+
+        Nothing here is computed by this service; it is a projection of what
+        prediction-python wrote.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Multi-asset overview
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SignalOverview" }
         "401": { $ref: "#/components/responses/Error" }
 
   /api/v1/models:
@@ -1027,6 +1081,132 @@ components:
         review_at: { type: string, format: date-time, nullable: true }
         data_fresh: { type: boolean }
         inputs: { type: object }
+    SignalSymbol:
+      type: string
+      default: IR_GOLD_18K
+      enum: [IR_GOLD_18K, USD_IRT, IR_COIN_EMAMI, XAUUSD, XAGUSD,
+             IR_GOLD_FUND_AYAR, IR_GOLD_FUND_TALA]
+      description: >
+        The seven symbols this service publishes a reading for. DXY, US10Y,
+        BRENT_OIL, IR_GOLD_FUND_FLOW, IR_GOLD_FUND_KAHRABA and every economic
+        series are refused with 400 and a stated reason.
+    OmittedFactor:
+      type: object
+      description: >
+        A factor the scorer could not compute, and why. Never replaced by a
+        neutral value: a neutral default dilutes the score toward hold and then
+        reads on the page as evidence that was weighed.
+      properties:
+        factor: { type: string }
+        reason: { type: string }
+    CostBasis:
+      type: object
+      nullable: true
+      description: >
+        Provenance of the round-trip cost hurdle. An observed dealer spread
+        exists for IR_GOLD_18K only; every other asset's hurdle is an assumption
+        and carries the sentence explaining it. Gold's spread is never reused
+        for another market.
+      properties:
+        basis: { type: string, enum: [observed_spread, assumed, unrecorded] }
+        source: { type: string, nullable: true }
+        observed_at: { type: string, format: date-time, nullable: true }
+        reason: { type: string, nullable: true }
+    SignalOverviewItem:
+      type: object
+      properties:
+        symbol: { type: string }
+        name_en: { type: string }
+        name_fa: { type: string }
+        quote_currency: { type: string }
+        unit: { type: string }
+        quality_tier: { type: string }
+        is_proxy: { type: boolean }
+        signal: { type: string, enum: [strong_buy, buy, hold, sell, strong_sell] }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        confidence: { type: number }
+        evidence_basis:
+          type: string
+          enum: [model_backed, technical_only, unknown]
+          description: >
+            Whether a trained model stood behind the reading. Only IR_GOLD_18K
+            and XAUUSD have models; the other five are technical-only, and a
+            hold from a model is not the same claim as a hold from an RSI.
+        data_fresh:
+          type: boolean
+          description: >
+            Whether the PRICES the scorer was handed were current when the
+            reading was computed. Independent of `reading_stale`, which is
+            about the age of the reading itself.
+        generated_at: { type: string, format: date-time }
+        reading_age_hours:
+          type: number
+          description: >
+            Hours between `generated_at` and the moment of the request. Present
+            because `as_of` is a maximum across items: a page that stamped
+            every row with it would print the newest pass's time over a reading
+            that is hours older.
+        reading_stale:
+          type: boolean
+          description: >
+            True once `reading_age_hours` passes `stale_after_hours`. The row
+            is still returned — an old reading with its age attached is
+            information; an old reading presented as current is not.
+        headline:
+          type: string
+          description: >
+            The engine's own one-line call, from `inputs.headline`. Not the
+            stored `explanation`, which always closes "This is an uncertain,
+            model-based assessment" — a claim the same item denies when
+            `evidence_basis` is technical_only.
+        top_supporting: { type: string, nullable: true }
+        top_conflicting: { type: string, nullable: true }
+        omitted_factors:
+          type: array
+          items: { $ref: "#/components/schemas/OmittedFactor" }
+        cost_pct: { type: number, nullable: true }
+        cost_basis: { $ref: "#/components/schemas/CostBasis" }
+        stale_reason: { type: string, nullable: true }
+    SignalUnavailable:
+      type: object
+      properties:
+        symbol_or_class: { type: string }
+        category:
+          type: string
+          enum: [no_current_reading, not_registered, not_scored, not_collected]
+          description: >
+            Which kind of absence this is. `not_scored` symbols ARE collected
+            and are refused for what they are (an index level, a yield, a
+            ratio); `not_collected` classes have no rows at all. A page that
+            renders one sentence over the whole list will contradict some of
+            the reasons under it.
+        reason: { type: string }
+    SignalOverview:
+      type: object
+      properties:
+        as_of:
+          type: string
+          format: date-time
+          nullable: true
+          description: The NEWEST reading among the items, UTC. Null when none.
+        oldest_reading_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            The oldest reading among the items, UTC. Equal to `as_of` when
+            every symbol published on the same pass.
+        stale_after_hours:
+          type: number
+          description: >
+            The threshold behind each item's `reading_stale`, published so a
+            client renders the server's rule rather than its own.
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SignalOverviewItem" }
+        unavailable:
+          type: array
+          items: { $ref: "#/components/schemas/SignalUnavailable" }
     ModelVersion:
       type: object
       nullable: true

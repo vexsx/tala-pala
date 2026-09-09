@@ -45,9 +45,15 @@ type PredictionHandlers interface {
 	Custom(http.ResponseWriter, *http.Request)
 }
 
+// SignalHandlers serves the buy/hold/sell readings prediction-python wrote.
+// Overview is the multi-asset view: the latest reading per signal-eligible
+// symbol, alongside an explicit list of what this platform does not collect --
+// so the page can state the boundary of its coverage rather than implying the
+// seven symbols it can score are the whole investable universe.
 type SignalHandlers interface {
 	Current(http.ResponseWriter, *http.Request)
 	History(http.ResponseWriter, *http.Request)
+	Overview(http.ResponseWriter, *http.Request)
 }
 
 type ModelHandlers interface {
@@ -208,8 +214,12 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			r.Get("/api/v1/predictions/custom", d.Predictions.Custom)
 			r.Get("/api/v1/predictions/{horizon}", d.Predictions.History)
 
+			// ?symbol= defaults to IR_GOLD_18K on both, so the callers that
+			// send no parameter keep getting exactly the payload they get
+			// today. /overview is the multi-asset read.
 			r.Get("/api/v1/signals/current", d.Signals.Current)
 			r.Get("/api/v1/signals/history", d.Signals.History)
+			r.Get("/api/v1/signals/overview", d.Signals.Overview)
 
 			r.Get("/api/v1/models", d.Models.List)
 			r.Get("/api/v1/models/performance", d.Models.Performance)

@@ -195,6 +195,12 @@ signals = Table(
     "signals",
     metadata,
     _big_pk(),
+    # Migration 0026.  Note the absence of a ``server_default`` — the other
+    # three symbol columns in this file carry ``server_default="IR_GOLD_18K"``
+    # and 0026 exists precisely to stop that pattern spreading to the table
+    # that publishes buy/sell calls.  A writer that forgets the symbol must
+    # fail its INSERT, not quietly file its row under gold.
+    Column("symbol", Text, nullable=False),
     Column("generated_at", _TS, nullable=False, server_default=func.now()),
     Column("signal", Text, nullable=False),
     Column("score", Integer, nullable=False),
@@ -207,6 +213,10 @@ signals = Table(
     Column("review_at", _TS),
     Column("data_fresh", Boolean, nullable=False, server_default=text("TRUE")),
     Column("inputs", JSON, nullable=False, default=dict),
+    # Every read is now "the latest row(s) for THIS symbol"; 0002's
+    # idx_signals_time (generated_at DESC) leads on the wrong column for all
+    # of them.
+    Index("idx_signals_symbol_time", "symbol", text("generated_at DESC")),
 )
 
 backtest_runs = Table(
