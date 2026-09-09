@@ -74,31 +74,31 @@ type IndicatorPoint struct {
 
 // IndicatorsResult is the response of GET /api/v1/market/indicators.
 type IndicatorsResult struct {
-	Symbol     string           `json:"symbol"`
-	AsOf       *string          `json:"as_of"`
-	Days       int              `json:"days"`
-	SMA20      *float64         `json:"sma_20"`
-	SMA50      *float64         `json:"sma_50"`
-	EMA12      *float64         `json:"ema_12"`
-	EMA26      *float64         `json:"ema_26"`
-	RSI14      *float64         `json:"rsi_14"`
-	MACD       macdOut          `json:"macd"`
-	Bollinger  bollingerOut     `json:"bollinger"`
-	ATR14      *float64         `json:"atr_14"`
-	Momentum10 *float64         `json:"momentum_10"`
-	ROC10      *float64         `json:"roc_10"`
-	Volatility *float64         `json:"volatility_20"`
-	Support    *float64         `json:"support"`
-	Resistance *float64         `json:"resistance"`
-	ADX14      *float64         `json:"adx_14"`
-	StochK     *float64         `json:"stoch_k"`
-	StochD     *float64         `json:"stoch_d"`
-	WilliamsR  *float64         `json:"williams_r_14"`
-	CCI20      *float64         `json:"cci_20"`
-	Donchian   donchianOut      `json:"donchian"`
-	Keltner    keltnerOut       `json:"keltner"`
-	CorrXAU20  *float64         `json:"corr_xau_20"`
-	Drawdown   *float64         `json:"drawdown_pct"`
+	Symbol     string       `json:"symbol"`
+	AsOf       *string      `json:"as_of"`
+	Days       int          `json:"days"`
+	SMA20      *float64     `json:"sma_20"`
+	SMA50      *float64     `json:"sma_50"`
+	EMA12      *float64     `json:"ema_12"`
+	EMA26      *float64     `json:"ema_26"`
+	RSI14      *float64     `json:"rsi_14"`
+	MACD       macdOut      `json:"macd"`
+	Bollinger  bollingerOut `json:"bollinger"`
+	ATR14      *float64     `json:"atr_14"`
+	Momentum10 *float64     `json:"momentum_10"`
+	ROC10      *float64     `json:"roc_10"`
+	Volatility *float64     `json:"volatility_20"`
+	Support    *float64     `json:"support"`
+	Resistance *float64     `json:"resistance"`
+	ADX14      *float64     `json:"adx_14"`
+	StochK     *float64     `json:"stoch_k"`
+	StochD     *float64     `json:"stoch_d"`
+	WilliamsR  *float64     `json:"williams_r_14"`
+	CCI20      *float64     `json:"cci_20"`
+	Donchian   donchianOut  `json:"donchian"`
+	Keltner    keltnerOut   `json:"keltner"`
+	CorrXAU20  *float64     `json:"corr_xau_20"`
+	Drawdown   *float64     `json:"drawdown_pct"`
 	// Addendum 4 trading-desk indicators (latest values).
 	Ichimoku   *ichimokuOut            `json:"ichimoku"`
 	SuperTrend *supertrendOut          `json:"supertrend"`

@@ -391,17 +391,26 @@ def test_imf_http_failure_becomes_a_provider_error(settings):
 def test_catalog_covers_the_seven_countries_twice_and_says_what_it_is():
     from app.economic.catalog import CATALOG
 
-    codes = {spec.code for spec in CATALOG}
     countries = ("IRN", "TUR", "SAU", "ARE", "PAK", "EGY", "RUS")
-    assert codes == (
+    # The two families these adapters serve. The catalog also carries the SCI
+    # urban CPI, which is monthly and Jalali and arrives as a posted document
+    # rather than through either of these adapters; tests/test_economic_sci.py
+    # is where it is specified.
+    annual = [
+        spec for spec in CATALOG if spec.provider_code in ("worldbank", "imf_weo")
+    ]
+    assert {spec.code for spec in annual} == (
         {f"WB_CPI_{iso3}" for iso3 in countries}
         | {f"IMF_PCPIPCH_{iso3}" for iso3 in countries}
     )
-    for spec in CATALOG:
+    for spec in annual:
         assert spec.frequency == "A"
         assert spec.calendar == "gregorian"
+    for spec in CATALOG:
+        # Every number this system serves travels with its caveats, whatever
+        # family it belongs to.
         assert spec.notes.strip(), f"{spec.code} ships without a note"
-        assert spec.provider_code in ("worldbank", "imf_weo")
+        assert spec.provider_code in ("worldbank", "imf_weo", "sci")
 
     world_bank = [spec for spec in CATALOG if spec.provider_code == "worldbank"]
     assert all(spec.measure == "index" for spec in world_bank)

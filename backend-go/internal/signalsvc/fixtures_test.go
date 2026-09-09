@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -568,21 +569,117 @@ func fixturePath(t *testing.T, name string) string {
 	return filepath.Join("..", "..", "..", "frontend", "src", "test", "fixtures", name)
 }
 
-func writeFixture(t *testing.T, name string, body []byte) {
+// checkFixtureShape compares the committed fixture's KEY SET against what these
+// structs marshal. It deliberately does NOT write the file.
+//
+// This helper used to overwrite the fixture on every `go test ./...`, and that
+// was the mechanism behind three consecutive rounds of the same defect: each
+// round a reviewer found the fixture describing a payload the server cannot
+// emit, each round it was corrected, and each round the next test run silently
+// replaced the correction with values a human had chosen for sampleOverview().
+// It even reverted a commit whose entire purpose was to replace these files
+// with captures from production.
+//
+// The fixtures are now CAPTURED (see frontend/src/test/fixtures/README.md), so
+// they carry real values the backend genuinely produced. What is still worth
+// checking automatically is the SHAPE -- that Go has not added, removed or
+// renamed a field the frontend reads -- and a comparison does that without
+// destroying the values.
+func checkFixtureShape(t *testing.T, name string, body []byte) {
 	t.Helper()
 	path := fixturePath(t, name)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Skipf("frontend fixtures directory is unavailable (%v); "+
-			"backend tests still pass, but the fixtures were not regenerated", err)
+	committed, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("committed fixture %s is unavailable (%v); the backend tests "+
+			"still pass, but the wire shape was not cross-checked", name, err)
 	}
-	if err := os.WriteFile(path, body, 0o644); err != nil {
-		t.Fatalf("write %s: %v", path, err)
+
+	var fromStructs, fromFixture any
+	if err := json.Unmarshal(body, &fromStructs); err != nil {
+		t.Fatalf("marshalled payload is not valid JSON: %v", err)
+	}
+	if err := json.Unmarshal(committed, &fromFixture); err != nil {
+		t.Fatalf("committed fixture %s is not valid JSON: %v", name, err)
+	}
+
+	missing := keysOf(fromStructs, "").Difference(keysOf(fromFixture, ""))
+	extra := keysOf(fromFixture, "").Difference(keysOf(fromStructs, ""))
+	if len(missing) > 0 {
+		t.Errorf("%s is missing %d key(s) Go emits: %v\n"+
+			"Re-capture it from a running stack rather than editing it by hand; "+
+			"see frontend/src/test/fixtures/README.md.", name, len(missing), missing.Sorted())
+	}
+	// The reverse direction is REPORTED, never failed, and the distinction is
+	// not laziness. This compares the fixture against one sample INSTANCE, not
+	// against the Go types: an empty slice or nil map in the sample contributes
+	// no member keys at all, so a captured fixture with a populated
+	// `omitted_factors` or a full per-horizon map legitimately carries keys the
+	// sample cannot show. Failing on that would push the next person to prune
+	// real captured data to satisfy a synthetic sample -- which is precisely
+	// how these fixtures drifted away from reality three times already.
+	//
+	// The direction that matters is the one above: a field the frontend reads
+	// and the fixture lacks is a test passing on a payload shape that cannot
+	// occur. Invented VALUES are a different failure, and the defence against
+	// those is capturing rather than authoring (see the fixtures README).
+	if len(extra) > 0 {
+		t.Logf("%s carries %d key(s) this sample does not populate: %v\n"+
+			"Expected when the capture is richer than the sample (populated "+
+			"arrays, full horizon maps). Not a failure.",
+			name, len(extra), extra.Sorted())
 	}
 }
 
-func TestWriteSignalsCurrentFixture(t *testing.T) {
+// keySet is a tiny set of dotted key paths, enough to diff two payload shapes.
+type keySet map[string]struct{}
+
+func (k keySet) Difference(other keySet) keySet {
+	out := keySet{}
+	for key := range k {
+		if _, ok := other[key]; !ok {
+			out[key] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (k keySet) Sorted() []string {
+	out := make([]string, 0, len(k))
+	for key := range k {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// keysOf walks a decoded payload and collects every dotted key path. Arrays
+// collapse to their first element: the shape of a list is the shape of its
+// members, and a captured fixture legitimately has a different NUMBER of them
+// than a synthetic sample.
+func keysOf(v any, prefix string) keySet {
+	out := keySet{}
+	switch t := v.(type) {
+	case map[string]any:
+		for key, val := range t {
+			path := prefix + key
+			out[path] = struct{}{}
+			for k := range keysOf(val, path+".") {
+				out[k] = struct{}{}
+			}
+		}
+	case []any:
+		if len(t) > 0 {
+			for k := range keysOf(t[0], prefix) {
+				out[k] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+func TestSignalsCurrentFixtureMatchesTheWireShape(t *testing.T) {
 	body := encodeLikeTheWire(t, sampleCurrentRow())
-	writeFixture(t, "signals-current.json", body)
+	checkFixtureShape(t, "signals-current.json", body)
 
 	// Read back what was written and check it is the frozen contract: the
 	// fixture is only worth having if it is the server's own shape.
@@ -610,11 +707,11 @@ func TestWriteSignalsCurrentFixture(t *testing.T) {
 	}
 }
 
-func TestWriteSignalsOverviewFixture(t *testing.T) {
+func TestSignalsOverviewFixtureMatchesTheWireShape(t *testing.T) {
 	resp := buildOverviewResponse(
 		fixtureNow, eligibleSignalSymbols, fixtureRegistry, fixtureSignalRows(), signalCoverageGaps)
 	body := encodeLikeTheWire(t, resp)
-	writeFixture(t, "signals-overview.json", body)
+	checkFixtureShape(t, "signals-overview.json", body)
 
 	// Round-trip through the wire types, then assert the properties the page
 	// depends on. Everything below is checked against the DECODED fixture, so

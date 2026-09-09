@@ -124,14 +124,42 @@ var uncollectedAssetClasses = []UnavailableEntry{
 	{
 		SymbolOrClass: "cars",
 		Category:      unavailableNotCollected,
-		Reason: "Not collected. No vehicle price series exists in this system -- no provider " +
-			"in the roster publishes one, and `prices` holds zero rows for any car.",
+		// Same shape as housing: an official INDEX exists and is ingested
+		// (SCI_CPI_VEHICLES, '071 - vehicle purchase', monthly from Farvardin
+		// 1381), but it is a quality-adjusted CPI basket, which by construction
+		// smooths away the factory-versus-market divergence a buyer cares about.
+		// No source carries more than about five weeks of retrievable Iranian
+		// market car prices, so there is no price to score.
+		Reason: "No buy/sell reading: no vehicle PRICE series exists in this system, and no " +
+			"source publishes more than about five weeks of retrievable Iranian market car " +
+			"prices. The Statistical Centre of Iran's vehicle-purchase price INDEX is " +
+			"collected (monthly, from Farvardin 1381) and can be compared against inflation " +
+			"under Relative value; it is a quality-adjusted basket, not a market quote.",
 	},
 	{
 		SymbolOrClass: "housing",
 		Category:      unavailableNotCollected,
-		Reason: "Not collected. No housing or per-square-metre series exists in this system; " +
-			"`instruments` reserves the 'housing' domain but nothing has ever been ingested into it.",
+		// Precise, because a nearby statement is now true and this one must not
+		// be confused with it: the Statistical Centre of Iran's HOUSING and RENT
+		// price INDICES are ingested (SCI_CPI_HOUSING, SCI_CPI_RENT, monthly,
+		// back to Farvardin 1381) and can be compared against inflation on
+		// /relative-value. What does NOT exist is a housing PRICE -- no
+		// per-square-metre series and no transaction series -- so there is
+		// nothing to score a buy or sell against.
+		//
+		// The distinction is not pedantic: the SCI housing index is a
+		// rent-dominated component of a CONSUMPTION index (housing 95.6x since
+		// 1381 against rent 94.5x), so it tracks what people PAY TO OCCUPY
+		// housing, not what a property costs. The CBI's monthly Tehran
+		// price-per-square-metre report ran Farvardin 1396 to Mordad 1403 and
+		// then stopped when the CBI lost access to the transaction registry;
+		// nothing has replaced it.
+		Reason: "No buy/sell reading: this system holds no housing PRICE series -- no " +
+			"per-square-metre and no transaction series exists publicly since the Central " +
+			"Bank's Tehran report stopped at Mordad 1403. Housing and rent price INDICES " +
+			"from the Statistical Centre of Iran are collected (monthly, from Farvardin " +
+			"1381) and can be compared against inflation under Relative value; they measure " +
+			"the cost of occupying housing, not the price of buying it.",
 	},
 	{
 		SymbolOrClass: "tehran_equities",

@@ -6,25 +6,39 @@ probed and its shape verified — every entry below was fetched live on
 ``economic_series`` rows :func:`app.economic.store.ensure_series` writes; the
 database rows are a projection of it, never the other way round.
 
-Two families, both annual, both revisable, and both chosen because they are
-the cheapest honest test of the vintage machinery migration 0024 introduced:
+Three families.  The first two are annual, revisable, and were chosen because
+they are the cheapest honest test of the vintage machinery migration 0024
+introduced; the third is the series that machinery was built for.
 
 * ``WB_CPI_*``   — World Bank ``FP.CPI.TOTL``, a CPI *index* (2010 = 100).
 * ``IMF_PCPIPCH_*`` — IMF WEO ``PCPIPCH``, annual average inflation in percent.
+* ``SCI_CPI_*``  — the Statistical Centre of Iran's urban CPI (1400 = 100),
+  monthly, on Jalali reference periods.
 
-They are NOT two views of one series and must never be spliced together: one
-is a level, the other a rate, and they disagree about Iran by a wide margin
-because they are measuring different things from different sources.
+The first two are NOT two views of one series and must never be spliced
+together: one is a level, the other a rate, and they disagree about Iran by a
+wide margin because they are measuring different things from different sources.
+Neither is comparable level-for-level with the third, which is on its own base.
 
 ``measure`` is part of series identity, not a display option (0024 spells out
 why), which is why the same country appears twice with two codes.
 
-A note on what is deliberately absent: nothing from the Statistical Centre of
-Iran or the Central Bank of Iran is here yet.  Those are the authoritative
-Iranian series, they are Jalali-dated, and SCI publishes them as PDFs whose
-older paths 404 — that needs the ``source_documents`` archive path to work
-first, and P0 does not have it.  What ships here is a mirror and an estimate,
-and both entries say so in their own notes.
+**What used to be absent, and why it is here now.**  This file used to record
+that nothing from the Statistical Centre of Iran was in the catalog because
+that "needs the ``source_documents`` archive path to work first, and P0 does
+not have it".  :mod:`app.economic.sci` is that path: it hashes the workbook,
+archives it in ``source_documents`` — the first real write to that table — and
+links every observation it stores to the document it was read from.  So the
+SCI entries are here, and they are this catalog's first
+``quality_tier='official'`` series (SCI is the legally designated statistical
+authority; everything else here is a mirror or an estimate), its first
+``calendar='jalali'`` series, and its first ``splice_policy='chain_growth'``
+series.
+
+The Central Bank of Iran is still absent, and for a different reason: its
+monthly Tehran housing report ran Farvardin 1396 to Mordad 1403 and then
+stopped when the CBI lost access to the transaction registry, so there is no
+current series to ingest.
 """
 from __future__ import annotations
 
@@ -194,9 +208,121 @@ def _imf_spec(iso3: str, name_en: str, name_fa: str) -> SeriesSpec:
     )
 
 
+# --- Statistical Centre of Iran, urban CPI ----------------------------------
+#
+# Verified 2026-09-09 against the workbook
+#   ts_urban_140505-14050618165804.xlsx
+#   sha256 b28e3375b772f37ef5e440ca6ba3378b33173226b0388507953f0c102d259114
+# 293 monthly observations per series, Farvardin 1381 -> Mordad 1405, and all
+# four series average EXACTLY 100.000000 across the twelve months of 1400,
+# which is the stated base and is re-checked from the data itself on every
+# ingest (app/economic/sci.py).
+
+SCI_PROVIDER = "sci"
+SCI_WORKBOOK = "ts_urban"
+SCI_SHEET = "جدول 1"
+SCI_BASE_PERIOD = "1400=100"
+
+# Providers whose series arrive as an archived DOCUMENT rather than a poll.
+# amar.org.ir is unreachable from the production host (migration 0027 records
+# the diagnosis), so these series are fetched elsewhere and posted to
+# /internal/economic/sci-cpi. The scheduled ingest job reads this to report
+# them as document-ingested instead of attempting a fetch that cannot succeed
+# and recording a provider failure every tick.
+DOCUMENT_INGEST_PROVIDERS = frozenset({SCI_PROVIDER})
+
+_SCI_NOTE = (
+    "Statistical Centre of Iran, urban-household CPI, base 1400=100 (verified on "
+    "every ingest: the twelve months of 1400 must average exactly 100). Monthly, "
+    "on JALALI reference periods — each observation covers one Jalali month, and "
+    "ref_period_start/end are that month's Gregorian span. Published around day "
+    "10 of the following Jalali month; the publication timestamp is taken from "
+    "SCI's own filename, so published_at is a real date here rather than NULL. "
+    "NOT seasonally adjusted: SCI publishes no SA variant, and Nowruz and Ramadan "
+    "shift against the Gregorian calendar, so standard seasonal factors do not "
+    "apply. splice_policy is chain_growth because SCI restated the whole level "
+    "history at the 1400 rebase and publishes no concordance — growth rates chain "
+    "across a rebase, levels do not."
+)
+
+_SCI_HOUSING_CAVEAT = (
+    " IMPORTANT: this is the housing component of a CONSUMPTION price index, and "
+    "it is dominated by rent — over the full series it moves almost identically "
+    "to the standalone rent index (95.6x vs 94.5x since 1381). It is NOT a house "
+    "price index and must never be read as one. No public source publishes a "
+    "Tehran or national house price series today: the Central Bank's monthly "
+    "Tehran housing report ran Farvardin 1396 to Mordad 1403 and then stopped "
+    "when the CBI lost access to the transaction registry."
+)
+
+_SCI_VEHICLES_CAVEAT = (
+    " This is the CPI basket for vehicle purchase, which is quality-adjusted by "
+    "construction and therefore smooths away exactly the factory-versus-market "
+    "divergence an Iranian car buyer cares about. It is the only long-run "
+    "official vehicle price index that exists; it is not a market quote. No "
+    "source carries more than about five weeks of retrievable Iranian market car "
+    "prices."
+)
+
+# (code, row label as printed by SCI, domain, name_en, name_fa, extra note)
+_SCI_SERIES: tuple[tuple[str, str, str, str, str, str], ...] = (
+    ("SCI_CPI_URBAN", "شاخص كل", "macro",
+     "Iran urban CPI, all items (SCI, 1400=100)",
+     "شاخص قیمت مصرف‌کننده شهری، کل", ""),
+    ("SCI_CPI_HOUSING", "مسكن", "housing",
+     "Iran urban CPI, housing (SCI, 1400=100)",
+     "شاخص قیمت مصرف‌کننده شهری، مسکن", _SCI_HOUSING_CAVEAT),
+    ("SCI_CPI_RENT", "اجاره", "housing",
+     "Iran urban CPI, rent (SCI, 1400=100)",
+     "شاخص قیمت مصرف‌کننده شهری، اجاره", ""),
+    ("SCI_CPI_VEHICLES", "071 - خريد وسايل نقليه", "auto",
+     "Iran urban CPI, vehicle purchase (SCI, 1400=100)",
+     "شاخص قیمت مصرف‌کننده شهری، خرید وسایل نقلیه", _SCI_VEHICLES_CAVEAT),
+)
+
+
+def _sci_spec(
+    code: str, row_label: str, domain: str, name_en: str, name_fa: str, extra: str
+) -> SeriesSpec:
+    return SeriesSpec(
+        code=code,
+        name_en=name_en,
+        name_fa=name_fa,
+        domain=domain,
+        provider_code=SCI_PROVIDER,
+        # The source's own key for this row: workbook, sheet, and the label as
+        # SCI prints it. Kept in the SOURCE's orthography (Arabic kaf/yeh) so it
+        # can be grepped against a downloaded file; app/economic/sci.py
+        # normalises both sides rather than assuming either form.
+        provider_series_id=f"{SCI_WORKBOOK}:{SCI_SHEET}:{row_label}",
+        country="IRN",
+        indicator=row_label,
+        frequency="M",
+        calendar="jalali",
+        measure="index",
+        seasonal_adjustment="nsa",
+        base_period=SCI_BASE_PERIOD,
+        quality_tier="official",
+        quote_currency="INDEX",
+        unit="index",
+        decimals=2,
+        revisable=True,
+        splice_policy="chain_growth",
+        notes=_SCI_NOTE + extra,
+        # ~40 days observed once; one measurement is not a characterisation.
+        publication_lag_days=None,
+    )
+
+
+def sci_specs() -> list[SeriesSpec]:
+    """The four SCI urban-CPI rows this system extracts."""
+    return [_sci_spec(*row) for row in _SCI_SERIES]
+
+
 CATALOG: tuple[SeriesSpec, ...] = tuple(
     [_worldbank_spec(*country) for country in _COUNTRIES]
     + [_imf_spec(*country) for country in _COUNTRIES]
+    + sci_specs()
 )
 
 _BY_CODE: dict[str, SeriesSpec] = {spec.code: spec for spec in CATALOG}

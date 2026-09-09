@@ -94,8 +94,25 @@ func TestUncollectedAssetClasses_NameCarsHousingEquitiesAndLocalSilver(t *testin
 		if e.Reason == "" {
 			t.Errorf("%s carries no reason", e.SymbolOrClass)
 		}
-		if !strings.Contains(e.Reason, "Not collected") {
-			t.Errorf("%s: the reason must say it is not collected, got %q",
+		// The reason must say WHY no reading exists. It used to be asserted as
+		// the literal phrase "Not collected", which stopped being true the day
+		// the SCI CPI ingest landed: housing and vehicle price INDICES are now
+		// collected, while housing and vehicle PRICES still are not. A blanket
+		// "not collected" over a class we hold data for is exactly the kind of
+		// stale honesty claim this block exists to prevent, so the assertion is
+		// on substance -- the entry explains the absence of a tradeable price --
+		// rather than on one sentence's wording.
+		if !strings.Contains(e.Reason, "No buy/sell reading") &&
+			!strings.Contains(e.Reason, "Not collected") {
+			t.Errorf("%s: the reason must explain why no reading exists, got %q",
+				e.SymbolOrClass, e.Reason)
+		}
+		// And an entry for a class we DO now hold an index for must not claim
+		// the class is absent outright.
+		if (e.SymbolOrClass == "housing" || e.SymbolOrClass == "cars") &&
+			!strings.Contains(e.Reason, "INDIC") && !strings.Contains(e.Reason, "INDEX") {
+			t.Errorf("%s: an index for this class IS ingested, so the reason must "+
+				"distinguish the missing PRICE series from the index we hold; got %q",
 				e.SymbolOrClass, e.Reason)
 		}
 		got[e.SymbolOrClass] = e.Reason

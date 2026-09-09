@@ -1,0 +1,24 @@
+-- Reverse 0027: unregister the SCI provider.
+--
+-- Only the row this migration added is removed. Observations already ingested
+-- from an SCI workbook are deliberately left in place, and so are the
+-- `source_documents` rows that cite them:
+--
+--   * `economic_observations` is append-only by construction (0024), and
+--     `source_document_id` is ON DELETE RESTRICT precisely so a cleanup cannot
+--     quietly erase the citation that makes a value defensible. Deleting
+--     measured history to reverse a provider REGISTRATION would be a much
+--     larger act than the one being undone.
+--   * nothing has a foreign key onto data_providers.code, so the remaining
+--     rows stay readable; they simply name a provider that is no longer
+--     registered, which is the accurate description of the state.
+--
+-- An operator who genuinely wants the data gone deletes it explicitly, in this
+-- order (observations cite the document, series own the observations):
+--   DELETE FROM economic_observations WHERE series_id IN
+--     (SELECT id FROM economic_series WHERE provider_code = 'sci');
+--   DELETE FROM economic_series WHERE provider_code = 'sci';
+--   DELETE FROM instruments WHERE code LIKE 'SCI\_CPI\_%';
+--   DELETE FROM source_documents WHERE provider_code = 'sci';
+
+DELETE FROM data_providers WHERE code = 'sci';

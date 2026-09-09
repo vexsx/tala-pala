@@ -4,6 +4,7 @@ pydantic==2.9.2
 SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3
 httpx==0.28.1
+openpyxl==3.1.5
 pandas==2.2.3
 numpy==1.26.4
 scikit-learn==1.5.2

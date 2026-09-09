@@ -544,7 +544,31 @@ URL would have stored Sudan's inflation as Iran's.
 **Internal:** `POST /internal/economic/ingest` body `{"codes":[...]}` (empty = all enabled). Per
 series in its own transaction; provider health is aggregated across the whole pass and written once,
 so a late success can no longer erase earlier failures. A pass in which every series fails is
-reported as a job failure.
+reported as a job failure. A series whose provider is document-ingested (`sci`, below) is listed with
+`status:"document_ingest"` and is **never fetched** by this pass — it counts as neither ingested nor
+failed, because nothing was attempted.
+
+**Internal:** `POST /internal/economic/sci-cpi` body `{"path":"...","filename":"...","url":""}` —
+the Statistical Centre of Iran's urban CPI (`SCI_CPI_URBAN` / `_HOUSING` / `_RENT` / `_VEHICLES`,
+monthly, `calendar='jalali'`, base `1400=100`, `quality_tier='official'`, `splice_policy='chain_growth'`).
+Migration `0027` registers the provider; `scripts/sci_fetch.py` discovers, downloads, uploads and
+posts the workbook. **There is deliberately no cron:** `amar.org.ir` accepts a TCP connection from the
+production host on 443 and 80 and then answers nothing, at any TLS version and over plain HTTP
+(2026-09-09), so ingestion is fetch-elsewhere-and-post.
+
+The whole workbook is parsed and verified before anything is written. All four target rows must be
+found — a layout change that moves one **refuses the entire file** rather than ingesting the other
+three and reporting success — and the twelve months of `1400` must average `100`, checked from the
+data itself, so a rebase refuses instead of storing restated levels under a stale `base_period`.
+Labels are matched on **exact normalised equality**: the sheet mixes Arabic kaf/yeh with Persian yeh
+and ZWNJ, and `مسکن` is both its own row and a substring of the utilities division. A period printed
+`-` is skipped, never zero-filled. On success the file is hashed into `source_documents` (deduped on
+`(provider_code, content_sha256)` — **the first real write to that table**) and every observation
+cites it. `published_at` is real here rather than NULL: it is the Jalali timestamp SCI embeds in its
+own filename (`ts_urban_140505-14050618165804.xlsx` → 2026-09-09), day granularity, so `path` is not
+provenance and a file renamed in transit stores NULL and says so. Re-posting the same file writes
+nothing; a workbook with different values writes new vintages beside the prints they revise. A
+refused workbook answers `400` and leaves the database untouched.
 
 **Migration `0025`** re-enables `tgju`, disabled by `0023` after 2,047 consecutive failures. Re-tested
 from the production host on 2026-09-08: `call2/call3/call4.tgju.org` all `200` (~179 KB) and

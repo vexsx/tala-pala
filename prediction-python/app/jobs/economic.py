@@ -38,17 +38,30 @@ outage behind a green job history.  So :func:`ingest_economic` raises
 :class:`EconomicIngestFailed` — carrying the same report it would have
 returned — and the endpoint turns that into a 502.
 
-*No source document is archived, and none is invented.*  0024's
-``source_documents`` table exists for the sources that need it — the SCI
-publishes its CPI as PDFs whose older paths 404 — but both P0 providers are
-JSON APIs at stable URLs, so nothing here writes that table and every
-``source_document_id`` stays NULL.  A row claiming an archived artifact that
-does not exist would be worse than no row.
+*No source document is archived HERE, and none is invented.*  0024's
+``source_documents`` table exists for the sources that need it, but the
+providers this job polls are JSON APIs at stable URLs, so nothing in this file
+writes that table and every ``source_document_id`` it stores stays NULL.  A row
+claiming an archived artifact that does not exist would be worse than no row.
+The SCI workbook DOES need one and does write it, through
+:mod:`app.economic.sci` — see the next paragraph for why that cannot happen
+here.
 
-Nothing ingested here reaches model input.  These are annual series with 66
-observations each; they are reference data for a reader, and the machinery
+*Document-ingested series are reported, never attempted.*  A series whose
+provider is in :data:`app.economic.catalog.DOCUMENT_INGEST_PROVIDERS` arrives
+as a posted file rather than a poll, because its source is unreachable from
+this host at all (migration 0027 records the diagnosis for amar.org.ir).
+Fetching it would fail on every tick, forever, and would park the circuit
+breaker on a provider that is not down — so it is reported with
+``status='document_ingest'`` and the endpoint that does ingest it, and is
+counted as neither ingested nor failed.  It is still listed, because a series
+missing from the report would be indistinguishable from one that was never in
+the catalog.
+
+Nothing ingested here reaches model input.  The polled series are annual with
+66 observations each; they are reference data for a reader, and the machinery
 they exercise (vintages, point-in-time reads) is the machinery the Iranian
-monthly series will need when they land.
+monthly series needed, which is what :mod:`app.economic.sci` now uses.
 """
 from __future__ import annotations
 
@@ -66,6 +79,7 @@ from ..economic import (
     SeriesSpec,
     enabled_specs,
 )
+from ..economic.catalog import DOCUMENT_INGEST_PROVIDERS
 from ..economic.store import (
     STATUS_INSERTED,
     STATUS_RACED,
@@ -149,6 +163,20 @@ def ingest_economic(
             result["series"][spec.code] = _empty_counts() | {
                 "status": "disabled",
                 "reason": "series is disabled in the catalog",
+            }
+            continue
+        if spec.provider_code in DOCUMENT_INGEST_PROVIDERS:
+            # Not a failure and not a success: nothing was attempted. See the
+            # module docstring — this source cannot be polled from this host,
+            # so a fetch here would fail forever and bury a real outage
+            # somewhere else in the same errors list.
+            result["series"][spec.code] = _empty_counts() | {
+                "status": "document_ingest",
+                "reason": (
+                    f"{spec.provider_code} is ingested from a posted document, "
+                    "not polled: POST /internal/economic/sci-cpi with a workbook "
+                    "fetched by scripts/sci_fetch.py"
+                ),
             }
             continue
         attempted[spec.provider_code] = attempted.get(spec.provider_code, 0) + 1

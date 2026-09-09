@@ -1,0 +1,71 @@
+-- 0027: The Statistical Centre of Iran as a data provider.
+--
+-- WHY THIS EXISTS
+--
+-- 0024 built `economic_series`, `economic_observations` and `source_documents`
+-- and then deliberately declined to name SCI, because the two providers it
+-- seeded are JSON APIs at stable URLs and neither needs a document archive:
+--
+--   "`source_documents` archives the artifact a value was read from. This is
+--    not optional bookkeeping for this domain: the Statistical Centre of Iran
+--    publishes the monthly CPI as PDFs whose filenames are non-deterministic
+--    and whose older paths 404 (verified 2026-09-08)."
+--
+-- This row is the other half of that sentence. SCI's urban CPI is the first
+-- series in this system that MUST archive its source document to be
+-- point-in-time defensible, and it is the first that can.
+--
+-- WHAT WAS MEASURED, 2026-09-09/10
+--
+--   Workbook  ts_urban_140505-14050618165804.xlsx
+--   sha256    b28e3375b772f37ef5e440ca6ba3378b33173226b0388507953f0c102d259114
+--   Sheet     'جدول 1' — the index LEVELS, 51 rows x 301 columns
+--   Coverage  293 monthly observations per series,
+--             Farvardin 1381 (2002-03-21) .. Mordad 1405 (2026-08-22)
+--   Base      1400=100, confirmed from the data itself: all four extracted
+--             series average EXACTLY 100.000000 over the twelve months of 1400
+--   Latest    headline 683.59, housing 440.98, rent 437.39, vehicles 637.11
+--
+-- WHY quality_tier='official' STARTS HERE
+--
+-- Every economic series in the catalog before this one is somebody's
+-- redistribution of a national number: the World Bank rebases the national
+-- CPI to 2010=100 ('official_mirror'), and the IMF's Iranian figures are staff
+-- estimates with no Article IV consultation behind them since 2018
+-- ('estimate'). SCI is the legally designated statistical authority (High
+-- Council of Statistics), so its own publication is the primary document, not
+-- a mirror of one. That distinction is the whole reason `quality_tier` is a
+-- column and not a comment.
+--
+-- WHY THERE IS NO CRON FOR THIS PROVIDER, AND MUST NOT BE
+--
+-- amar.org.ir is UNREACHABLE from the production host (85.137.30.142).
+-- Diagnosed 2026-09-09 rather than assumed: DNS resolves to 217.218.11.77, TCP
+-- connects on BOTH 443 and 80, and then nothing answers — no TLS handshake
+-- completes at 1.2 or 1.3, and plain HTTP returns nothing either. The
+-- connection is accepted and the payload dropped, which is application-layer
+-- filtering, not a TLS misconfiguration. The same host fetches the file
+-- without trouble from outside that network.
+--
+-- So ingestion is fetch-elsewhere-and-post: scripts/sci_fetch.py discovers the
+-- current workbook (the URL embeds a reference period and a publish timestamp
+-- and therefore changes every release), verifies it, copies it to the server
+-- and calls POST /internal/economic/sci-cpi inside the compose network. A
+-- scheduled fetch from the server would fail every tick, forever, and park the
+-- circuit breaker on a provider that is not down.
+--
+-- The `priority` below is therefore inert, and is recorded as 30 only to keep
+-- the global_macro/iran_macro ordering readable: no collect job consults
+-- category 'iran_macro' (JOB_PROVIDER_CATEGORIES in app/jobs/collect.py names
+-- iran_gold, global_gold, fx, macro and iran_fund), and the document ingest
+-- addresses this provider by code rather than walking a fallback chain.
+--
+-- The category is 'iran_macro', not 'global_macro': the two existing economic
+-- providers are worldwide datasets queried per country, and this one is a
+-- single national statistical office publishing one country's own numbers.
+-- Folding them together would make "which providers cover Iran's own
+-- statistics?" unanswerable from the row.
+
+INSERT INTO data_providers (code, name, base_url, category, priority, enabled) VALUES
+  ('sci','Statistical Centre of Iran','https://amar.org.ir','iran_macro',30,TRUE)
+ON CONFLICT (code) DO NOTHING;

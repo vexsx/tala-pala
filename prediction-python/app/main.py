@@ -28,7 +28,7 @@ from .jobs.features import run_generate_features
 from .metrics import render_metrics
 from .models.predicting import predict_all
 from .models.training import train_all
-from .providers.registry import providers_health
+from .providers import registry
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +97,23 @@ class EconomicIngestRequest(BaseModel):
     codes: list[str] = Field(default_factory=list)
 
 
+class SciCpiIngestRequest(BaseModel):
+    """One SCI urban-CPI workbook, already on disk in this container.
+
+    ``path`` is where the bytes are now — a temporary copy, and not
+    provenance.  ``filename`` is what SCI called the file; it carries the
+    Jalali publication timestamp, so it is the only place ``published_at`` can
+    come from and a copy renamed in transit loses that date rather than having
+    one invented for it.  It defaults to ``path``'s basename.  ``url`` is where
+    the document was obtained; when it is empty the canonical SCI statistics
+    path for that filename is recorded and the response says so.
+    """
+
+    path: str
+    filename: str = ""
+    url: str = ""
+
+
 class BacktestRequest(BaseModel):
     horizon: str = "1d"
     fee_pct: float = 0.5
@@ -153,7 +170,7 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
 
     @app.get("/internal/providers/health")
     def provider_health() -> list[dict]:
-        return providers_health(engine)
+        return registry.providers_health(engine)
 
     @app.post("/internal/collect")
     def collect(req: Optional[CollectRequest] = None) -> dict:
@@ -408,6 +425,62 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
                     }
                 },
             )  # type: ignore[return-value]
+
+    @app.post("/internal/economic/sci-cpi")
+    def economic_sci_cpi(body: SciCpiIngestRequest) -> dict:
+        """Ingest one Statistical Centre of Iran urban-CPI workbook from disk.
+
+        The counterpart of /internal/economic/ingest for a source that cannot
+        be polled: amar.org.ir accepts a TCP connection from the production
+        host and then answers nothing, at any TLS version and over plain HTTP
+        (diagnosed 2026-09-09, recorded in migration 0027). So the file is
+        fetched somewhere that can reach SCI, copied in, and posted here —
+        scripts/sci_fetch.py does all three. There is deliberately no cron.
+
+        The whole workbook is parsed and verified before anything is written:
+        four target rows must all be found (a layout change that moved one must
+        not ingest the other three and look successful) and the twelve months
+        of 1400 must average 100 (the stated base, checked from the data
+        itself). A file that fails either guard leaves the database untouched
+        and answers 400 with what was wrong.
+
+        On success the document is archived in ``source_documents`` — hashed
+        and deduped on (provider_code, content_sha256) — and every observation
+        is written through the same bitemporal store the polled series use,
+        carrying that document's id. ``published_at`` is real here rather than
+        NULL: SCI embeds a Jalali publication timestamp in its own filename.
+
+        Safe to call repeatedly. Re-posting the same file re-uses the deduped
+        document row and writes no observation, because every value compares
+        equal to what is stored; a workbook whose values differ writes new
+        vintages beside the prints they revise, never over them.
+        """
+        from .economic.sci import SciParseError, ingest_sci_cpi
+
+        try:
+            report = ingest_sci_cpi(
+                engine, body.path, filename=body.filename, url=body.url
+            )
+        except SciParseError as exc:
+            # A statement about the DOCUMENT: the layout or the base changed
+            # under us, which is the provider's doing and belongs on its health
+            # row where an operator will see it.
+            registry.record_failure(engine, "sci", str(exc))
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except (OSError, ValueError) as exc:
+            # A statement about the CALL — a path that is not there, a file
+            # that is not a workbook. Not the provider's fault, so its health
+            # is left alone rather than accumulating failures an operator's
+            # typo caused.
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        registry.record_success(engine, "sci")
+        return report
 
     @app.get("/internal/data/coverage")
     def data_coverage() -> dict:
