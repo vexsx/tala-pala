@@ -114,6 +114,24 @@ class SciCpiIngestRequest(BaseModel):
     url: str = ""
 
 
+class EquityBarsIngestRequest(BaseModel):
+    """Daily-bar payloads for one or more instruments, already in this container.
+
+    A LIST of paths rather than the payloads themselves, and that is forced
+    rather than stylistic: one instrument's ``GetClosingPriceDailyList``
+    response is ~1.4 MB and a twenty-symbol run is ~28 MB, which cannot travel
+    through the ``wget --post-data`` argv that scripts/tsetmc_fetch.py uses on
+    the production host.  The files are copied in with ``docker compose cp``,
+    exactly as the SCI workbook is, and this body just names them.
+
+    The insCode is taken from each payload's own rows, never from its filename:
+    a file renamed in transit must not be able to store one company's bars
+    under another's code.
+    """
+
+    paths: list[str] = Field(default_factory=list)
+
+
 class BacktestRequest(BaseModel):
     horizon: str = "1d"
     fee_pct: float = 0.5
@@ -480,6 +498,84 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
                 content={"error": {"code": "bad_request", "message": str(exc)}},
             )  # type: ignore[return-value]
         registry.record_success(engine, "sci")
+        return report
+
+    @app.get("/internal/equities/roster")
+    def equities_roster(include_disabled: bool = False) -> dict:
+        """The Tehran instruments this deployment ingests and serves.
+
+        Read by scripts/tsetmc_fetch.py over the same SSH path it already uses,
+        which is what makes widening the roster an INSERT into
+        ``equity_instruments`` rather than an edit to a list that then has to
+        be kept in step with the database. ``include_disabled`` shows rows the
+        deployment has deliberately turned off — کچاد is seeded that way, with
+        the measurement that refused it on the row.
+        """
+        from .equities.ingest import roster
+
+        items = roster(engine, include_disabled=include_disabled)
+        return {"items": items, "count": len(items)}
+
+    @app.post("/internal/equities/bars")
+    def equities_bars(body: EquityBarsIngestRequest) -> dict:
+        """Ingest Tehran equity daily bars from payload files on disk.
+
+        The counterpart of /internal/economic/sci-cpi for a source that cannot
+        be polled: cdn.tsetmc.com resolves from the production host and then
+        refuses TCP 443 outright — a harder block than SCI's, where the
+        connection opened and the payload was dropped (measured 2026-09-10,
+        recorded in migration 0028). So the payloads are fetched somewhere that
+        can reach TSETMC, copied in, and posted here; scripts/tsetmc_fetch.py
+        does all three. There is deliberately no cron.
+
+        **Per-symbol isolation.** Each path is parsed, adjusted and written in
+        its own transaction. One truncated transfer costs one symbol, not the
+        run, and the failure comes back in ``errors`` with its exception type.
+        A pass in which EVERY path failed answers 502, not 200 — the Go
+        scheduler reads job success from the status code and a run that
+        ingested nothing must not enter that history as a success.
+
+        **The gate.** Every symbol is adjusted for corporate actions (detected
+        from TSETMC's own ``priceYesterday``) and then VALIDATED before its
+        series is promoted: after adjustment no genuine single-session return
+        may exceed 25%, a bound measured against 65,802 session pairs across
+        twenty symbols and twenty-five years, where the worst legitimate move
+        is 13.6% and the p99 is exactly the exchange's 5% price limit. A symbol
+        that fails is stored — the raw bars and the detected actions are still
+        what TSETMC served and implied — but its verdict row says ``refused``
+        and the read API will not serve it adjusted. docs/REDESIGN.md makes
+        that the explicit gate for this phase.
+
+        **Idempotent.** Re-posting the same payloads inserts nothing: every bar
+        and every action is already there. A payload that CONTRADICTS a stored
+        bar fails that symbol rather than overwriting it — TSETMC does not
+        revise a settled session, so a disagreement is a corrupt transfer or a
+        real restatement, and both want a human.
+        """
+        from .equities.adjust import BarParseError
+        from .equities.ingest import EquityIngestFailed, ingest_bar_files
+
+        try:
+            report = ingest_bar_files(engine, body.paths)
+        except (ValueError, BarParseError) as exc:
+            # A statement about the CALL — an empty path list, or a body that
+            # named nothing this service can read. Not the provider's doing, so
+            # its health row is left alone.
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except EquityIngestFailed as exc:
+            # Every payload failed. That IS a statement about the data: either
+            # the transfer or the endpoint shape changed under us, and it
+            # belongs on the provider's health row where an operator sees it.
+            registry.record_failure(engine, "tsetmc_cdn", str(exc))
+            return JSONResponse(
+                status_code=502,
+                content=exc.report
+                | {"error": {"code": "upstream_failed", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        registry.record_success(engine, "tsetmc_cdn")
         return report
 
     @app.get("/internal/data/coverage")

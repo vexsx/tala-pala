@@ -22,6 +22,7 @@ import (
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/auth"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/config"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/economic"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/equities"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/httpserver"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/intelligence"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/internalclient"
@@ -141,6 +142,7 @@ func run() error {
 			NewsCollectionEnabled: cfg.NewsCollectionEnabled,
 		},
 		Economic: &economic.Handler{Pool: pool, Log: logger},
+		Equities: &equities.Handler{Pool: pool, Log: logger},
 		RelValue: &relvalue.Handler{Pool: pool, Log: logger},
 
 		GlobalLimiter: globalLimiter,

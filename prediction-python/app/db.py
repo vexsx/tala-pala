@@ -518,6 +518,203 @@ economic_observations = Table(
     Index("idx_econ_obs_available", text("available_at DESC")),
 )
 
+# --- tables mirroring database/migrations/0028_equity_bars.up.sql -----------
+#
+# Tehran equity daily bars.  Deliberately NOT economic_observations: a bar is
+# five prices, two counts and a turnover for one SESSION, TSETMC does not
+# revise it, and it has no publication lag to model.  0028's header states the
+# full reasoning, including why this registry is separate from ``instruments``.
+
+equity_instruments = Table(
+    "equity_instruments",
+    metadata,
+    # TEXT, not an integer: TSETMC serves the same insCode as a JSON string on
+    # one endpoint and a JSON number on another, and it is a name, not a
+    # quantity.
+    Column("ins_code", Text, primary_key=True),
+    # Folded to Persian orthography with ZWNJ removed — the lookup key.
+    Column("symbol_fa", Text, nullable=False),
+    # Folded for the same confusables but with ZWNJ KEPT: there it separates
+    # words, and stripping it glues معدنی‌وصنعتی‌چادرملو into one token.
+    Column("name_fa", Text, nullable=False),
+    Column("market", Text, nullable=False),
+    Column("board", Text, nullable=False, server_default=""),
+    Column("sector_code", Text, nullable=False, server_default=""),
+    Column("sector_fa", Text, nullable=False, server_default=""),
+    Column("isin", Text, nullable=False, server_default=""),
+    # The optional bridge into the modelled-instrument vocabulary.  NULL for
+    # every seeded row: listed is not the same as modelled.
+    Column(
+        "instrument_code",
+        Text,
+        ForeignKey("instruments.code", ondelete="RESTRICT"),
+    ),
+    # Coverage, maintained by the ingest.  NULL until the first bar lands.
+    Column("first_bar", Date),
+    Column("last_bar", Date),
+    Column("bar_count", Integer, nullable=False, server_default=text("0")),
+    Column("enabled", Boolean, nullable=False, server_default=text("TRUE")),
+    Column("notes", Text, nullable=False, server_default=""),
+    Column("created_at", _TS, nullable=False, server_default=func.now()),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("market IN ('bourse','farabourse')"),
+    UniqueConstraint("symbol_fa", name="equity_instruments_symbol_unique"),
+    Index(
+        "idx_equity_instruments_enabled", "symbol_fa", postgresql_where=text("enabled")
+    ),
+    Index("idx_equity_instruments_sector", "sector_code"),
+)
+
+# RAW ONLY.  Every column is exactly what TSETMC served for that session; an
+# adjusted number is never written here (tests/test_equity_adjust.py asserts
+# it).  The adjustment is a factor on ``corporate_actions``, applied at read.
+equity_bars = Table(
+    "equity_bars",
+    metadata,
+    _big_pk(),
+    Column(
+        "ins_code",
+        Text,
+        ForeignKey("equity_instruments.ins_code", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # TSETMC's dEven: an integer GREGORIAN date, despite everything else on
+    # that site being Jalali.
+    Column("trade_date", Date, nullable=False),
+    # Zero on a halted session, where zero means "no trade occurred".
+    Column("open", _NUM, nullable=False),
+    Column("high", _NUM, nullable=False),
+    Column("low", _NUM, nullable=False),
+    # pDrCotVal, the last trade.  NOT always inside [low, high]: 9,530 of the
+    # 77,344 measured bars fall outside it -- every halted bar (low=high=0,
+    # pDrCotVal carries yesterday forward) plus 10 genuinely traded ones.
+    Column("close", _NUM, nullable=False),
+    # pClosing, TSE's قیمت پایانی.  The basis every return and every corporate
+    # action is computed on, and NOT bounded by [low, high] — 285 of فولاد's
+    # 4,221 traded bars sit outside it, by up to 3.9%.
+    Column("final_close", _NUM, nullable=False),
+    # priceYesterday.  Its disagreement with the previous session's
+    # final_close IS the corporate action.  Zero only on an instrument's first
+    # bar, where there is no yesterday.
+    Column("price_yesterday", _NUM, nullable=False),
+    Column("volume", BigInteger, nullable=False),
+    Column("trade_count", BigInteger, nullable=False),
+    Column("value", _NUM, nullable=False),
+    Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("final_close > 0"),
+    CheckConstraint("price_yesterday >= 0"),
+    CheckConstraint("volume >= 0"),
+    CheckConstraint("trade_count >= 0"),
+    CheckConstraint("value >= 0"),
+    CheckConstraint("low <= high", name="equity_bars_band"),
+    CheckConstraint(
+        "open >= 0 AND high >= 0 AND low >= 0 AND close >= 0",
+        name="equity_bars_nonneg",
+    ),
+    UniqueConstraint("ins_code", "trade_date", name="equity_bars_unique"),
+    Index("idx_equity_bars_read", "ins_code", text("trade_date DESC")),
+)
+
+# One detected action, kept with BOTH numbers that imply it so the ratio is
+# auditable rather than asserted.
+corporate_actions = Table(
+    "corporate_actions",
+    metadata,
+    _big_pk(),
+    Column(
+        "ins_code",
+        Text,
+        ForeignKey("equity_instruments.ins_code", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("effective_date", Date, nullable=False),
+    Column("prev_trade_date", Date, nullable=False),
+    Column("prev_close", _NUM, nullable=False),
+    Column("price_yesterday", _NUM, nullable=False),
+    # Which of TSETMC's two signals this came from.  'reference_restated' is
+    # explained by (prev_close, price_yesterday); 'close_restated' — a halted
+    # bar whose own close was restated — by (price_yesterday, restated_close),
+    # which is why that column exists rather than 32 rows carrying a ratio
+    # nothing on the row can check.
+    Column("kind", Text, nullable=False, server_default="reference_restated"),
+    Column("restated_close", _NUM),
+    Column("ratio", _NUM, nullable=False),
+    # The product of this ratio and every LATER one.  A back-adjusted close is
+    # final_close * cumulative_factor(first action after that bar), else 1.0.
+    Column("cumulative_factor", _NUM, nullable=False),
+    Column("adjustment_version", Text, nullable=False),
+    Column("detected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("prev_close > 0"),
+    CheckConstraint("price_yesterday > 0"),
+    CheckConstraint("ratio > 0"),
+    CheckConstraint("cumulative_factor > 0"),
+    CheckConstraint("kind IN ('reference_restated','close_restated')"),
+    CheckConstraint("restated_close IS NULL OR restated_close > 0"),
+    CheckConstraint("prev_trade_date < effective_date", name="corporate_actions_order"),
+    CheckConstraint(
+        "(kind = 'reference_restated' AND restated_close IS NULL)"
+        " OR (kind = 'close_restated' AND restated_close IS NOT NULL)",
+        name="corporate_actions_evidence",
+    ),
+    UniqueConstraint(
+        "ins_code",
+        "effective_date",
+        "adjustment_version",
+        name="corporate_actions_unique",
+    ),
+    Index(
+        "idx_corporate_actions_read",
+        "ins_code",
+        "adjustment_version",
+        "effective_date",
+    ),
+)
+
+# The gate's verdict, per symbol per version.  REDESIGN's P3 gate — "adjustment
+# must be validated before any return, ratio or score is computed from it" — is
+# enforceable only because this is a ROW: the read API refuses to serve an
+# adjusted series whose verdict here is not 'validated'.
+equity_adjustments = Table(
+    "equity_adjustments",
+    metadata,
+    _big_pk(),
+    Column(
+        "ins_code",
+        Text,
+        ForeignKey("equity_instruments.ins_code", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("adjustment_version", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("actions_applied", Integer, nullable=False, server_default=text("0")),
+    Column("bars_total", Integer, nullable=False, server_default=text("0")),
+    Column("pre_listing_bars", Integer, nullable=False, server_default=text("0")),
+    Column("sessions_checked", Integer, nullable=False, server_default=text("0")),
+    Column("worst_return", _NUM),
+    Column("worst_return_date", Date),
+    Column("reopenings", Integer, nullable=False, server_default=text("0")),
+    # Both bounds the verdict was reached under, so a row can be re-checked
+    # against the constants that produced it after they change.
+    Column("max_session_return", _NUM, nullable=False),
+    Column("max_reopening_return", _NUM, nullable=False, server_default=text("3.0")),
+    Column("session_gap_days", Integer, nullable=False),
+    Column("first_bar", Date),
+    Column("last_bar", Date),
+    Column("refusal_reason", Text, nullable=False, server_default=""),
+    Column("computed_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("status IN ('validated','refused')"),
+    # A refusal must say why: an empty reason leaves an operator nothing to act
+    # on and hides a bug in the writer behind a well-formed row.
+    CheckConstraint(
+        "status <> 'refused' OR length(refusal_reason) > 0",
+        name="equity_adjustments_reason",
+    ),
+    UniqueConstraint(
+        "ins_code", "adjustment_version", name="equity_adjustments_unique"
+    ),
+)
+
+
 # --- helpers ----------------------------------------------------------------
 
 

@@ -28,6 +28,20 @@ def load_fixture_text(name: str) -> str:
         return fh.read()
 
 
+def load_fixture_json_gz(name: str):
+    """Load a gzipped JSON fixture.
+
+    Exists for the TSETMC daily-bar payload, which is 1.45 MB uncompressed and
+    186 KB compressed. Every other fixture here could be trimmed to a
+    representative slice; that one cannot, and the reason is in
+    tests/test_equity_adjust.py's docstring.
+    """
+    import gzip
+
+    with gzip.open(os.path.join(FIXTURES_DIR, name), "rt", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 @pytest.fixture()
 def engine():
     """Fresh in-memory SQLite DB with all tables created from metadata."""

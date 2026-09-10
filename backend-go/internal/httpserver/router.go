@@ -109,6 +109,15 @@ type EconomicHandlers interface {
 	Observations(http.ResponseWriter, *http.Request)
 }
 
+// EquityHandlers serves the Tehran equity roster and its daily bars. Both are
+// plain reads: the corporate-action detection and the chaining belong to
+// prediction-python, and the only arithmetic behind these routes is
+// multiplying a stored close by a stored adjustment factor.
+type EquityHandlers interface {
+	Stocks(http.ResponseWriter, *http.Request)
+	Bars(http.ResponseWriter, *http.Request)
+}
+
 // RelativeValueHandlers serves the numeraire and relative-value engine:
 // arithmetic over stored daily closes -- indexing, returns, drawdown and a
 // rolling-window percentile -- in a chosen unit of account. Nothing behind
@@ -140,6 +149,7 @@ type Deps struct {
 	Issues       IssueHandlers
 	Intelligence IntelligenceHandlers
 	Economic     EconomicHandlers
+	Equities     EquityHandlers
 	RelValue     RelativeValueHandlers
 
 	// Limiters are created by the caller so it can Stop() them on shutdown.
@@ -237,6 +247,15 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			// knowable at a cutoff, so a historical fold can never see a
 			// revision published after it.
 			r.Get("/api/v1/series/{code}/observations", d.Economic.Observations)
+
+			// Tehran equities. /stocks is the roster with its coverage and
+			// its adjustment verdict; /bars defaults to adjusted=true because
+			// the raw close series is not a price history — فولاد's is x1.52
+			// over nineteen years against x907.86 adjusted. An adjusted read
+			// of a symbol whose adjustment the gate REFUSED is a 409, never a
+			// quietly-raw series.
+			r.Get("/api/v1/stocks", d.Equities.Stocks)
+			r.Get("/api/v1/stocks/{symbol}/bars", d.Equities.Bars)
 
 			// The numeraire and relative-value engine. /markets/numeraires is
 			// registered so a client can discover which units of account this
