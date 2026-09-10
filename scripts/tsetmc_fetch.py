@@ -316,7 +316,19 @@ def main() -> int:
         f"{shlex.quote(INGEST_URL)}"
     )
     remote = _remote_token_prelude() + (
-        f"sudo docker compose cp {shlex.quote(remote_dir)} "
+        # The target directory is created FIRST and the source ends in "/." so
+        # the CONTENTS are copied into it.
+        #
+        # Without both halves this silently produces an empty directory:
+        # `docker compose cp <dir> container:<newdir>` reported "Copied ..."
+        # and created /tmp/tsetmc-<ts> with nothing in it, so all 20 symbols
+        # failed to parse and the endpoint correctly answered 502 for a pass
+        # that ingested nothing. The files were on the host the whole time --
+        # 19 of them, right where scp put them. Measured 2026-09-10; copying
+        # with a trailing "/." into a pre-made directory transfers all 19.
+        f"sudo docker compose exec -T prediction-service "
+        f"sh -c {shlex.quote('mkdir -p ' + shlex.quote(container_dir))} && "
+        f"sudo docker compose cp {shlex.quote(remote_dir + '/.')} "
         f"prediction-service:{shlex.quote(container_dir)} && "
         # -e TOKEN="$TOKEN" again: the inner command is shlex-quoted so the host
         # shell cannot expand $TOKEN inside it, and without passing it into the
