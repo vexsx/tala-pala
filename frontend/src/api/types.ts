@@ -1398,3 +1398,215 @@ export interface SignalsOverviewResponse {
   items: SignalOverviewItem[]
   unavailable: SignalUnavailableEntry[]
 }
+
+// ---------- Equities: GET /api/v1/stocks and /api/v1/stocks/screen ----------
+//
+// Every interface below is transcribed from the Go structs that emit them —
+// `screenItem`, `excludedItem`, `absentMetric`, `sectorOption`,
+// `priceBasisBlock`, `conversionBlock` and `screenResponse` in
+// backend-go/internal/equities/screen.go, and `adjustmentItem` in
+// handlers.go. Field-for-field, including which ones are nullable: the
+// nullable ones are the contract's own "a figure that could not be computed is
+// null WITH a reason, never zero", and typing one as `number` would let a
+// missing measurement render as 0.
+
+/**
+ * The screen's window vocabulary. CLOSED in Go (`screenPeriods`): a period
+ * outside it earns a 400 rather than being resolved to the nearest thing, and
+ * it is deliberately shorter than the macro pages' `MARKET_PERIODS` because
+ * the equity roster is what is being screened.
+ */
+export type StockPeriod = '1m' | '3m' | '6m' | '1y' | 'max'
+
+export const STOCK_PERIODS: StockPeriod[] = ['1m', '3m', '6m', '1y', 'max']
+
+export const STOCK_PERIOD_LABELS: Record<StockPeriod, string> = {
+  '1m': '1 month',
+  '3m': '3 months',
+  '6m': '6 months',
+  '1y': '1 year',
+  max: 'All stored history'
+}
+
+/**
+ * The screen's units of account (`screenNumeraires`).
+ *
+ * IRR and not IRT, and the difference is the point: this endpoint's own
+ * figures are RIALS because that is what TSETMC quotes, while the rest of this
+ * API reports Iranian amounts in toman. The ×10 between them happens once,
+ * inside Go, on the way into the numéraire engine.
+ */
+export type StockNumeraire = 'IRR' | 'USD' | 'GOLD'
+
+export const STOCK_NUMERAIRES: StockNumeraire[] = ['IRR', 'USD', 'GOLD']
+
+export const STOCK_NUMERAIRE_LABELS: Record<StockNumeraire, string> = {
+  IRR: 'Rial (IRR) — the exchange’s own unit',
+  USD: 'US dollar (free-market proxy)',
+  GOLD: 'Grams of 18k gold'
+}
+
+/** The adjustment verdict block, shared verbatim by /stocks, /bars and /screen. */
+export interface StockAdjustment {
+  /** '' only when nothing has ever been computed for the instrument. */
+  version: string
+  /** validated | refused | never_ingested */
+  status: string
+  actions_applied: number
+  reopenings: number
+  worst_session_return?: number
+  pre_listing_bars?: number
+  adjusted_first_bar?: string
+  refusal_reason?: string
+  computed_at?: string
+  /** False means an adjusted read is a 409, never a quietly-raw series. */
+  adjusted_servable: boolean
+}
+
+/**
+ * One column a reader will look for and not find, with the REAL obstacle.
+ * Published per row by Go so a page states its boundary from the API instead
+ * of from hardcoded copy that nothing keeps in step with the ingest.
+ */
+export interface AbsentMetric {
+  metric: string
+  /** What a page would have headed the column. */
+  label: string
+  reason: string
+  /** What would have to be ingested first, separate from the prose. */
+  requires: string
+}
+
+/** What the numéraire conversion could not carry. Null for numeraire=IRR. */
+export interface StockConversion {
+  chain: string[]
+  carried_forward_days: number
+  dropped_no_prior_quote: number
+  dropped_non_positive_quote: number
+}
+
+/** One sector the roster actually contains — the filter's vocabulary. */
+export interface StockSector {
+  sector_code: string
+  sector_fa: string
+  instrument_count: number
+}
+
+/** What every number on the response is made of, stated once by the server. */
+export interface StockPriceBasis {
+  currency: string
+  close_field: string
+  last_close_adjusted: boolean
+  returns_adjusted: boolean
+  return_basis: string
+  volatility_basis: string
+  drawdown_basis: string
+  liquidity_basis: string
+  session_basis: string
+}
+
+/** One instrument over the window. */
+export interface StockScreenItem {
+  symbol: string
+  ins_code: string
+  name_fa: string
+  sector_code: string
+  sector_fa: string
+  market: string
+  board: string
+
+  /** The exchange's RAW official close, in rials, unadjusted — see the basis. */
+  last_close: number | null
+  last_close_basis: string
+  /** The last session that actually TRADED, which need not be `last_bar`. */
+  last_trade_date: string | null
+  last_bar: string | null
+  first_bar: string | null
+  bar_count: number
+
+  // Period metrics, from ADJUSTED closes, in `metrics_numeraire`.
+  return_pct: number | null
+  return_reason: string | null
+  volatility_pct: number | null
+  volatility_reason: string | null
+  max_drawdown_pct: number | null
+  max_drawdown_reason: string | null
+  /** The window the three figures above were ACTUALLY measured over. */
+  metrics_from: string | null
+  metrics_to: string | null
+  metrics_observations: number
+  metrics_numeraire: string
+
+  sessions_in_period: number
+  traded_sessions: number
+  halted_sessions: number
+
+  // Liquidity, in shares / trades / RIALS, averaged over TRADED sessions.
+  last_volume: number | null
+  last_trade_count: number | null
+  last_value: number | null
+  avg_volume: number | null
+  avg_trade_count: number | null
+  avg_value: number | null
+  liquidity_reason: string | null
+
+  // The last price re-expressed. Reported whatever the selected numéraire is.
+  price_usd: number | null
+  price_usd_rate_date: string | null
+  price_usd_carried_forward: boolean
+  price_usd_reason: string | null
+  price_gold_grams: number | null
+  price_gold_grams_rate_date: string | null
+  price_gold_grams_carried_forward: boolean
+  price_gold_grams_reason: string | null
+
+  adjustment: StockAdjustment
+  conversion: StockConversion | null
+  absent_metrics: AbsentMetric[]
+  notes: string[]
+}
+
+/** One roster symbol that is NOT in `items`, with why. */
+export interface StockExcludedItem {
+  symbol: string
+  ins_code: string
+  name_fa: string
+  sector_code: string
+  sector_fa: string
+  /** disabled | adjustment_refused | adjustment_never_ingested | no_bars | adjustment_unavailable */
+  reason_code: string
+  reason: string
+  enabled: boolean
+  bar_count: number
+  /** The roster's OWN note — the evidence behind the exclusion. */
+  notes: string
+  adjustment: StockAdjustment
+}
+
+export interface StockScreenResponse {
+  as_of: string
+  period: string
+  /** Null for period=max, where the start is a property of each instrument. */
+  from: string | null
+  to: string
+  numeraire: string
+  numeraire_series: NumeraireOption | null
+  /** IRR. Stated on every response because the rest of this API uses toman. */
+  currency: string
+  currency_note: string
+  price_basis: StockPriceBasis
+  sort: string
+  order: string
+  limit: number
+  sector: string | null
+  sectors: StockSector[]
+  items: StockScreenItem[]
+  count: number
+  /** Rows the filters produced BEFORE ?limit=. */
+  matched: number
+  truncated: boolean
+  excluded: StockExcludedItem[]
+  excluded_count: number
+  excluded_note: string
+  warnings: string[]
+}

@@ -2940,3 +2940,172 @@ input[type='checkbox'] {
   font-weight: 600;
   color: var(--text);
 }
+
+/* ---------- P3: the Tehran equity screener ---------- */
+
+.stk-preamble {
+  max-width: 78ch;
+  line-height: 1.6;
+}
+
+.stk-controls {
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 4px;
+}
+
+.stk-currency {
+  line-height: 1.55;
+}
+
+.stk-currency .muted {
+  margin-top: 4px;
+}
+
+.stk-adjusted-note {
+  line-height: 1.6;
+  margin: 6px 0 2px;
+}
+
+.stk-basis-toggle {
+  margin-inline-start: 8px;
+}
+
+.stk-basis-list,
+.stk-absent-list,
+.stk-excluded-list,
+.stk-note-list {
+  margin: 8px 0 0;
+  padding-inline-start: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stk-basis-list li,
+.stk-note-list li {
+  line-height: 1.55;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.stk-basis-list strong,
+.stk-absent-list strong {
+  color: var(--text);
+}
+
+/* The table is wide by design: twelve measured columns plus the five this
+   dataset cannot support. .table-wrap scrolls it rather than wrapping cells. */
+.stk-table {
+  min-width: 1180px;
+}
+
+.stk-table td {
+  vertical-align: top;
+}
+
+.stk-symbol {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stk-symbol-code {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.stk-symbol-name {
+  font-size: 12px;
+}
+
+.stk-symbol-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.stk-why {
+  padding: 0 6px;
+}
+
+.stk-adj {
+  display: table-cell;
+  white-space: nowrap;
+}
+
+.stk-adj-version {
+  display: block;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.stk-carried {
+  font-size: 11px;
+}
+
+/* Absent columns read as a different KIND of cell, not as an empty one. */
+.stk-col-absent {
+  background: color-mix(in srgb, var(--panel-2) 55%, transparent);
+  border-inline-start: 1px dashed var(--border);
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.stk-note-row td {
+  background: var(--panel-2);
+  padding-top: 8px;
+  padding-bottom: 10px;
+}
+
+.stk-table tbody tr.stk-note-row:hover td {
+  background: var(--panel-2);
+}
+
+.stk-note-window {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.stk-footer {
+  margin-top: 10px;
+  line-height: 1.55;
+}
+
+.stk-absent-list,
+.stk-excluded-list {
+  list-style: none;
+  padding-inline-start: 0;
+  gap: 12px;
+}
+
+.stk-absent-head,
+.stk-excluded-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stk-absent-reason,
+.stk-excluded-reason {
+  line-height: 1.6;
+  margin-top: 3px;
+  max-width: 92ch;
+}
+
+.stk-excluded-notes {
+  line-height: 1.6;
+  margin-top: 3px;
+  max-width: 92ch;
+}
+
+.stk-absent-card .card-title,
+.stk-excluded .card-title {
+  color: var(--warn);
+}

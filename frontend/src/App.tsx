@@ -26,6 +26,7 @@ import Technical from './pages/Technical'
 import Drivers from './pages/Drivers'
 import Markets from './pages/Markets'
 import RelativeValue from './pages/RelativeValue'
+import Stocks from './pages/Stocks'
 import Portfolio from './pages/Portfolio'
 import Alerts from './pages/Alerts'
 import Models from './pages/Models'
@@ -41,6 +42,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean; adminOnly?: b
   { to: '/drivers', label: 'Drivers' },
   { to: '/markets', label: 'Purchasing power' },
   { to: '/relative-value', label: 'Relative value' },
+  { to: '/stocks', label: 'Stocks' },
   { to: '/portfolio', label: 'Portfolio' },
   { to: '/alerts', label: 'Alerts' },
   { to: '/models', label: 'Models' },
@@ -197,6 +199,7 @@ export default function App() {
               <Route path="/drivers" element={<Drivers />} />
               <Route path="/markets" element={<Markets />} />
               <Route path="/relative-value" element={<RelativeValue />} />
+              <Route path="/stocks" element={<Stocks />} />
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/alerts" element={<Alerts />} />
               <Route path="/models" element={<Models />} />

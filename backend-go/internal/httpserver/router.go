@@ -116,6 +116,7 @@ type EconomicHandlers interface {
 type EquityHandlers interface {
 	Stocks(http.ResponseWriter, *http.Request)
 	Bars(http.ResponseWriter, *http.Request)
+	Screen(http.ResponseWriter, *http.Request)
 }
 
 // RelativeValueHandlers serves the numeraire and relative-value engine:
@@ -256,6 +257,16 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			// quietly-raw series.
 			r.Get("/api/v1/stocks", d.Equities.Stocks)
 			r.Get("/api/v1/stocks/{symbol}/bars", d.Equities.Bars)
+			// /stocks/screen is the whole roster over one window in one unit
+			// of account: a screener over twenty symbols must not be twenty
+			// bars calls, and every metric on it is arithmetic over the same
+			// adjusted series. It is registered BEFORE nothing and after
+			// nothing in particular — chi routes the static segment ahead of
+			// {symbol} on its own — and it publishes, per row, the metrics
+			// this data CANNOT support (P/E, EPS growth, ROE, dividend yield,
+			// market cap) with the real obstacle, so the page states its
+			// boundary from the API rather than from its own copy.
+			r.Get("/api/v1/stocks/screen", d.Equities.Screen)
 
 			// The numeraire and relative-value engine. /markets/numeraires is
 			// registered so a client can discover which units of account this

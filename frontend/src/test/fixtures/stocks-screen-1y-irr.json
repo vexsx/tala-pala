@@ -1,0 +1,1794 @@
+{
+  "as_of": "2026-09-10T00:00:00Z",
+  "period": "1y",
+  "from": "2025-09-10",
+  "to": "2026-09-10",
+  "numeraire": "IRR",
+  "numeraire_series": null,
+  "currency": "IRR",
+  "currency_note": "Every amount on this response — last_close, last_value, avg_value — is in RIALS (IRR), the unit TSETMC quotes. The rest of this API reports Iranian amounts in TOMAN, so a client that assumes the house convention is off by a factor of ten. price_usd and price_gold_grams are converted through the toman hub, and the divide-by-ten is applied exactly once, on the way in.",
+  "price_basis": {
+    "currency": "IRR",
+    "close_field": "final_close",
+    "last_close_adjusted": false,
+    "returns_adjusted": true,
+    "return_basis": "simple return from the first to the last covered session, computed from ADJUSTED closes (stored final_close multiplied by the cumulative corporate-action factor). Raw Tehran closes would rank by how recently each company did a capital increase: فولاد is x1.52 raw against x907.86 adjusted.",
+    "volatility_basis": "sample standard deviation of simple session-over-session returns, in percent, NOT ANNUALISED. Tehran trades Saturday to Wednesday and halts are common, so there is no single N for which sqrt(N) would be right.",
+    "drawdown_basis": "largest peak-to-trough decline over the covered sessions, as a negative percentage; 0 means the series never closed below a previous peak.",
+    "liquidity_basis": "averaged over TRADED sessions only. A halted session contributes zero to every liquidity column, and averaging those in would report lower turnover for a suspended share than for a thinly traded one.",
+    "session_basis": "one observation is one traded Tehran session; halted sessions are excluded because their final_close is the carried reference price, not a print."
+  },
+  "sort": "avg_value",
+  "order": "desc",
+  "limit": 50,
+  "sector": null,
+  "sectors": [
+    {
+      "sector_code": "13",
+      "sector_fa": "استخراج کانه های فلزی",
+      "instrument_count": 2
+    },
+    {
+      "sector_code": "23",
+      "sector_fa": "فراورده های نفتی، کک و سوخت هسته ای",
+      "instrument_count": 3
+    },
+    {
+      "sector_code": "27",
+      "sector_fa": "فلزات اساسی",
+      "instrument_count": 3
+    },
+    {
+      "sector_code": "34",
+      "sector_fa": "خودرو و ساخت قطعات",
+      "instrument_count": 3
+    },
+    {
+      "sector_code": "39",
+      "sector_fa": "شرکتهای چند رشته ای صنعتی",
+      "instrument_count": 1
+    },
+    {
+      "sector_code": "44",
+      "sector_fa": "محصولات شیمیایی",
+      "instrument_count": 2
+    },
+    {
+      "sector_code": "57",
+      "sector_fa": "بانکها و موسسات اعتباری",
+      "instrument_count": 4
+    },
+    {
+      "sector_code": "64",
+      "sector_fa": "مخابرات",
+      "instrument_count": 2
+    }
+  ],
+  "items": [
+    {
+      "symbol": "نوری",
+      "ins_code": "19040514831923530",
+      "name_fa": "پتروشیمی نوری",
+      "sector_code": "44",
+      "sector_fa": "محصولات شیمیایی",
+      "market": "bourse",
+      "board": "بازار دوم (تابلوی اصلی) بورس",
+      "last_close": 120684,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2018-11-10",
+      "bar_count": 1878,
+      "return_pct": 28.244446,
+      "return_reason": null,
+      "volatility_pct": 1.3055,
+      "volatility_reason": null,
+      "max_drawdown_pct": -27.881193,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 138395670,
+      "last_trade_count": 12787,
+      "last_value": 16702143038280,
+      "avg_volume": 92606788.651341,
+      "avg_trade_count": 12454.816092,
+      "avg_value": 9600838975257.555,
+      "liquidity_reason": null,
+      "price_usd": 0.00986960902334,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.00117416087203,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 13,
+        "reopenings": 1,
+        "worst_session_return": 0.0564924114671164,
+        "pre_listing_bars": 161,
+        "adjusted_first_bar": "2019-07-13",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 1 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "کگل",
+      "ins_code": "35700344742885862",
+      "name_fa": "معدنی و صنعتی گل گهر",
+      "sector_code": "13",
+      "sector_fa": "استخراج کانه های فلزی",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی اصلی) بورس",
+      "last_close": 24689,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2004-08-29",
+      "bar_count": 5036,
+      "return_pct": 28.564436,
+      "return_reason": null,
+      "volatility_pct": 1.299256,
+      "volatility_reason": null,
+      "max_drawdown_pct": -14.053553,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 139669951,
+      "last_trade_count": 16451,
+      "last_value": 3448311420239,
+      "avg_volume": 88534600.969349,
+      "avg_trade_count": 12583.295019,
+      "avg_value": 2027108299675.207,
+      "liquidity_reason": null,
+      "price_usd": 0.00201908104784,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.00024020464825,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 58,
+        "reopenings": 5,
+        "worst_session_return": 0.0904130943102104,
+        "adjusted_first_bar": "2004-08-29",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 5 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "همراه",
+      "ins_code": "68635710163497089",
+      "name_fa": "شرکت ارتباطات سیار ایران",
+      "sector_code": "64",
+      "sector_fa": "مخابرات",
+      "market": "bourse",
+      "board": "بازار دوم (تابلوی فرعی) بورس",
+      "last_close": 24324,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2013-08-20",
+      "bar_count": 3148,
+      "return_pct": 42.989662,
+      "return_reason": null,
+      "volatility_pct": 1.321111,
+      "volatility_reason": null,
+      "max_drawdown_pct": -9.345783,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 15623780,
+      "last_trade_count": 11647,
+      "last_value": 380032824720,
+      "avg_volume": 86852760.425287,
+      "avg_trade_count": 11496.45977,
+      "avg_value": 2007919902041.4521,
+      "liquidity_reason": null,
+      "price_usd": 0.00198923113158,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.000236653483901,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 21,
+        "reopenings": 0,
+        "worst_session_return": 0.0959216725559482,
+        "adjusted_first_bar": "2013-08-20",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "symbol": "فارس",
+      "ins_code": "25244329144808274",
+      "name_fa": "صنایع پتروشیمی خلیج فارس",
+      "sector_code": "44",
+      "sector_fa": "محصولات شیمیایی",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی فرعی) بورس",
+      "last_close": 12109,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2013-03-10",
+      "bar_count": 3253,
+      "return_pct": 19.648239,
+      "return_reason": null,
+      "volatility_pct": 1.324187,
+      "volatility_reason": null,
+      "max_drawdown_pct": -13.899555,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 125896488,
+      "last_trade_count": 3961,
+      "last_value": 1524480573192,
+      "avg_volume": 98803951.019157,
+      "avg_trade_count": 12045.360153,
+      "avg_value": 1182114403851.0537,
+      "liquidity_reason": null,
+      "price_usd": 0.000990281194389,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.000117811093429,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 22,
+        "reopenings": 0,
+        "worst_session_return": -0.0934871425138187,
+        "pre_listing_bars": 20,
+        "adjusted_first_bar": "2013-04-16",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "symbol": "فولاد",
+      "ins_code": "46348559193224090",
+      "name_fa": "فولاد مبارکه اصفهان",
+      "sector_code": "27",
+      "sector_fa": "فلزات اساسی",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی اصلی) بورس",
+      "last_close": 10143,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2007-03-11",
+      "bar_count": 4636,
+      "return_pct": 84.68749,
+      "return_reason": null,
+      "volatility_pct": 1.214708,
+      "volatility_reason": null,
+      "max_drawdown_pct": -5.729857,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 57117545,
+      "last_trade_count": 10540,
+      "last_value": 579343258935.0001,
+      "avg_volume": 92787164.444444,
+      "avg_trade_count": 11990.785441,
+      "avg_value": 779285706154.567,
+      "liquidity_reason": null,
+      "price_usd": 0.000829500549566,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000986834520314,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 31,
+        "reopenings": 1,
+        "worst_session_return": 0.123110151187905,
+        "adjusted_first_bar": "2007-03-11",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 1 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "فملی",
+      "ins_code": "35425587644337450",
+      "name_fa": "ملی‌ صنایع‌ مس‌ ایران‌",
+      "sector_code": "27",
+      "sector_fa": "فلزات اساسی",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی اصلی) بورس",
+      "last_close": 6257,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2007-02-04",
+      "bar_count": 4650,
+      "return_pct": -18.161652,
+      "return_reason": null,
+      "volatility_pct": 1.281905,
+      "volatility_reason": null,
+      "max_drawdown_pct": -21.63968,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 90462649,
+      "last_trade_count": 16574,
+      "last_value": 566024794793,
+      "avg_volume": 92892143.793103,
+      "avg_trade_count": 12169.643678,
+      "avg_value": 711893719445.1266,
+      "liquidity_reason": null,
+      "price_usd": 0.000511701167173,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000608757132368,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 31,
+        "reopenings": 0,
+        "worst_session_return": 0.136441010868142,
+        "adjusted_first_bar": "2007-02-04",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "symbol": "اخابر",
+      "ins_code": "22811176775480091",
+      "name_fa": "مخابرات ایران",
+      "sector_code": "64",
+      "sector_fa": "مخابرات",
+      "market": "bourse",
+      "board": "بازار دوم (تابلوی فرعی) بورس",
+      "last_close": 7421,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2008-08-09",
+      "bar_count": 4350,
+      "return_pct": 13.088108,
+      "return_reason": null,
+      "volatility_pct": 1.276665,
+      "volatility_reason": null,
+      "max_drawdown_pct": -22.61194,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 25510134,
+      "last_trade_count": 1514,
+      "last_value": 189310704414,
+      "avg_volume": 90509650.528736,
+      "avg_trade_count": 12017.969349,
+      "avg_value": 706710573412.0919,
+      "liquidity_reason": null,
+      "price_usd": 0.000606893776824,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000722005222838,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 22,
+        "reopenings": 2,
+        "worst_session_return": 0.119015047879617,
+        "adjusted_first_bar": "2008-08-09",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 2 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "شبندر",
+      "ins_code": "35366681030756042",
+      "name_fa": "پالایش نفت بندرعباس",
+      "sector_code": "23",
+      "sector_fa": "فراورده های نفتی، کک و سوخت هسته ای",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی اصلی) بورس",
+      "last_close": 6797,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2012-04-16",
+      "bar_count": 3470,
+      "return_pct": 16.172545,
+      "return_reason": null,
+      "volatility_pct": 1.308401,
+      "volatility_reason": null,
+      "max_drawdown_pct": -15.826836,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 58432818,
+      "last_trade_count": 17573,
+      "last_value": 397167863946,
+      "avg_volume": 91439413.62069,
+      "avg_trade_count": 12568.651341,
+      "avg_value": 635381017029.0422,
+      "liquidity_reason": null,
+      "price_usd": 0.000555862687114,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000661294906297,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 20,
+        "reopenings": 3,
+        "worst_session_return": 0.100247320692498,
+        "pre_listing_bars": 45,
+        "adjusted_first_bar": "2012-06-24",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 3 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "وپاسار",
+      "ins_code": "9536587154100457",
+      "name_fa": "بانک پاسارگاد",
+      "sector_code": "57",
+      "sector_fa": "بانکها و موسسات اعتباری",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی اصلی) بورس",
+      "last_close": 6222,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2011-08-13",
+      "bar_count": 3632,
+      "return_pct": 57.646701,
+      "return_reason": null,
+      "volatility_pct": 1.268177,
+      "volatility_reason": null,
+      "max_drawdown_pct": -9.857961,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 24493806,
+      "last_trade_count": 23057,
+      "last_value": 152400460932,
+      "avg_volume": 96039570.475096,
+      "avg_trade_count": 11401.532567,
+      "avg_value": 521694684866.98083,
+      "liquidity_reason": null,
+      "price_usd": 0.000508838846436,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.000060535190628,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 22,
+        "reopenings": 1,
+        "worst_session_return": -0.0698943061711558,
+        "pre_listing_bars": 3,
+        "adjusted_first_bar": "2011-08-16",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 1 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "شپنا",
+      "ins_code": "7745894403636165",
+      "name_fa": "پالایش نفت اصفهان",
+      "sector_code": "23",
+      "sector_fa": "فراورده های نفتی، کک و سوخت هسته ای",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی اصلی) بورس",
+      "last_close": 6619,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2008-06-29",
+      "bar_count": 4343,
+      "return_pct": 52.131542,
+      "return_reason": null,
+      "volatility_pct": 1.380964,
+      "volatility_reason": null,
+      "max_drawdown_pct": -11.935535,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-13",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 232,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 232,
+      "halted_sessions": 29,
+      "last_volume": 177917762,
+      "last_trade_count": 10482,
+      "last_value": 1177637666678.0002,
+      "avg_volume": 85613570.887931,
+      "avg_trade_count": 12229.961207,
+      "avg_value": 494922750874.97845,
+      "liquidity_reason": null,
+      "price_usd": 0.000541305741652,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000643976899335,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 27,
+        "reopenings": 3,
+        "worst_session_return": 0.123003642476884,
+        "adjusted_first_bar": "2008-06-29",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "29 of 261 stored sessions in this window were halted (no trade). They are excluded from the return, volatility, drawdown and liquidity figures, because a halted bar's final_close is the carried reference price and not a print.",
+        "this instrument's adjusted series contains 3 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "وبملت",
+      "ins_code": "778253364357513",
+      "name_fa": "بانک ملت",
+      "sector_code": "57",
+      "sector_fa": "بانکها و موسسات اعتباری",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی اصلی) بورس",
+      "last_close": 4234,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2009-02-15",
+      "bar_count": 4236,
+      "return_pct": 8.847105,
+      "return_reason": null,
+      "volatility_pct": 1.34099,
+      "volatility_reason": null,
+      "max_drawdown_pct": -19.689119,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 29498683,
+      "last_trade_count": 14599,
+      "last_value": 124897423822,
+      "avg_volume": 94281315.954023,
+      "avg_trade_count": 12477.528736,
+      "avg_value": 481879990758.8812,
+      "liquidity_reason": null,
+      "price_usd": 0.000346259028577,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000411935064479,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 25,
+        "reopenings": 2,
+        "worst_session_return": -0.0813397129186602,
+        "pre_listing_bars": 2,
+        "adjusted_first_bar": "2009-02-18",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 2 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "شتران",
+      "ins_code": "51617145873056483",
+      "name_fa": "پالایش نفت تهران",
+      "sector_code": "23",
+      "sector_fa": "فراورده های نفتی، کک و سوخت هسته ای",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی اصلی) بورس",
+      "last_close": 3945,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2016-10-27",
+      "bar_count": 2371,
+      "return_pct": 9.190248,
+      "return_reason": null,
+      "volatility_pct": 1.3273,
+      "volatility_reason": null,
+      "max_drawdown_pct": -13.215859,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 70636796,
+      "last_trade_count": 22985,
+      "last_value": 278662160220,
+      "avg_volume": 93209061.042146,
+      "avg_trade_count": 12974.97318,
+      "avg_value": 392387190216.2567,
+      "liquidity_reason": null,
+      "price_usd": 0.00032262443735,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000383817626209,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 20,
+        "reopenings": 2,
+        "worst_session_return": -0.0954460386774797,
+        "pre_listing_bars": 3,
+        "adjusted_first_bar": "2016-10-30",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 2 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "خگستر",
+      "ins_code": "48990026850202503",
+      "name_fa": "گسترش‌سرمایه‌گذاری‌ایران‌خودرو",
+      "sector_code": "34",
+      "sector_fa": "خودرو و ساخت قطعات",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی فرعی) بورس",
+      "last_close": 5345,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2006-12-23",
+      "bar_count": 4382,
+      "return_pct": 123.356066,
+      "return_reason": null,
+      "volatility_pct": 1.273806,
+      "volatility_reason": null,
+      "max_drawdown_pct": -11.664162,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 165892550,
+      "last_trade_count": 22224,
+      "last_value": 886695679750,
+      "avg_volume": 92673148.942529,
+      "avg_trade_count": 12575.091954,
+      "avg_value": 354271516978.1992,
+      "liquidity_reason": null,
+      "price_usd": 0.000437117266827,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000520026669731,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 21,
+        "reopenings": 2,
+        "worst_session_return": 0.122653316645807,
+        "adjusted_first_bar": "2006-12-23",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 2 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "وتجارت",
+      "ins_code": "63917421733088077",
+      "name_fa": "بانک تجارت",
+      "sector_code": "57",
+      "sector_fa": "بانکها و موسسات اعتباری",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی فرعی) بورس",
+      "last_close": 3584,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2009-05-05",
+      "bar_count": 4187,
+      "return_pct": 41.642164,
+      "return_reason": null,
+      "volatility_pct": 1.29511,
+      "volatility_reason": null,
+      "max_drawdown_pct": -11.175085,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 66418492,
+      "last_trade_count": 22336,
+      "last_value": 238043875328,
+      "avg_volume": 94755382.908046,
+      "avg_trade_count": 12466.819923,
+      "avg_value": 336321788651.79694,
+      "liquidity_reason": null,
+      "price_usd": 0.000293101643463,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000348695151415,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 20,
+        "reopenings": 2,
+        "worst_session_return": 0.100522193211488,
+        "pre_listing_bars": 9,
+        "adjusted_first_bar": "2009-05-18",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 2 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "وبصادر",
+      "ins_code": "28320293733348826",
+      "name_fa": "بانک صادرات ایران",
+      "sector_code": "57",
+      "sector_fa": "بانکها و موسسات اعتباری",
+      "market": "bourse",
+      "board": "بازار دوم (تابلوی فرعی) بورس",
+      "last_close": 3229,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2009-06-08",
+      "bar_count": 4163,
+      "return_pct": 41.966515,
+      "return_reason": null,
+      "volatility_pct": 1.287534,
+      "volatility_reason": null,
+      "max_drawdown_pct": -9.621993,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 46796661,
+      "last_trade_count": 5727,
+      "last_value": 151106418369,
+      "avg_volume": 88426022.678161,
+      "avg_trade_count": 12484.597701,
+      "avg_value": 270976164528.44446,
+      "liquidity_reason": null,
+      "price_usd": 0.000264069533131,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000314156429665,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 20,
+        "reopenings": 1,
+        "worst_session_return": 0.0637393767705383,
+        "pre_listing_bars": 1,
+        "adjusted_first_bar": "2009-06-09",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 1 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "خودرو",
+      "ins_code": "65883838195688438",
+      "name_fa": "ایران‌ خودرو",
+      "sector_code": "34",
+      "sector_fa": "خودرو و ساخت قطعات",
+      "market": "bourse",
+      "board": "بازار دوم (تابلوی فرعی) بورس",
+      "last_close": 2678,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2001-03-25",
+      "bar_count": 5876,
+      "return_pct": 41.873278,
+      "return_reason": null,
+      "volatility_pct": 1.321606,
+      "volatility_reason": null,
+      "max_drawdown_pct": -16.935484,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 58468079,
+      "last_trade_count": 5044,
+      "last_value": 156577515562,
+      "avg_volume": 90490909.938697,
+      "avg_trade_count": 12294.264368,
+      "avg_value": 242675675168.80844,
+      "liquidity_reason": null,
+      "price_usd": 0.000219008426672,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000260548441822,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 13,
+        "reopenings": 10,
+        "worst_session_return": -0.115232833464878,
+        "adjusted_first_bar": "2001-03-25",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 10 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "شستا",
+      "ins_code": "2400322364771558",
+      "name_fa": "سرمایه گذاری تامین اجتماعی",
+      "sector_code": "39",
+      "sector_fa": "شرکتهای چند رشته ای صنعتی",
+      "market": "bourse",
+      "board": "بازار اول (تابلوی فرعی) بورس",
+      "last_close": 1730,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2020-04-13",
+      "bar_count": 1537,
+      "return_pct": 13.74096,
+      "return_reason": null,
+      "volatility_pct": 1.317979,
+      "volatility_reason": null,
+      "max_drawdown_pct": -21.873484,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 145747574,
+      "last_trade_count": 14287,
+      "last_value": 252143303020,
+      "avg_volume": 91293404.360153,
+      "avg_trade_count": 13009.130268,
+      "avg_value": 177126473618.16092,
+      "liquidity_reason": null,
+      "price_usd": 0.000141480424997,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000168315460923,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 10,
+        "reopenings": 0,
+        "worst_session_return": 0.0603371783496007,
+        "pre_listing_bars": 2,
+        "adjusted_first_bar": "2020-04-15",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "symbol": "خساپا",
+      "ins_code": "44891482026867833",
+      "name_fa": "سایپا",
+      "sector_code": "34",
+      "sector_fa": "خودرو و ساخت قطعات",
+      "market": "bourse",
+      "board": "بازار دوم (تابلوی فرعی) بورس",
+      "last_close": 2086,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2026-09-09",
+      "last_bar": "2026-09-09",
+      "first_bar": "2001-05-06",
+      "bar_count": 5796,
+      "return_pct": 47.591555,
+      "return_reason": null,
+      "volatility_pct": 1.281139,
+      "volatility_reason": null,
+      "max_drawdown_pct": -9.636564,
+      "max_drawdown_reason": null,
+      "metrics_from": "2025-09-10",
+      "metrics_to": "2026-09-09",
+      "metrics_observations": 261,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 261,
+      "halted_sessions": 0,
+      "last_volume": 57650124,
+      "last_trade_count": 21791,
+      "last_value": 120258158664,
+      "avg_volume": 92605527.501916,
+      "avg_trade_count": 12415.210728,
+      "avg_value": 174360030825.5939,
+      "liquidity_reason": null,
+      "price_usd": 0.000170594315922,
+      "price_usd_rate_date": "2026-09-09",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000202951474847,
+      "price_gold_grams_rate_date": "2026-09-09",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 9,
+        "reopenings": 9,
+        "worst_session_return": 0.115579009959863,
+        "adjusted_first_bar": "2001-05-06",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "this instrument's adjusted series contains 9 reopening auction(s) whose move exceeds a normal session's price limit; the exchange lifts the limit when an instrument resumes after a suspension, so a session return spanning one of those days is not a session return."
+      ]
+    },
+    {
+      "symbol": "ذوب",
+      "ins_code": "71483646978964608",
+      "name_fa": "ذوب آهن اصفهان",
+      "sector_code": "27",
+      "sector_fa": "فلزات اساسی",
+      "market": "bourse",
+      "board": "بازار دوم (تابلوی فرعی) بورس",
+      "last_close": 2282,
+      "last_close_basis": "raw final_close (TSE's official قیمت پایانی), in rials, unadjusted",
+      "last_trade_date": "2025-09-15",
+      "last_bar": "2026-09-09",
+      "first_bar": "2021-12-15",
+      "bar_count": 1132,
+      "return_pct": null,
+      "return_reason": "a return needs a start and an end, and this window covers 1 session(s) of this instrument",
+      "volatility_pct": null,
+      "volatility_reason": "a sample standard deviation needs at least two session returns and this window has 0; a single return carries no information about dispersion at all, and 0.00 would read as \"this share did not move\"",
+      "max_drawdown_pct": null,
+      "max_drawdown_reason": "a drawdown needs a peak and a trough, and this window covers 1 session(s) of this instrument",
+      "metrics_from": "2025-09-15",
+      "metrics_to": "2025-09-15",
+      "metrics_observations": 1,
+      "metrics_numeraire": "IRR",
+      "sessions_in_period": 261,
+      "traded_sessions": 1,
+      "halted_sessions": 260,
+      "last_volume": 25507950,
+      "last_trade_count": 6024,
+      "last_value": 58209141900,
+      "avg_volume": 25507950,
+      "avg_trade_count": 6024,
+      "avg_value": 58209141900,
+      "liquidity_reason": null,
+      "price_usd": 0.000231132142358,
+      "price_usd_rate_date": "2025-09-15",
+      "price_usd_carried_forward": false,
+      "price_usd_reason": null,
+      "price_gold_grams": 0.0000282303492584,
+      "price_gold_grams_rate_date": "2025-09-15",
+      "price_gold_grams_carried_forward": false,
+      "price_gold_grams_reason": null,
+      "adjustment": {
+        "version": "priceYesterday-chain-v1",
+        "status": "validated",
+        "actions_applied": 3,
+        "reopenings": 0,
+        "worst_session_return": 0.0579064587973275,
+        "pre_listing_bars": 7,
+        "adjusted_first_bar": "2021-12-26",
+        "computed_at": "2026-09-10T08:58:52Z",
+        "adjusted_servable": true
+      },
+      "conversion": null,
+      "absent_metrics": [
+        {
+          "metric": "pe_ratio",
+          "label": "P/E",
+          "reason": "A price/earnings ratio needs earnings, and this deployment ingests no financial statements: Codal publishes no XBRL (verified false on 160 of 160 sampled filings) and its \"Excel\" export is HTML tables, while fipiran — the one source shaped like a normalised fundamentals API — returns TotalStockholderEquity 100% empty and mis-keys its symbol filter. TSETMC does publish a per-instrument estimatedEPS (518 for فولاد) and a sectorPE, and this endpoint deliberately does NOT surface them: it is one undated trailing scalar with no basis flag and no history, and mandatory company EPS guidance was discontinued around FY1396, nine years ago. A column headed P/E beside measured metrics would read as a fundamental ratio. If a later increment ingests it, it needs its own basis label, exactly as cost_basis and confidence_basis do elsewhere in this API.",
+          "requires": "audited earnings per share, with a stated basis and a period"
+        },
+        {
+          "metric": "eps_growth",
+          "label": "EPS growth",
+          "reason": "Earnings growth needs a HISTORY of earnings, which needs statements parsed per period. Codal publishes no XBRL, and its chart of accounts differs by sector — a bank has no gross-profit concept — so there is not even one schema to parse into. That is a three-to-six-month ingestion project, not a column.",
+          "requires": "a per-period history of audited earnings"
+        },
+        {
+          "metric": "roe",
+          "label": "ROE",
+          "reason": "Return on equity needs net income and shareholders' equity. fipiran returns TotalStockholderEquity 100% empty across the sampled roster, so the one normalised-looking source supplies neither leg, and Codal's filings would have to be parsed out of HTML tables per sector-specific chart of accounts.",
+          "requires": "net income and shareholders' equity, per period"
+        },
+        {
+          "metric": "dividend_yield",
+          "label": "Dividend yield",
+          "reason": "A dividend yield needs the dividend per share approved at each annual general meeting. Those live in Codal filings as HTML tables with no XBRL, and no dividend history is ingested here. corporate_actions records the PRICE effect of a distribution as an adjustment factor, which is a different number and cannot be divided by a price to produce a yield.",
+          "requires": "the DPS approved at each annual general meeting"
+        },
+        {
+          "metric": "market_cap",
+          "label": "Market cap",
+          "reason": "Market capitalisation needs shares outstanding, which this increment does not ingest. It is deliberately not derived from anything else, and the column is absent with this reason rather than present and empty — an empty column with no reason is indistinguishable from a company that has no market cap.",
+          "requires": "shares outstanding (TSETMC's zTitad)"
+        }
+      ],
+      "notes": [
+        "the last stored session (2026-09-09) is later than the last TRADED session (2025-09-15): this instrument is currently halted, and last_close is the last real print rather than the carried reference price.",
+        "260 of 261 stored sessions in this window were halted (no trade). They are excluded from the return, volatility, drawdown and liquidity figures, because a halted bar's final_close is the carried reference price and not a print."
+      ]
+    }
+  ],
+  "count": 19,
+  "matched": 19,
+  "truncated": false,
+  "excluded": [
+    {
+      "symbol": "کچاد",
+      "ins_code": "18027801615184692",
+      "name_fa": "معدنی‌وصنعتی‌چادرملو",
+      "sector_code": "13",
+      "sector_fa": "استخراج کانه های فلزی",
+      "reason_code": "disabled",
+      "reason": "کچاد is disabled in the roster, so it is not screened. The instrument's own `notes` record the measurement behind that decision. Its adjustment verdict is \"never_ingested\".",
+      "enabled": false,
+      "bar_count": 0,
+      "notes": "SEEDED DISABLED, deliberately, and this is the measurement rather than a policy: 5,304 bars, 47 actions, and the adjusted series still contains -60.4% on 2007-01-09 and +152.7% on 2007-01-10. That is not a missed corporate action — a single block trade of 227,000,010 shares in two transactions set the official closing price to 5,576 against a market of ~14,090, and it recovered the next session. The gate refuses the symbol either way, because a gate that exempts the one series it cannot explain is not a gate. Enable it when the closing-price artefact is handled explicitly.",
+      "adjustment": {
+        "version": "",
+        "status": "never_ingested",
+        "actions_applied": 0,
+        "reopenings": 0,
+        "adjusted_servable": false
+      }
+    }
+  ],
+  "excluded_count": 1,
+  "excluded_note": "Roster symbols in the requested universe that could NOT be screened, with why. items + excluded is the whole universe: a screen whose omissions cannot be reconstructed from its own response quietly decides what a reader may consider.",
+  "warnings": [
+    "1 roster symbol(s) are not screened; `excluded` names each one and why.",
+    "P/E, EPS growth, ROE, dividend yield and market cap are NOT computable from what this deployment ingests. Every row's `absent_metrics` names each one with the real obstacle, so a page can state its boundary from this API rather than from its own copy."
+  ]
+}
