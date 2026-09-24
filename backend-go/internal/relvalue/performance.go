@@ -234,6 +234,11 @@ type performanceInputs struct {
 	// cost-of-living comparison is period-to-period within one publisher and
 	// never needs the daily anchoring the asset rows do.
 	Components map[string][]economic.Observation
+	// EquityExcluded names every Tehran instrument kept OUT of the table and
+	// why. Carried to the reader rather than logged: "nineteen instruments,
+	// one excluded because its adjustment was refused" is a different and more
+	// trustworthy statement than a table that silently holds eighteen.
+	EquityExcluded []equityExclusion
 	// CPIProvenance is nil when this deployment carries no CPI series at all.
 	CPIProvenance *economic.SeriesProvenance
 	CPIError      string
@@ -646,6 +651,10 @@ func buildPerformanceResponse(in performanceInputs) performanceResponse {
 			"Excluded as disabled in the instrument registry: %s.", strings.Join(disabled, ", ")))
 	}
 
+	for _, ex := range in.EquityExcluded {
+		out.Warnings = append(out.Warnings, ex.Reason)
+	}
+
 	// period=max has no caller-supplied lower bound; the window actually served
 	// starts at the earliest day any surviving item could be converted on.
 	if in.Query.Window.From != nil {
@@ -767,6 +776,13 @@ func priceableSymbols(instruments []instrumentRow) []string {
 		if !inst.Enabled || isRateQuote(inst.QuoteCurrency) {
 			continue
 		}
+		// An instrument whose prices live elsewhere must not be asked of the
+		// prices table. Today that returns nothing and is merely wasteful;
+		// the day a Persian trading symbol collides with a code in `prices`
+		// it would return the WRONG series, silently.
+		if inst.Source != "" {
+			continue
+		}
 		if inst.QuoteCurrency == quoteIRT || inst.QuoteCurrency == quoteUSD {
 			add(inst.Code)
 		}
@@ -815,6 +831,31 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 		httpserver.Internal(w, "database error")
 		return
 	}
+
+	// Tehran equities, which live in equity_bars rather than in `prices`. They
+	// are appended to the registry rather than replacing anything: the point of
+	// this table is that gold, the dollar and فولاد are measured the same way,
+	// in the same unit, over the same window, by the same code. See equities.go
+	// for the rial→toman division and the adjustment gate.
+	equityInstruments, equityExcluded, err := h.loadEquityInstruments(ctx)
+	if err != nil {
+		h.Log.Error("performance_equity_instruments", "error", err)
+		httpserver.Internal(w, "database error")
+		return
+	}
+	if len(equityInstruments) > 0 {
+		equitySeries, err := h.loadEquitySeries(ctx, now)
+		if err != nil {
+			h.Log.Error("performance_equity_series", "error", err)
+			httpserver.Internal(w, "database error")
+			return
+		}
+		for code, pts := range equitySeries {
+			series[code] = pts
+		}
+		instruments = append(instruments, equityInstruments...)
+		sortInstruments(instruments)
+	}
 	if q.Numeraire.Series != "" && len(series[q.Numeraire.Series]) == 0 {
 		unbackedNumeraire(w, q.Numeraire)
 		return
@@ -822,9 +863,10 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 
 	in := performanceInputs{
 		Query:       q,
-		Instruments: instruments,
-		Series:      series,
-		AsOf:        now,
+		Instruments:    instruments,
+		Series:         series,
+		EquityExcluded: equityExcluded,
+		AsOf:           now,
 	}
 	// The CPI is read through internal/economic's exported point-in-time rule,
 	// never re-implemented here. Its absence is a degraded response (real

@@ -32,6 +32,13 @@ type instrumentRow struct {
 	IsDerived     bool
 	Enabled       bool
 	Notes         string
+	// Source names the table this instrument's prices come from. Empty means
+	// `prices`, which is every row the registry itself returns. Tehran
+	// equities are synthesised from equity_instruments (see equities.go) and
+	// carry sourceEquityBars, so performanceSeriesCodes does not ask the
+	// prices table for a symbol it has never held -- that would be a harmless
+	// empty result today and a silently wrong one the moment a code collides.
+	Source string
 }
 
 const instrumentSelect = `
