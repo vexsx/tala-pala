@@ -59,10 +59,17 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Iterable, Optional
 
 import openpyxl
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.engine import Engine
 
-from ..db import ensure_utc, insert_ignore, source_documents, utcnow
+from ..db import (
+    economic_observations,
+    economic_series,
+    ensure_utc,
+    insert_ignore,
+    source_documents,
+    utcnow,
+)
 from .catalog import SCI_PROVIDER, SCI_SHEET, sci_specs
 from .store import (
     STATUS_INSERTED,
@@ -97,6 +104,20 @@ SCI_STATISTICS_URL = "https://amar.org.ir/Portals/0/Statistics/"
 
 class SciParseError(ValueError):
     """The workbook is not the shape this parser was written for."""
+
+
+class SciStaleWorkbookError(ValueError):
+    """The workbook predates one already ingested, so it would rewrite history.
+
+    ``available_at`` is the moment THIS system had the file in hand, which is
+    correct for point-in-time reads and is also why it cannot catch this: a
+    workbook from Tir ingested today is stamped with today, sails past
+    :func:`app.economic.store.record_observation`'s monotonicity guard, and its
+    OLDER values are written as the newest vintage — becoming the answer every
+    reader gets.
+
+    The publisher's own date, carried in the filename, is what detects it.
+    """
 
 
 # --- Jalali <-> Gregorian ----------------------------------------------------
@@ -231,6 +252,25 @@ class SciObservation:
     ref_period_start: date
     ref_period_end: date
     value: float
+
+
+def newest_published_at(engine: Engine) -> Optional[datetime]:
+    """The newest publication date already stored for any SCI series.
+
+    Read across all four series rather than per series: they arrive in ONE
+    workbook, so a single publication date covers them and a per-series answer
+    could only differ if a previous ingest had partly failed -- in which case
+    the newest of them is still the right thing to compare against.
+    """
+    codes = [spec.code for spec in sci_specs()]
+    with engine.connect() as conn:
+        return conn.execute(
+            select(func.max(economic_observations.c.published_at)).where(
+                economic_observations.c.series_id.in_(
+                    select(economic_series.c.id).where(economic_series.c.code.in_(codes))
+                )
+            )
+        ).scalar()
 
 
 def published_at_from_filename(name: str) -> Optional[date]:
@@ -507,6 +547,7 @@ def ingest_sci_cpi(
     filename: str = "",
     url: str = "",
     now: Optional[datetime] = None,
+    allow_older: bool = False,
 ) -> dict[str, Any]:
     """Ingest one SCI urban-CPI workbook from disk.
 
@@ -551,6 +592,35 @@ def ingest_sci_cpi(
         if published_date is not None
         else None
     )
+
+    # REFUSE A WORKBOOK OLDER THAN ONE ALREADY INGESTED.
+    #
+    # available_at is the moment THIS system had the file, which is the right
+    # stamp for point-in-time reads and is exactly why it cannot catch this: a
+    # Tir workbook ingested today is stamped today, passes
+    # record_observation's monotonicity guard, and writes its OLDER values as
+    # the newest vintage -- which is then the answer every reader gets. The
+    # values do not look wrong, the counts do not look wrong, and the series
+    # has quietly moved backwards.
+    #
+    # The publisher's own date is what detects it. Refused rather than warned,
+    # because the write is the damage and a warning arrives after it; and
+    # refused WHOLE rather than per observation, because a workbook is one
+    # document and a wholesale regression means someone pointed the script at
+    # an old file. `allow_older` exists for the deliberate case and must be
+    # asked for.
+    if published_at is not None and not allow_older:
+        newest = newest_published_at(engine)
+        if newest is not None and published_at < ensure_utc(newest):
+            raise SciStaleWorkbookError(
+                f"{name!r} was published {published_at.date()}, but this deployment "
+                f"already holds SCI observations published {ensure_utc(newest).date()}. "
+                "Ingesting it would write older values as the newest vintage and they "
+                "would become the answer every reader gets -- available_at cannot "
+                "prevent that, because it records when THIS system saw the file, not "
+                "when SCI published it. Fetch the current workbook, or pass "
+                "allow_older=True if replaying deliberately."
+            )
     # The instant this system had the file in hand: the first moment it could
     # have known ANY value in it, and therefore the availability stamp for all
     # of them. Not the moment SCI published, which is `published_at` above and

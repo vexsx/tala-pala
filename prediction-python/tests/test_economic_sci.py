@@ -15,7 +15,7 @@ also the shape :func:`app.economic.sci.parse_workbook` takes.
 from __future__ import annotations
 
 import hashlib
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 
 import openpyxl
 import pytest
@@ -34,6 +34,7 @@ from app.economic.sci import (
     SHEET,
     TARGETS,
     SciParseError,
+    SciStaleWorkbookError,
     ingest_sci_cpi,
     is_incomplete_month,
     jalali_month_span,
@@ -718,3 +719,148 @@ def test_the_polled_ingest_reports_sci_without_attempting_a_fetch(engine, settin
         assert conn.execute(
             select(func.count()).select_from(economic_observations)
         ).scalar() == 0
+
+
+# --- an older workbook must not rewrite history ------------------------------
+#
+# available_at records when THIS system had the file, which is correct for
+# point-in-time reads and is exactly why it cannot catch a replay: a Tir
+# workbook ingested today is stamped today, passes record_observation's
+# monotonicity guard, and writes its OLDER values as the newest vintage. The
+# values look fine, the counts look fine, and the series has moved backwards.
+
+
+# The Tir 1405 edition: an earlier reference period AND an earlier publication
+# stamp in the filename, which is the only signal that distinguishes it.
+OLDER_FILENAME = "ts_urban_140504-14050518165804.xlsx"
+
+
+def test_an_older_workbook_is_refused_after_a_newer_one(engine, ingested):
+    with pytest.raises(SciStaleWorkbookError) as excinfo:
+        ingest_sci_cpi(
+            engine, FIXTURE, filename=OLDER_FILENAME, now=SECOND_INGEST
+        )
+    message = str(excinfo.value)
+    # The refusal must name BOTH dates: an operator needs to know which file
+    # they are holding and which one the deployment already has. 1405/05/18 is
+    # 2026-08-09 and 1405/06/18 is 2026-09-09, a month apart, which is the
+    # SCI release cadence.
+    assert "2026-08-09" in message, f"the incoming file's date is missing: {message}"
+    assert "2026-09-09" in message, f"the stored date is missing: {message}"
+    assert "already holds" in message
+    # And must say why available_at could not have caught it, or the next
+    # person will "fix" this by trusting that field.
+    assert "available_at cannot" in message
+
+
+def test_the_refusal_writes_nothing_at_all(engine, ingested):
+    before = _stored(engine, "SCI_CPI_URBAN")
+    with pytest.raises(SciStaleWorkbookError):
+        ingest_sci_cpi(
+            engine, FIXTURE, filename=OLDER_FILENAME, now=SECOND_INGEST
+        )
+    after = _stored(engine, "SCI_CPI_URBAN")
+    assert after == before, (
+        "a refused workbook must leave the database exactly as it was: the "
+        "whole point is that the write is the damage"
+    )
+
+
+def test_the_same_workbook_is_still_idempotent(engine, ingested):
+    """The guard compares STRICTLY older, so a re-post of the current file
+    still runs and still writes nothing."""
+    again = ingest_sci_cpi(
+        engine, FIXTURE, filename=REAL_FILENAME, now=SECOND_INGEST
+    )
+    assert again["inserted"] == 0
+    assert again["revised"] == 0
+    assert again["unchanged"] == 4 * OBSERVATIONS_PER_SERIES
+
+
+def test_a_deliberate_replay_is_possible_but_must_be_asked_for(engine, ingested):
+    replayed = ingest_sci_cpi(
+        engine,
+        FIXTURE,
+        filename=OLDER_FILENAME,
+        now=SECOND_INGEST,
+        allow_older=True,
+    )
+    # Same values, so nothing is written even when allowed -- the escape hatch
+    # opens the door, it does not manufacture a revision.
+    assert replayed["inserted"] == 0
+    assert replayed["revised"] == 0
+
+
+def test_a_first_ingest_is_never_refused(engine):
+    """Nothing stored yet means nothing to regress against."""
+    report = ingest_sci_cpi(
+        engine, FIXTURE, filename=OLDER_FILENAME, now=FIRST_INGEST
+    )
+    assert report["inserted"] == 4 * OBSERVATIONS_PER_SERIES
+
+
+def test_the_hazard_the_guard_exists_for_is_real(engine, ingested):
+    """Without the filename check, an older publication WINS.
+
+    This is the mechanism, exercised directly on record_observation rather than
+    inferred: available_at is the ingest instant and therefore always moves
+    forward, so the monotonicity rule never objects to a replay. A value that
+    the publisher released EARLIER, ingested later, becomes the newest vintage
+    and is what every reader is then served.
+
+    Asserted here so that if anyone ever "simplifies" the guard away, this test
+    says exactly what breaks.
+    """
+    from app.economic.store import record_observation
+
+    with engine.connect() as conn:
+        series_id = conn.execute(
+            select(economic_series.c.id).where(
+                economic_series.c.code == "SCI_CPI_URBAN"
+            )
+        ).scalar_one()
+
+    period_start, period_end = jalali_month_span(1405, 5)
+    stored = _stored(engine, "SCI_CPI_URBAN")[-1]
+    assert stored["ref_period_start"] == period_start
+
+    # A value SCI published a month EARLIER, handed to the store a day LATER.
+    written = record_observation(
+        engine,
+        series_id,
+        ref_period_start=period_start,
+        ref_period_end=period_end,
+        ref_period_label="1405-05",
+        value=float(stored["value"]) - 25.0,
+        available_at=FIRST_INGEST + timedelta(days=1),
+        published_at=datetime(2026, 8, 9, tzinfo=timezone.utc),
+        is_projection=False,
+        source_document_id=stored["source_document_id"],
+        collected_at=FIRST_INGEST + timedelta(days=1),
+    )
+    assert written.status == "revised", (
+        "the monotonicity rule does not object: available_at moved forward, "
+        "which is all it checks"
+    )
+
+    served = point_in_time(
+        engine, "SCI_CPI_URBAN", as_of=datetime(2026, 9, 20, tzinfo=timezone.utc)
+    )
+    assert round(served.observations[-1].value, 2) == round(
+        float(stored["value"]) - 25.0, 2
+    ), "the older publication is now the answer — this is what the guard prevents"
+
+
+def test_the_endpoint_answers_409_for_a_stale_workbook(client, engine, ingested):
+    """409 and not 400: the request is well formed and the file is a valid
+    workbook. It conflicts with what is already stored, which is a different
+    failure and gets a different code."""
+    response = client.post(
+        "/internal/economic/sci-cpi",
+        headers=AUTH,
+        json={"path": FIXTURE, "filename": OLDER_FILENAME},
+    )
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["error"]["code"] == "stale_workbook"
+    assert "already holds" in body["error"]["message"]

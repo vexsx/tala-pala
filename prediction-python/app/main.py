@@ -473,12 +473,31 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
         equal to what is stored; a workbook whose values differ writes new
         vintages beside the prints they revise, never over them.
         """
-        from .economic.sci import SciParseError, ingest_sci_cpi
+        from .economic.sci import (
+            SciParseError,
+            SciStaleWorkbookError,
+            ingest_sci_cpi,
+        )
 
         try:
             report = ingest_sci_cpi(
                 engine, body.path, filename=body.filename, url=body.url
             )
+        except SciStaleWorkbookError as exc:
+            # 409, not 400: the request is perfectly well formed and the file is
+            # a valid workbook. It CONFLICTS with what is already stored, which
+            # is a different thing and deserves a different code.
+            #
+            # An explicit branch rather than letting it fall through to the
+            # ValueError case below, where it would land only by the accident
+            # of SciStaleWorkbookError subclassing ValueError and of this
+            # ordering. The provider's health is deliberately untouched: SCI
+            # published nothing wrong, someone pointed the script at an old
+            # file.
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"code": "stale_workbook", "message": str(exc)}},
+            )  # type: ignore[return-value]
         except SciParseError as exc:
             # A statement about the DOCUMENT: the layout or the base changed
             # under us, which is the provider's doing and belongs on its health
