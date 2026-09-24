@@ -22,7 +22,8 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `GET /market/indicators?days` | SMA/EMA/RSI/MACD/Bollinger/ATR/momentum/ROC/volatility/support/resistance |
 | `GET /market/provider-gap?symbol&window_minutes&history_days` | Dispersion between providers quoting the same symbol (current per-provider quotes, gap %, daily gap history) |
 | `GET /market/candles?symbol&interval&days` | OHLC candles + chart-ready overlays (SMA/Bollinger/Ichimoku/SuperTrend/PSAR) + pivot levels for the Trade panel |
-| `GET /stocks?enabled&sector` | Tehran equity roster: coverage per symbol plus its corporate-action adjustment verdict (`validated` / `refused` / `never_ingested`) |
+| `GET /stocks?enabled&sector` | Tehran equity roster: coverage per symbol plus its corporate-action adjustment verdict (`validated` / `refused` / `never_ingested`). Carries a top-level `data_age` block — see below |
+| `GET /stocks/screen?period&numeraire&sector&sort&order&limit` | Screener over the roster: return, volatility, max drawdown and liquidity per instrument from **adjusted** closes, in **rial**, with `excluded` naming every roster symbol that could not be screened and why. Carries a top-level `data_age` block — see below |
 | `GET /stocks/{symbol}/bars?adjusted&from&to&limit` | Daily OHLCV in **rial**. `adjusted` defaults to **true**; every response states the `adjustment_version` and how many actions were applied. An adjusted read of a symbol whose adjustment failed validation is `409`, never a quietly-raw series |
 | `GET /market/funds` | TSE gold-fund stats: prices, volume, retail buy/sell % (latest + today's averages), buyer power, retail net-flow history |
 | `GET /predictions?symbol` · `GET /predictions/{horizon}?symbol` | Latest per horizon · history incl. actuals (symbol: IR_GOLD_18K default, XAUUSD) |
@@ -35,6 +36,43 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `POST /admin/jobs/{collect\|train\|predict\|signals\|backtest\|evaluate}` | Manual job triggers (proxied to the prediction service) |
 | `GET /admin/audit` | Audit log |
 | `GET/POST /admin/users` · `PUT/DELETE /admin/users/{id}` | Full user management (list/create/change role/reset password/delete; self-registration is closed) |
+
+## Equity data age (`data_age`)
+
+`GET /stocks` and `GET /stocks/screen` both carry a top-level `data_age` block.
+Tehran equity bars are a **manually refreshed** dataset — `cdn.tsetmc.com` is
+unreachable from the production host, so bars arrive only when an operator runs
+`make refresh-equities` from a network that can reach it (docs/deployment.md).
+
+```json
+"data_age": {
+  "newest_trade_date": "2026-09-09",
+  "age_days": 15,
+  "as_of": "2026-09-24",
+  "stale": true,
+  "stale_after_days": 10,
+  "refresh_command": "make refresh-equities",
+  "warning": "These prices are 15 days old: the newest stored Tehran session is 2026-09-09 and today is 2026-09-24. …",
+  "note": "Tehran equity bars do not refresh themselves: …"
+}
+```
+
+* `age_days` is measured against **today**, not against the response's `to`
+  bound: it describes the dataset, so a caller asking for a historical window
+  still learns where the underlying data stops.
+* `newest_trade_date` and `age_days` are `null` — never `0` — when the roster
+  holds no bars at all. A zero would read as "collected today".
+* `stale` is `age_days > stale_after_days`, exposed as a flag so a client
+  renders a banner without reimplementing the bound and drifting from it. The
+  same 10-day bound drives the `EquityBarsStale` alert.
+* `warning` is present whenever these prices must not be read as current, and
+  names the command that fixes it. On the screener it is also appended to
+  `warnings`, so a client already rendering that list needs no change.
+
+The age is on the payload rather than left for the client to derive from
+`last_trade_date`, because a client that never does the subtraction is exactly
+the one that renders a fortnight-old price under today's heading — which is
+what this endpoint did for fifteen days in September 2026.
 
 ## Example
 

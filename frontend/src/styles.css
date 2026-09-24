@@ -2954,6 +2954,43 @@ input[type='checkbox'] {
   margin-bottom: 4px;
 }
 
+/* The data-age notice. Sized up rather than tinted a new colour: it is the one
+   block on this page that must be read before the table under it, and it is
+   absent entirely whenever the store is current. */
+.stk-dataage {
+  line-height: 1.6;
+  max-width: 78ch;
+  margin: 10px 0 2px;
+  padding: 12px 16px;
+}
+
+.stk-dataage-head {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.stk-dataage-fact,
+.stk-dataage-warning {
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.stk-dataage-fact strong {
+  white-space: nowrap;
+}
+
+.stk-dataage-note {
+  line-height: 1.55;
+}
+
+/* In the card header, beside the window it qualifies. */
+.stk-dataage-inline {
+  color: var(--warn);
+  font-weight: 600;
+}
+
 .stk-currency {
   line-height: 1.55;
 }

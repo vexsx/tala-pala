@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import Stocks from '../pages/Stocks'
+import Stocks, { DataAgeNotice } from '../pages/Stocks'
 import { SettingsProvider } from '../lib/settings'
 // The page's own source. Two rules on this screen are properties of the FILE
 // rather than of any one render — that it never applies the toman→rial ×10 to
@@ -9,7 +9,7 @@ import { SettingsProvider } from '../lib/settings'
 // quietly drift back.
 import stocksSource from '../pages/Stocks.tsx?raw'
 import appSource from '../App.tsx?raw'
-import type { StockScreenResponse } from '../api/types'
+import type { StockDataAge, StockScreenResponse } from '../api/types'
 
 // The fixtures are emitted by backend-go/internal/equities' own
 // buildScreenResponse + encoding/json over roster metadata captured from
@@ -20,10 +20,23 @@ import type { StockScreenResponse } from '../api/types'
 import screen1yIrr from './fixtures/stocks-screen-1y-irr.json'
 import screen3mUsd from './fixtures/stocks-screen-3m-usd.json'
 import screenNoGold from './fixtures/stocks-screen-1y-nogold.json'
+// The same endpoint on 2026-09-24, the day production was measured with its
+// newest stored session fifteen days behind. Built by the same buildScreenResponse
+// with the clock moved, so its `data_age`, its window and its rows agree the way
+// only the server can make them agree.
+import screenStale from './fixtures/stocks-screen-1y-irr-stale.json'
+// Two data_age states no screener payload can carry: a deployment with no bars
+// at all has no rows to put them beside, and a bar dated after today is a fault
+// no captured response contains. Both are whole blocks out of buildDataAge.
+import dataAgeEmptyRoster from './fixtures/stocks-data-age-empty-roster.json'
+import dataAgeFutureDated from './fixtures/stocks-data-age-future-dated.json'
 
 const IRR = screen1yIrr as unknown as StockScreenResponse
 const USD = screen3mUsd as unknown as StockScreenResponse
 const NO_GOLD = screenNoGold as unknown as StockScreenResponse
+const STALE = screenStale as unknown as StockScreenResponse
+const NO_BARS = dataAgeEmptyRoster as unknown as StockDataAge
+const FUTURE_DATED = dataAgeFutureDated as unknown as StockDataAge
 
 vi.mock('../api/client', () => ({
   api: vi.fn(() => new Promise(() => undefined)),
@@ -86,6 +99,18 @@ describe('Stocks — the fixtures describe a payload the server can emit', () =>
     expect(IRR.excluded_count).toBe(1)
     expect(IRR.excluded[0].symbol).toBe('کچاد')
     expect(IRR.currency).toBe('IRR')
+  })
+
+  it('carries the freshness block the endpoint publishes, and it says fresh', () => {
+    // Captured on 2026-09-10 with the newest stored session on 2026-09-09: one
+    // day, well inside the bound, so the API attaches no warning and there is
+    // nothing for the page to say.
+    for (const payload of [IRR, USD, NO_GOLD]) {
+      expect(payload.data_age.newest_trade_date).toBe('2026-09-09')
+      expect(payload.data_age.age_days).toBe(1)
+      expect(payload.data_age.stale).toBe(false)
+      expect(payload.data_age.warning).toBeUndefined()
+    }
   })
 
   it('pairs every null figure with a non-empty reason, as the contract requires', () => {
@@ -474,5 +499,153 @@ describe('Stocks — a null must never render as a measurement', () => {
     expect(gold.disabled).toBe(true)
     expect(gold.title.length).toBeGreaterThan(0)
     expect(Array.from(menu.options).find((o) => o.value === 'IRR')!.disabled).toBe(false)
+  })
+})
+
+// --- how old the prices are --------------------------------------------------
+//
+// The defect these cover is not a crash. For fifteen days this endpoint answered
+// every request with a `to` of the current date, a heading of "1 YEAR" and
+// prices from a fortnight earlier, and the only reason anyone knew was that a
+// human went looking. The window and the per-row last trade date were both
+// already on the page and were not enough.
+
+describe('Stocks — the stale fixture is a state the server can actually be in', () => {
+  it('is the 2026-09-24 measurement: window ending today over data that stops 15 days back', () => {
+    const age = STALE.data_age
+    expect(age.newest_trade_date).toBe('2026-09-09')
+    expect(age.age_days).toBe(15)
+    expect(age.stale).toBe(true)
+    expect(age.age_days as number).toBeGreaterThan(age.stale_after_days)
+
+    // The block is measured over the same universe the table is drawn from: a
+    // freshness figure taken from somewhere other than these rows would be the
+    // invention this fixture directory exists to keep out.
+    const newestRow = STALE.items
+      .map((i) => i.last_bar)
+      .filter((d): d is string => typeof d === 'string')
+      .sort()
+      .pop()
+    expect(age.newest_trade_date).toBe(newestRow)
+
+    // And the window still ends today. That is the whole problem, in two fields.
+    expect(STALE.to).toBe(age.as_of)
+    expect(STALE.to > (age.newest_trade_date as string)).toBe(true)
+
+    // The backend puts the same sentence in `warnings` so a client that renders
+    // that list is covered with no change at all.
+    expect(STALE.warnings).toContain(age.warning)
+  })
+})
+
+describe('Stocks — the age of the data is on the page when it matters', () => {
+  it('names the newest stored session and its age, from the payload', async () => {
+    window.localStorage.setItem('igp_calendar', 'gregorian')
+    await renderPage(STALE)
+
+    const notice = screen.getByTestId('stk-data-age')
+    expect(within(notice).getByTestId('stk-data-age-date')).toHaveTextContent('2026-09-09')
+    expect(within(notice).getByTestId('stk-data-age-days')).toHaveTextContent('15 days old')
+  })
+
+  it('says these are the freshest prices STORED, not the freshest that exist', async () => {
+    await renderPage(STALE)
+
+    const notice = screen.getByTestId('stk-data-age')
+    expect(notice.textContent).toMatch(/freshest Tehran prices/i)
+    expect(notice.textContent).toMatch(/not the freshest that exist/i)
+  })
+
+  it('carries the API’s own account and the command that fixes it', async () => {
+    await renderPage(STALE)
+
+    const notice = screen.getByTestId('stk-data-age')
+    // Not a sentence of this page's own: the bound, the reason and the fix are
+    // the endpoint's, so they cannot drift from the EquityBarsStale alert.
+    expect(notice.textContent).toContain(STALE.data_age.warning)
+    expect(notice.textContent).toContain(STALE.data_age.refresh_command)
+    expect(notice.textContent).toContain(STALE.data_age.note)
+  })
+
+  it('stands ahead of the table it qualifies', async () => {
+    await renderPage(STALE)
+
+    const notice = screen.getByTestId('stk-data-age')
+    const firstRow = screen.getByTestId(`stk-row-${STALE.items[0].symbol}`)
+    expect(notice.compareDocumentPosition(firstRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('marks where the prices stop on the window line, where “1 year” is read', async () => {
+    window.localStorage.setItem('igp_calendar', 'gregorian')
+    await renderPage(STALE)
+
+    expect(screen.getByTestId('stk-window-stops')).toHaveTextContent('2026-09-09')
+  })
+
+  it('prints the staleness sentence once, and keeps the other warnings', async () => {
+    await renderPage(STALE)
+
+    const warning = STALE.data_age.warning as string
+    expect(screen.getAllByText(warning)).toHaveLength(1)
+    for (const other of STALE.warnings.filter((w) => w !== warning)) {
+      expect(screen.getByText(other)).toBeInTheDocument()
+    }
+  })
+
+  it('adds nothing at all when the store is current', async () => {
+    await renderPage(IRR)
+
+    // A banner that is always on is a banner nobody reads, and the day it means
+    // something it will already be furniture.
+    expect(screen.queryByTestId('stk-data-age')).toBeNull()
+    expect(screen.queryByTestId('stk-window-stops')).toBeNull()
+  })
+})
+
+describe('Stocks — the age is read, never recomputed', () => {
+  it('shows the server’s day count even when the browser clock says otherwise', () => {
+    // A browser subtracting newest_trade_date from its own clock would print 158
+    // days here. The server measured 15 against its own, and 15 is the number
+    // the shared stale_after_days bound was applied to.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2027-02-14T00:00:00Z'))
+    try {
+      render(<DataAgeNotice age={STALE.data_age} calendar="gregorian" />)
+
+      expect(screen.getByTestId('stk-data-age-days')).toHaveTextContent('15 days old')
+      expect(screen.getByTestId('stk-data-age')).not.toHaveTextContent(/158/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('derives nothing on this page from the browser clock at all', () => {
+    const code = stocksSource.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    expect(code).not.toMatch(/Date\.now\s*\(/)
+    expect(code).not.toMatch(/new Date\s*\(/)
+  })
+})
+
+describe('Stocks — the two states that are not simply “old”', () => {
+  it('reports a deployment holding no bars as empty rather than as old', () => {
+    // Not stale, and the page still speaks: there is no old price being served
+    // because there is no price. An age of zero here would read as current, and
+    // "0 days old" would be a measurement of data that does not exist.
+    expect(NO_BARS.stale).toBe(false)
+    expect(NO_BARS.age_days).toBeNull()
+
+    render(<DataAgeNotice age={NO_BARS} calendar="gregorian" />)
+
+    expect(screen.getByTestId('stk-data-age').textContent).toContain(NO_BARS.warning)
+    expect(screen.queryByTestId('stk-data-age-fact')).toBeNull()
+  })
+
+  it('does not render a bar dated after today as perfectly current', () => {
+    expect(FUTURE_DATED.age_days).toBe(-3)
+
+    render(<DataAgeNotice age={FUTURE_DATED} calendar="gregorian" />)
+
+    expect(screen.getByTestId('stk-data-age-days')).toHaveTextContent('dated 3 days AFTER')
+    expect(screen.getByTestId('stk-data-age')).not.toHaveTextContent('0 days old')
   })
 })

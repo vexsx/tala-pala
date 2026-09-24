@@ -296,9 +296,190 @@ type stockItem struct {
 	Adjustment     adjustmentItem `json:"adjustment"`
 }
 
+// --- how old the data is -----------------------------------------------------
+//
+// Tehran equity bars are a MANUALLY REFRESHED dataset. cdn.tsetmc.com is not
+// reachable from the production host (TCP 443 fails outright, http=000 —
+// measured, see scripts/tsetmc_fetch.py), so nothing on the server can fetch
+// them; they arrive when a human runs `make refresh-equities` from a network
+// that can reach TSETMC. Nothing schedules that, so nothing stops it either.
+//
+// On 2026-09-24 the newest bar in production was 2026-09-09. For fifteen days
+// this endpoint answered every request with a `to` of the current date, a
+// `period` of the last month, and prices from a fortnight earlier — each field
+// individually true, and the combination reading as today's market. That is
+// the failure this block exists to make impossible, and it is why the AGE
+// travels on the payload instead of being left for a client to derive from
+// `last_trade_date`: a client that never does the subtraction is exactly the
+// client that renders the stale number under today's heading.
+const (
+	// equityStaleAfterDays is the age at which the roster's newest bar stops
+	// being explicable by the calendar.
+	//
+	// Not 1 day, and not 3. The Tehran exchange trades Saturday to Wednesday,
+	// so the newest bar is routinely 2 days old on Friday and 3 on Saturday
+	// morning before the session lands, and a public holiday against a weekend
+	// stretches that to about 5. On top of that the refresh is manual and its
+	// documented cadence is weekly (docs/deployment.md): a run on Friday can
+	// only ingest through the Wednesday session, so it stores a bar that is
+	// already 2 days old and the newest bar reaches 9 days immediately before
+	// the next on-time run. Ten days is the first age the market calendar and
+	// an on-time weekly refresh cannot produce between them — and it is below
+	// the fifteen measured on 2026-09-24, so it would have caught that.
+	//
+	// Measured on production the same day, this also clears the market by
+	// construction: across 2,571 gaps between distinct sessions since 2016 the
+	// longest closure is exactly 10 days (Nowruz 2016 and 2021) and nothing
+	// exceeds it, so no closure on record makes data "stale" under this bound.
+	//
+	// EquityBarsStale in observability/alerts.yml holds the same BOUNDARY,
+	// deliberately: the page a reader looks at and the alert an operator gets
+	// must not disagree about when this data has gone bad. Note it cannot hold
+	// the same NUMBER, and that is the point — Stale is `days > 10`, so the
+	// first stale age is eleven days, while the rule compares a gauge in
+	// seconds and must therefore say `>= 11*86400`. Written as `> 10*86400` it
+	// fired one second after midnight on day ten and paged an operator a full
+	// day before this block would admit anything was wrong.
+	equityStaleAfterDays = 10
+
+	// equityRefreshCommand is named in the payload because "this data is old"
+	// without "here is how to fix it" makes the reader's next question
+	// unanswerable from what they are holding.
+	equityRefreshCommand = "make refresh-equities"
+)
+
+// dataAgeBlock states how old the stored equity data is, on every response
+// that serves a price derived from it.
+type dataAgeBlock struct {
+	// NewestTradeDate is the newest session stored across the roster in this
+	// response's universe. Null when the roster holds no bars at all, which is
+	// a different state from "old" and is reported as such rather than as an
+	// age of zero.
+	NewestTradeDate *string `json:"newest_trade_date"`
+	// AgeDays is whole days from NewestTradeDate to today, in UTC. It is
+	// measured against TODAY and not against this response's `to` bound: it
+	// describes the DATASET, so a caller asking for a historical window still
+	// learns that the underlying data stops where it stops.
+	AgeDays *int   `json:"age_days"`
+	AsOf    string `json:"as_of"`
+	// Stale is AgeDays > StaleAfterDays. A boolean, so a client renders a
+	// banner without reimplementing the bound and drifting from it.
+	Stale          bool   `json:"stale"`
+	StaleAfterDays int    `json:"stale_after_days"`
+	RefreshCommand string `json:"refresh_command"`
+	// Warning is non-empty whenever these prices must not be read as current,
+	// and says in prose what is wrong and what to run. It is set in three
+	// cases and Stale is true in only two of them: an empty roster warns
+	// without being stale, because there is no old price being served — there
+	// is no price at all, and a client that renders "N days old" for it would
+	// be describing data that does not exist. Stale is never true without a
+	// Warning, which is the pairing rule the screener's nullable figures
+	// follow.
+	Warning string `json:"warning,omitempty"`
+	Note    string `json:"note"`
+}
+
+const dataAgeNote = "Tehran equity bars do not refresh themselves: TSETMC is unreachable " +
+	"from the production host, so bars arrive only when an operator runs the fetch script " +
+	"from a network that can reach it. This block is the age of the newest stored session " +
+	"across the roster, measured against today rather than against this response's window."
+
+// newestRosterBar is the newest stored session across the given roster rows,
+// or nil when none of them has one.
+//
+// Read from equity_instruments.last_bar — the registry's own coverage column,
+// maintained by the ingest — so it costs no extra query, covers instruments
+// the screener excludes (a refused adjustment still receives bars from the
+// same fetch, so it is evidence about whether the fetch ran), and reports the
+// same number the rows themselves publish as `last_bar`.
+//
+// Pure function (unit tested).
+func newestRosterBar(rows []stockRow) *time.Time {
+	var newest *time.Time
+	for _, r := range rows {
+		if r.LastBar == nil {
+			continue
+		}
+		d := r.LastBar.UTC()
+		if newest == nil || d.After(*newest) {
+			newest = &d
+		}
+	}
+	return newest
+}
+
+// buildDataAge is the age arithmetic and the bound. Pure function (unit
+// tested): the clock arrives from the caller, so there is no hidden `now`.
+func buildDataAge(newest *time.Time, now time.Time) dataAgeBlock {
+	today := dayFloor(now)
+	out := dataAgeBlock{
+		AsOf:           today.Format(dateLayout),
+		StaleAfterDays: equityStaleAfterDays,
+		RefreshCommand: equityRefreshCommand,
+		Note:           dataAgeNote,
+	}
+	if newest == nil {
+		// No bars for the rows in THIS response. Null age and null date, never
+		// a zero: a zero would read as "current" and is the substitution this
+		// whole block exists to prevent.
+		//
+		// The wording is scoped to the response on purpose, because that is
+		// the only thing this function can see. buildDataAge is measured over
+		// the returned rows, and Stocks() applies ?enabled= and ?sector=
+		// BEFORE building this block -- so a claim about "this deployment"
+		// would be made from a filtered universe and can be flatly false:
+		// GET /api/v1/stocks?enabled=false&sector=13 on a fully current
+		// deployment returns only کچاد, which has never been ingested, and an
+		// absolute sentence there would tell an operator the whole dataset is
+		// missing and send them off to run an unnecessary off-server refresh.
+		out.Warning = "No stored Tehran equity bars for the symbols in this response, so " +
+			"every price column here is empty rather than old. If a filter is applied " +
+			"(sector, enabled), other symbols may still hold data — check /api/v1/stocks " +
+			"unfiltered before concluding the dataset is missing. If it genuinely is, run `" +
+			equityRefreshCommand + "` from a host that can reach TSETMC."
+		return out
+	}
+
+	date := dayFloor(*newest)
+	days := int(today.Sub(date).Hours() / 24)
+	label := date.Format(dateLayout)
+	out.NewestTradeDate = &label
+	out.AgeDays = &days
+
+	switch {
+	case days < 0:
+		// A bar dated after today is not freshness, it is a fault — a bad
+		// dEven parse would put the whole series 621 years out (migration
+		// 0028's note on trade_date). Said plainly rather than clamped to
+		// zero, because a clamp would render it as perfectly current.
+		out.Stale = true
+		out.Warning = fmt.Sprintf(
+			"The newest stored trade date is %s, which is %d day(s) AFTER today (%s). A bar "+
+				"cannot be in the future, so this is a stored or parsed date fault, not a "+
+				"fresh dataset — do not read these prices as current.",
+			label, -days, out.AsOf)
+	case days > equityStaleAfterDays:
+		out.Stale = true
+		out.Warning = fmt.Sprintf(
+			"These prices are %d days old: the newest stored Tehran session is %s and today "+
+				"is %s. The Tehran exchange trades Saturday to Wednesday, so a gap of up to "+
+				"about 5 days is the calendar; beyond %d days it is a refresh that has "+
+				"stopped. Tehran equity bars are fetched by hand because TSETMC is "+
+				"unreachable from the server — run `%s` from a network that can reach it.",
+			days, label, out.AsOf, equityStaleAfterDays, equityRefreshCommand)
+	}
+	return out
+}
+
 type stocksResponse struct {
 	Items []stockItem `json:"items"`
 	Count int         `json:"count"`
+	// DataAge travels on the roster as well as on the screener. /api/v1/stocks
+	// publishes first_bar, last_bar and bar_count per row, and a caller can
+	// therefore build a symbol picker or a coverage table from it without ever
+	// touching the screener — so it needs the same one-line answer to "is any
+	// of this current?".
+	DataAge dataAgeBlock `json:"data_age"`
 }
 
 func formatDate(t *time.Time) string {
@@ -309,8 +490,14 @@ func formatDate(t *time.Time) string {
 }
 
 // buildStocksResponse projects the stored rows onto the contract. Pure
-// function (unit tested): it copies and formats, and computes nothing.
-func buildStocksResponse(rows []stockRow) stocksResponse {
+// function (unit tested): it copies and formats, and the only thing it
+// computes is the age of the newest bar, from the `now` the caller passes.
+//
+// The age is measured over the rows in THIS response, not over the whole
+// stored roster: a caller filtering by ?sector= is asking about that sector,
+// and a top-level freshness claim taken from some other sector's symbols would
+// be a true statement about the wrong thing.
+func buildStocksResponse(rows []stockRow, now time.Time) stocksResponse {
 	// Never nil: an empty roster is a 200 with an empty list, not a missing
 	// key a client has to special-case.
 	out := stocksResponse{Items: make([]stockItem, 0, len(rows))}
@@ -337,6 +524,7 @@ func buildStocksResponse(rows []stockRow) stocksResponse {
 		out.Items = append(out.Items, item)
 	}
 	out.Count = len(out.Items)
+	out.DataAge = buildDataAge(newestRosterBar(rows), now)
 	return out
 }
 
@@ -444,7 +632,7 @@ func (h *Handler) Stocks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httpserver.JSON(w, http.StatusOK, buildStocksResponse(scanned))
+	httpserver.JSON(w, http.StatusOK, buildStocksResponse(scanned, time.Now().UTC()))
 }
 
 // --- bars --------------------------------------------------------------------

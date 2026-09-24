@@ -28,6 +28,9 @@ rules.
 | `goldpred_job_duration_seconds` | `talapala_api_job_duration_seconds` |
 | `goldpred_api_last_price_timestamp_seconds` | `talapala_api_last_price_timestamp_seconds` |
 | `goldpred_api_last_prediction_timestamp_seconds` | `talapala_api_last_prediction_timestamp_seconds` |
+| `goldpred_api_last_equity_bar_timestamp_seconds` | `talapala_api_last_equity_bar_timestamp_seconds` |
+| `goldpred_api_last_equity_bar_roster_timestamp_seconds` | `talapala_api_last_equity_bar_roster_timestamp_seconds` |
+| `goldpred_api_last_economic_observation_timestamp_seconds` | `talapala_api_last_economic_observation_timestamp_seconds` |
 | `goldpred_collect_success_total` | `talapala_prediction_collect_success_total` |
 | `goldpred_collect_failure_total` | `talapala_prediction_collect_failure_total` |
 | `goldpred_last_price_timestamp_seconds` | `talapala_prediction_last_price_timestamp_seconds` |
@@ -59,6 +62,73 @@ The same asymmetry applies to the job gauges, which is why the alert rules pair
 every "job stopped succeeding" (gauge staleness) with a "job is failing"
 (counter increase) rule: after a restart, a job that never succeeds again never
 publishes a gauge, and only the failure counter can see it.
+
+## Freshness of the manually refreshed datasets
+
+Tehran equity bars and SCI CPI are the two datasets that **no cron on the
+server refreshes**, because neither source is reachable from the production
+host — `amar.org.ir` accepts TCP on 443 and 80 and then answers nothing, and
+`cdn.tsetmc.com` fails TCP 443 outright with `http=000`. They are fetched
+elsewhere and pushed (`scripts/sci_fetch.py`, `scripts/tsetmc_fetch.py`). See
+docs/deployment.md for the operational side; what matters here is that "nobody
+ran the script" is a real failure mode with no process to fail and no log line
+to grep, so it can only be seen in the data itself.
+
+Three gauges, all driven by the Go freshness job from Postgres every 5 minutes
+(`backend-go/internal/alerts/runner.go`), all following the `GROUP BY` shape
+the price gauge uses so a new symbol or provider produces a new series with no
+code change:
+
+| Metric | What it carries |
+| --- | --- |
+| `talapala_api_last_equity_bar_roster_timestamp_seconds` | newest stored bar across the **whole roster**, one series, no labels |
+| `talapala_api_last_equity_bar_timestamp_seconds{symbol}` | newest stored bar **per instrument** |
+| `talapala_api_last_economic_observation_timestamp_seconds{provider}` | newest `available_at` per provider (`sci`, `worldbank`, `imf_weo`) |
+
+Three choices in there are load-bearing:
+
+* **Alert on the roster gauge, diagnose with the per-symbol one.** The roster
+  is ~700 companies and is meant to grow. That is nothing for Prometheus, but
+  a *rule* on the per-symbol gauge pages once per symbol, so one missed refresh
+  becomes 700 notifications describing one event. `EquityInstrumentBarsStale`
+  is therefore gated on the roster gauge being **fresh**: it fires only for the
+  other shape, where the fetch is running and one instrument is not coming back
+  with it (a re-listed `ins_code`, or a long suspension).
+* **`available_at`, never `ref_period_end`.** SCI's Mordad 1405 print describes
+  a period that ended 2026-08-22 and reached us weeks later. A gauge on the
+  reference period reports a perfectly healthy pipeline as permanently weeks
+  behind, and therefore cannot distinguish it from a dead one. `available_at`
+  answers "when did we last learn something", which is the question staleness
+  is actually asking.
+* **No row, no gauge.** An empty table publishes *nothing* rather than a zero
+  timestamp. A zero reads as 1970, so every staleness rule would fire within one
+  evaluation interval of a fresh deployment coming up — before anyone had a
+  chance to ingest anything, and with nothing wrong. This is what makes the
+  rules self-gating, the same property the news and economic rules rely on, and
+  it is the reason none of them uses `absent()`. It is asserted directly by
+  `TestAnEmptyTableProducesNoGaugeRatherThanNineteenSeventy`.
+
+`EquityBarsStale` and the API hold the same BOUNDARY, deliberately: the page a
+reader looks at and the alert an operator gets must not disagree about when the
+same data went bad. The API publishes it as `data_age.stale_after_days` (10) on
+`GET /api/v1/stocks` and `GET /api/v1/stocks/screen`, and marks data stale on
+`days > 10` — so the first stale age is **eleven** days.
+
+They cannot hold the same *number*, and that is worth stating because getting it
+wrong is invisible. The gauge is a `DATE` floored to midnight UTC and `time()`
+is a wall clock, so age-in-seconds is exactly `days × 86400`; written as
+`> 10*86400` the rule went true one second after midnight on day **ten** and
+paged an operator a full day before `/stocks/screen` would admit anything was
+wrong — they would open the page and read `"stale": false`. The rule therefore
+compares `>= 11*86400` (950400), which is `days >= 11`, which is the API's
+`days > 10`, exactly.
+
+Eleven also clears the market by construction. Measured on production
+2026-09-24 across 2,571 gaps between distinct sessions since 2016: the longest
+closure is exactly 10 days (Nowruz 2016 and 2021), **nothing** exceeds it, and
+84 gaps exceed 3 days. So no market closure on record can fire this rule — only
+a refresh that stopped, or a refresh not restarted promptly once Nowruz ends,
+which is a true positive because at that point the data really is stale.
 
 ## Starting the stack
 
@@ -150,6 +220,9 @@ a description saying what to check.
 | `ActiveModelArtifactMissing` | critical | an active model version has no loadable artifact |
 | `PredictionIntervalCoverageDegraded` | warning | live coverage of the 90% interval below 0.75 for 2 h |
 | `NewsCollectionFailing` | warning | no successful news ingest for 6 h |
+| `EquityBarsStale` | warning | no new Tehran equity bar across the roster for 11 days |
+| `EquityInstrumentBarsStale` | warning | one symbol silent for 30 days while the roster keeps updating |
+| `SciCpiIngestStale` | warning | no new SCI economic observation for 45 days |
 | `NewsSourceStale` | warning | one approved news source silent for 24 h |
 
 Market calendars are encoded in the expressions rather than left to the
@@ -162,6 +235,23 @@ wherever a Tehran-local calendar is needed.
 `GlobalGoldPriceStale`'s 3-hour threshold is load-bearing: it is what stops the
 Friday 21:00 UTC close from tripping the rule before the weekend suppression
 takes over. Do not lower it without adding a proper session guard.
+
+The three `tala-pala-manual-refresh` bounds are chosen the same way, from how
+the data behaves rather than from a round number. The Tehran exchange trades
+Saturday to Wednesday, so the newest equity bar is routinely 2 days old on
+Friday and 3 on Saturday morning before the session lands, and about 5 across a
+holiday-extended weekend; on top of that the refresh is manual at a weekly
+cadence, which leaves it 7–8 days old immediately before an on-time run. Ten
+days is the first age those two cannot produce between them, and it is below
+the fifteen measured on 2026-09-24. The annual Nowruz closure is the one known
+false positive — **silence the rule for that window rather than loosening the
+bound for the other fifty-one weeks.** SCI publishes once per Jalali month and
+weeks in arrears, so consecutive `available_at` values are ~30 days apart when
+everything is working; 45 days means a whole monthly release came and went.
+`SciCpiIngestStale` is scoped to `provider="sci"` alone because `worldbank` and
+`imf_weo` carry annual series whose `available_at` legitimately does not move
+for months — their daily job has its own rule, `EconomicIngestNotSucceeding`,
+which watches the job rather than the data.
 
 ### Pending instrumentation
 

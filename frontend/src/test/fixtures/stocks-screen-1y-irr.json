@@ -3,6 +3,15 @@
   "period": "1y",
   "from": "2025-09-10",
   "to": "2026-09-10",
+  "data_age": {
+    "newest_trade_date": "2026-09-09",
+    "age_days": 1,
+    "as_of": "2026-09-10",
+    "stale": false,
+    "stale_after_days": 10,
+    "refresh_command": "make refresh-equities",
+    "note": "Tehran equity bars do not refresh themselves: TSETMC is unreachable from the production host, so bars arrive only when an operator runs the fetch script from a network that can reach it. This block is the age of the newest stored session across the roster, measured against today rather than against this response's window."
+  },
   "numeraire": "IRR",
   "numeraire_series": null,
   "currency": "IRR",

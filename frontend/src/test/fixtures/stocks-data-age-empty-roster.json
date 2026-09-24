@@ -1,0 +1,10 @@
+{
+  "newest_trade_date": null,
+  "age_days": null,
+  "as_of": "2026-09-24",
+  "stale": false,
+  "stale_after_days": 10,
+  "refresh_command": "make refresh-equities",
+  "warning": "No stored Tehran equity bars for the symbols in this response, so every price column here is empty rather than old. If a filter is applied (sector, enabled), other symbols may still hold data — check /api/v1/stocks unfiltered before concluding the dataset is missing. If it genuinely is, run `make refresh-equities` from a host that can reach TSETMC.",
+  "note": "Tehran equity bars do not refresh themselves: TSETMC is unreachable from the production host, so bars arrive only when an operator runs the fetch script from a network that can reach it. This block is the age of the newest stored session across the roster, measured against today rather than against this response's window."
+}

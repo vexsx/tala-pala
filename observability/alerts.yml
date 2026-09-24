@@ -276,6 +276,173 @@ groups:
             consecutive_failures column in data_providers for 'worldbank' and
             'imf_weo'.
 
+  # ---------------------------------------------------------------------------
+  # The MANUALLY REFRESHED data classes.
+  #
+  # Everything else in this file watches something that runs on the server. The
+  # two datasets below do not, and cannot: neither source is reachable from the
+  # production host, measured rather than assumed. amar.org.ir accepts TCP on
+  # 443 and 80 and then answers nothing — no TLS handshake completes and plain
+  # HTTP returns nothing either, which is application-layer filtering.
+  # cdn.tsetmc.com fails TCP 443 outright (http=000) while answering fine from
+  # outside that network. So both are fetched elsewhere and pushed, by
+  # scripts/sci_fetch.py and scripts/tsetmc_fetch.py.
+  #
+  # That architecture is right. What was missing is that nothing SCHEDULES
+  # those runs and nothing NOTICED when they stopped. On 2026-09-24 the newest
+  # equity bar in production was 2026-09-09 — fifteen days — and the screener
+  # had been serving those prices under a window labelled with the current date
+  # the whole time. The only reason anyone knew is that a human went looking.
+  #
+  # Self-gating, in the same way the news and economic rules are: the gauges
+  # are published per row returned by a GROUP BY, so a deployment that has
+  # never ingested an equity bar or an economic observation produces no series
+  # and never alerts. That is a property of the producer (see the
+  # no-row-no-gauge rule in backend-go/internal/alerts/runner.go), not of these
+  # expressions, and it is the reason none of them uses absent().
+  - name: tala-pala-manual-refresh
+    interval: 1m
+    rules:
+      - alert: EquityBarsStale
+        # The bound is the API's, expressed in the units this gauge actually
+        # carries, and the conversion is the whole reason for this comment.
+        #
+        # data_age.stale_after_days is 10 (equityStaleAfterDays in
+        # backend-go/internal/equities/handlers.go) and the API marks data
+        # stale on `days > 10`, so the first STALE age is ELEVEN days; ten days
+        # exactly is still fresh, which handlers' own dataage_test.go asserts
+        # under the name "the bound itself must not be stale".
+        #
+        # The gauge is a DATE floored to midnight UTC while time() is a wall
+        # clock, so age-in-seconds equals days x 86400 exactly. `> 864000`
+        # therefore became true one second after midnight on day TEN and paged
+        # an operator a full day before /stocks/screen would admit anything was
+        # wrong -- they would open the page and read "stale": false. That is
+        # precisely the disagreement this rule claims to prevent, so the bound
+        # is 11 x 86400 and the comparison is >=, which is `days >= 11` and
+        # therefore the API's `days > 10`, exactly.
+        #
+        # Eleven is also what the market data says independently. Across every
+        # distinct session since 2016 (2,571 gaps, measured on production
+        # 2026-09-24) the longest closure is exactly 10 days and NOTHING
+        # exceeds it: 0 gaps over 10 days, 2 gaps of exactly 10 (Nowruz 2016
+        # and 2021), 84 over 3 days. So at 11 days no market closure on record
+        # can fire this rule at all -- only a refresh that stopped.
+        expr: time() - talapala_api_last_equity_bar_roster_timestamp_seconds >= 950400
+        for: 1h
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "No new Tehran equity bar for {{ $value | humanizeDuration }}"
+          description: >-
+            WHY ELEVEN DAYS. The Tehran exchange trades Saturday to Wednesday,
+            so the newest bar is routinely 2 days old on Friday and 3 on
+            Saturday morning before the session lands; a public holiday against
+            a weekend stretches that to about 5. A naive 24h bound would page
+            every single weekend — the mistake that already makes 38 of the
+            last 48 warnings closed-market noise. On top of the calendar the
+            refresh is MANUAL and its documented cadence is weekly
+            (docs/deployment.md): a run on Friday can only ingest through the
+            Wednesday session, so it stores a bar that is ALREADY 2 days old
+            and the newest bar reaches 9 days immediately before the next
+            on-time run. Nine, not the 7–8 an earlier draft of this comment
+            claimed — that understated the worst case and hid how little
+            headroom the bound has. Eleven days clears an on-time weekly
+            cadence by about a day and a half, and sits well below the fifteen
+            measured on 2026-09-24, so this rule would have caught that.
+            NOWRUZ. The annual New Year closure is the longest of the year and
+            was the expected false positive here. Measured rather than
+            assumed, it is not one: the 2016 and 2021 closures are 10 days,
+            the longest on record since 2016, and this bound is 11. What can
+            still fire in that window is the MANUAL REFRESH not being run once
+            the market reopens — which is a true positive, because at that
+            point the data really is stale. Note there is no way to silence
+            this: observability/prometheus.yml deploys no Alertmanager and says
+            so, and silences are an Alertmanager feature. Until one exists,
+            these rules are visible only on Prometheus /alerts and reach nobody
+            on their own — so do not read a quiet week as a healthy one.
+            TO FIX: run `make refresh-equities` — NOT on the server, which
+            cannot reach cdn.tsetmc.com (TCP 443 fails outright), but from a
+            host that can. It fetches the roster from the server, downloads the
+            bars, copies them back and triggers the ingest. `make
+            refresh-offserver` does this and the SCI CPI refresh together.
+            If the script itself is failing, check
+            `docker compose logs prediction-service | grep -i equit` for a
+            refused ingest.
+
+      - alert: EquityInstrumentBarsStale
+        # One symbol left behind while the roster advances. Gated on the roster
+        # gauge being FRESH so this can never fire alongside the rule above:
+        # when the refresh stops, every symbol goes stale at once, and reporting
+        # that as ~700 per-symbol notifications would bury the one line that
+        # says what happened. This fires only for the other shape — the fetch
+        # is running and one instrument is not coming back with it.
+        # min() rather than a bare comparison on the right: it collapses to one
+        # label-free series whatever the api replica count, so the guard cannot
+        # become a many-to-many match if this is ever scaled past one. It is
+        # still empty when no equity bar has ever been stored, which keeps this
+        # rule self-gating through the roster gauge as well as its own.
+        expr: |
+          (time() - talapala_api_last_equity_bar_timestamp_seconds > 2592000)
+            and on()
+          (min(time() - talapala_api_last_equity_bar_roster_timestamp_seconds) < 950400)
+        for: 2h
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "{{ $labels.symbol }} has had no new bar for {{ $value | humanizeDuration }} while the roster keeps updating"
+          description: >-
+            The equity refresh IS running — the roster's newest bar is current
+            — but this one instrument has not received a session in 30 days.
+            Thirty, not ten, because a long trading suspension is the common
+            benign cause on this exchange and is the known false positive here;
+            check whether the symbol is suspended before assuming the fetch
+            broke. The other likely cause is real and silent: TSETMC reuses a
+            symbol across insCodes when an instrument is re-listed, so a stored
+            ins_code can stop being the one TSETMC serves and the fetch keeps
+            succeeding for every other symbol. Compare this symbol against
+            GET /api/v1/stocks (its last_bar and bar_count) and re-run
+            `make refresh-equities ARGS="--ins-code <code>"` for it alone. The
+            ARGS= wrapper is not optional: make parses its own options first,
+            so the bare `--ins-code` form exits 2 with "unrecognized option"
+            before running anything.
+
+      - alert: SciCpiIngestStale
+        # Forty-five days. Measured in weeks because the publisher works in
+        # months: SCI puts out the urban CPI workbook once per Jalali month,
+        # weeks after the period it describes — the Mordad 1405 edition covers
+        # a period that ended 2026-08-22 and stamps 1405/06/18 in its own
+        # filename. Consecutive available_at values are therefore ~30 days
+        # apart in perfectly healthy operation, and an hours-based bound would
+        # be meaningless here. 45 days means a whole monthly release came and
+        # went without being fetched.
+        expr: time() - talapala_api_last_economic_observation_timestamp_seconds{provider="sci"} > 3888000
+        for: 6h
+        labels:
+          severity: warning
+          service: api
+        annotations:
+          summary: "No new SCI economic observation for {{ $value | humanizeDuration }}"
+          description: >-
+            The gauge carries available_at — when this system could first have
+            known the value — and NOT ref_period_end. That distinction is the
+            rule's correctness: a healthy SCI pipeline is permanently weeks
+            behind the period it describes, so a ref_period_end bound could not
+            tell it apart from a dead one.
+            WHY ONLY provider="sci". The same gauge is published for worldbank
+            and imf_weo, and they are deliberately not alerted on: their series
+            are annual, so available_at legitimately does not advance for
+            months and a 45-day bound would fire on them all year. Their daily
+            ingest job has its own rule, EconomicIngestNotSucceeding, which
+            watches the job rather than the data.
+            TO FIX: run `make refresh-cpi` — NOT on the server, which cannot
+            reach amar.org.ir (TCP connects, nothing answers), but from a host
+            that can. `make refresh-offserver` does this and the equity refresh
+            together. If SCI has genuinely not published, confirm on
+            https://amar.org.ir/prices before treating this as a fault.
+
   - name: tala-pala-news
     interval: 1m
     rules:

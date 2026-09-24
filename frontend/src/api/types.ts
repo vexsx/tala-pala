@@ -1583,12 +1583,61 @@ export interface StockExcludedItem {
   adjustment: StockAdjustment
 }
 
+/**
+ * How old the stored Tehran equity data is — `dataAgeBlock` in
+ * backend-go/internal/equities/handlers.go, field for field.
+ *
+ * Tehran bars are a MANUALLY REFRESHED dataset: cdn.tsetmc.com is unreachable
+ * from the production host, so nothing on the server can fetch them and they
+ * arrive only when an operator runs the fetch script from a network that can.
+ * Nothing schedules that, so nothing stops it either — on 2026-09-24 the
+ * newest stored session was 2026-09-09 and the endpoint had been answering
+ * every request with a `to` of the current date for a fortnight.
+ *
+ * THE AGE IS READ, NEVER RECOMPUTED. Every derived figure here — the day
+ * count, the bound it is judged against, whether that makes it stale — is the
+ * server's own arithmetic against the server's own clock. A browser that
+ * subtracted `newest_trade_date` from `Date.now()` would be a second
+ * implementation of this measurement, disagreeing with the API and with the
+ * EquityBarsStale alert the moment a timezone or a rounding rule differed.
+ */
+export interface StockDataAge {
+  /**
+   * The newest session stored across the roster. Null when the roster holds
+   * no bars at all — a different state from "old", and reported as one rather
+   * than as an age of zero.
+   */
+  newest_trade_date: string | null
+  /** Whole days from `newest_trade_date` to today. Null with the date. */
+  age_days: number | null
+  /** The server's today, which the age was measured against. */
+  as_of: string
+  /** age_days > stale_after_days, decided by the server so no client redraws the bound. */
+  stale: boolean
+  stale_after_days: number
+  /** What an operator runs to fix it, named by the API rather than by this page. */
+  refresh_command: string
+  /**
+   * Present exactly when these prices must not be read as current, and absent
+   * otherwise (Go omits the empty string). It is set in three cases and
+   * `stale` is true in only two of them: an empty roster warns without being
+   * stale, because there is no old price being served — there is no price.
+   */
+  warning?: string
+  note: string
+}
+
 export interface StockScreenResponse {
   as_of: string
   period: string
   /** Null for period=max, where the start is a property of each instrument. */
   from: string | null
   to: string
+  /**
+   * Sits here, immediately after the window, because the window is exactly
+   * what it qualifies: `to` is today whatever the data does.
+   */
+  data_age: StockDataAge
   numeraire: string
   numeraire_series: NumeraireOption | null
   /** IRR. Stated on every response because the rest of this API uses toman. */

@@ -42,8 +42,14 @@ func rosterRow(symbol, name, sectorCode, sectorFA string, barCount int) stockRow
 		Board:             "بازار اول (تابلوی اصلی) بورس",
 		SectorCode:        sectorCode,
 		SectorFA:          sectorFA,
-		FirstBar:          ptr(day(2007, time.March, 11)),
-		LastBar:           ptr(day(2026, time.September, 9)),
+		FirstBar: ptr(day(2007, time.March, 11)),
+		// Coherent with the bars these fixtures carry (early March 2026) and
+		// with mustQuery's clock (2026-03-10). It has to be: the response's
+		// data_age block is computed from last_bar against that clock, so a
+		// roster row claiming a session six months after "today" would make
+		// every screen fixture exercise the dated-in-the-future fault path
+		// instead of the ordinary one.
+		LastBar:           ptr(day(2026, time.March, 5)),
 		BarCount:          barCount,
 		Enabled:           true,
 		AdjustmentVersion: ptr("priceYesterday-chain-v1"),

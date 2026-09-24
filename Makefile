@@ -3,7 +3,8 @@
 COMPOSE = docker compose
 
 .PHONY: help setup up down build logs ps migrate create-user collect train predict \
-        signals backtest export-portfolio test test-go test-python smoke update
+        signals backtest export-portfolio test test-go test-python smoke update \
+        refresh-offserver refresh-equities refresh-cpi
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  %-18s %s\n", $$1, $$2}'
@@ -56,6 +57,54 @@ backtest: ## Run a backtest: make backtest HORIZON=1d
 
 export-portfolio: ## Export portfolio CSV: make export-portfolio TOKEN=<jwt> [OUT=portfolio.csv]
 	curl -fsS -H "Authorization: Bearer $(TOKEN)" http://localhost:$${FRONTEND_PORT:-8088}/api/v1/portfolio/export -o $(or $(OUT),portfolio.csv) && echo "wrote $(or $(OUT),portfolio.csv)"
+
+# --- the manually refreshed datasets -----------------------------------------
+#
+# RUN THESE SOMEWHERE THAT CAN REACH THE SOURCES. NOT ON THE SERVER.
+#
+# Every other target in this file is run on the production host. These three
+# are the exception, and it is not a preference — the sources are unreachable
+# from that host, measured rather than assumed:
+#
+#   amar.org.ir     DNS resolves, TCP connects on BOTH 443 and 80, and then
+#                   nothing answers: no TLS handshake completes at 1.2 or 1.3,
+#                   and plain HTTP returns nothing either. The connection is
+#                   accepted and the payload dropped, which is application-layer
+#                   filtering. (Diagnosed 2026-09-09.)
+#   cdn.tsetmc.com  TCP 443 fails OUTRIGHT on all three addresses, http=000.
+#                   A harder block than the SCI one. (Diagnosed 2026-09-10.)
+#
+# Both answer normally from outside that network, so the scripts run on a
+# laptop or any reachable host: they download, verify, scp the payloads to the
+# server over the EXISTING ssh access, and trigger the ingest inside the
+# compose network. Nothing new is exposed publicly.
+#
+# Consequence worth stating plainly: these datasets do not refresh themselves,
+# and nothing on the server will ever refresh them. Run refresh-offserver at
+# least WEEKLY. If it stops, EquityBarsStale / SciCpiIngestStale in
+# observability/alerts.yml fire, and GET /api/v1/stocks/screen reports the age
+# in its `data_age` block — but the fix is always a human running this target.
+#
+# Pass extra script flags with ARGS, e.g.:
+#   make refresh-equities ARGS="--dry-run"
+#   make refresh-equities ARGS="--ins-code 46348559193224090"
+#   make refresh-cpi ARGS="--host ubuntu@1.2.3.4"
+
+refresh-equities: ## Refresh Tehran equity bars from TSETMC — run OFF the server (ARGS=...)
+	python3 scripts/tsetmc_fetch.py $(ARGS)
+
+refresh-cpi: ## Refresh SCI CPI from amar.org.ir — run OFF the server (ARGS=...)
+	python3 scripts/sci_fetch.py $(ARGS)
+
+# Sequenced through $(MAKE) rather than as prerequisites so `make -j` cannot
+# run them concurrently: both scp to the same host and both trigger an ingest.
+# A failure in the first stops the second, which is why the two targets above
+# exist separately — recover by running the one that failed.
+refresh-offserver: ## Refresh BOTH manual datasets (equities, then CPI) — run OFF the server
+	@echo "These fetches must run where amar.org.ir and cdn.tsetmc.com are reachable."
+	@echo "Neither is reachable from the production host; see the Makefile comment."
+	@$(MAKE) --no-print-directory refresh-equities
+	@$(MAKE) --no-print-directory refresh-cpi
 
 test: test-go test-python ## Run all local test suites
 

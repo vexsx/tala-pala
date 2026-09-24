@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -273,7 +274,7 @@ func TestNeverIngestedIsDistinctFromRefused(t *testing.T) {
 }
 
 func TestStocksResponseIsAListNotNull(t *testing.T) {
-	out := buildStocksResponse(nil)
+	out := buildStocksResponse(nil, day(2026, time.September, 24))
 	if out.Items == nil {
 		t.Fatal("an empty roster must serialise as [] so no client special-cases null")
 	}
@@ -281,13 +282,15 @@ func TestStocksResponseIsAListNotNull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if string(blob) != `{"items":[],"count":0}` {
+	// The payload now carries data_age; `items` and `count` must still lead it
+	// in exactly this shape, which is what this test is about.
+	if !strings.HasPrefix(string(blob), `{"items":[],"count":0,"data_age":`) {
 		t.Errorf("unexpected empty payload: %s", blob)
 	}
 }
 
 func TestStocksResponseCarriesCoverageAndVerdict(t *testing.T) {
-	out := buildStocksResponse([]stockRow{foolad()})
+	out := buildStocksResponse([]stockRow{foolad()}, day(2026, time.September, 24))
 	item := out.Items[0]
 	if item.FirstBar != "2007-03-11" || item.LastBar != "2026-09-09" || item.BarCount != 4636 {
 		t.Errorf("coverage is wrong: %+v", item)
@@ -403,7 +406,7 @@ func TestPreListingExclusionIsVisibleOnTheWire(t *testing.T) {
 		PreListingBars:    ptr(161),
 		AdjustedFirstBar:  ptr(day(2019, time.July, 13)),
 	}
-	item := buildStocksResponse([]stockRow{nouri}).Items[0]
+	item := buildStocksResponse([]stockRow{nouri}, day(2026, time.September, 24)).Items[0]
 
 	if item.BarCount != 1876 {
 		t.Errorf("bar_count = %d, want the stored total 1876", item.BarCount)

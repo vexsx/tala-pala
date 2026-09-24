@@ -154,6 +154,20 @@ type Metrics struct {
 	// Freshness gauges maintained by the Go-side freshness job.
 	LastPriceTimestamp      *DualGaugeVec
 	LastPredictionTimestamp *DualGaugeVec
+
+	// Freshness gauges for the MANUALLY REFRESHED data classes.
+	//
+	// prices and predictions above are produced by crons running on the
+	// server. These two are not: TSETMC and SCI are both unreachable from the
+	// production host (measured — see scripts/tsetmc_fetch.py and
+	// scripts/sci_fetch.py), so their data arrives only when a human runs a
+	// fetch script from somewhere else. Nothing schedules that, which means
+	// nothing stops it either, and until these gauges existed the only
+	// evidence that equity ingestion had stopped was someone noticing the
+	// screener's prices looked old. They had been 15 days old on 2026-09-24.
+	LastEquityBarTimestamp       *DualGaugeVec
+	LastEquityBarRosterTimestamp *DualGaugeVec
+	LastEconomicObservation      *DualGaugeVec
 }
 
 // NewMetrics builds and registers all metrics on a fresh registry.
@@ -203,12 +217,64 @@ func NewMetrics() *Metrics {
 			"goldpred_api_last_prediction_timestamp_seconds",
 			"Unix timestamp of the latest prediction per horizon (Go freshness job).",
 			[]string{"horizon"}),
+
+		// Per instrument, labelled by the Persian trading symbol — the same
+		// key /api/v1/stocks resolves and equity_instruments holds UNIQUE, so
+		// one series per listed company and no ambiguity about which one.
+		//
+		// CARDINALITY, chosen rather than inherited. The roster is ~700
+		// companies today and is meant to grow; at two exports each (the
+		// current name and its deprecated goldpred_* twin) that is ~1,400
+		// series, which is nothing for Prometheus — the Go collector
+		// registered below publishes more on its own. What 700 series would
+		// be bad at is ALERTING: a rule on this gauge pages once per symbol,
+		// so one missed refresh becomes 700 notifications describing one
+		// event. Hence the roster gauge beside it: the alert that matters
+		// fires on the aggregate, and this one exists to answer "which
+		// symbols?" once a human is already looking.
+		LastEquityBarTimestamp: newDualGaugeVec(
+			"talapala_api_last_equity_bar_timestamp_seconds",
+			"goldpred_api_last_equity_bar_timestamp_seconds",
+			"Unix timestamp (UTC midnight) of the newest stored Tehran equity bar per symbol.",
+			[]string{"symbol"}),
+
+		// The newest bar ACROSS the whole roster: one series, no labels, so a
+		// staleness rule on it fires once for "the equity refresh stopped"
+		// rather than once per company. A zero-label GaugeVec rather than a
+		// plain Gauge on purpose — a registered Gauge publishes 0 from the
+		// moment the process starts, and 0 reads as 1970, which would fire
+		// every staleness rule instantly on a deployment that has never
+		// ingested an equity bar. A Vec publishes nothing until a label set is
+		// touched, so "no bars" stays indistinguishable from "no series",
+		// which is what self-gating means.
+		LastEquityBarRosterTimestamp: newDualGaugeVec(
+			"talapala_api_last_equity_bar_roster_timestamp_seconds",
+			"goldpred_api_last_equity_bar_roster_timestamp_seconds",
+			"Unix timestamp (UTC midnight) of the newest stored Tehran equity bar across the whole roster.",
+			nil),
+
+		// Per PROVIDER (sci, worldbank, imf_weo), stamped with available_at —
+		// when this system could first have known the value — and not with
+		// ref_period_end. The two answer different questions and only one of
+		// them is about staleness: SCI's Mordad 1405 workbook describes a
+		// period that ended 2026-08-22 and was published three weeks later,
+		// so a ref_period_end gauge would report a healthy pipeline as
+		// permanently three weeks behind and a dead one as merely a little
+		// worse. available_at asks "when did we last learn something", which
+		// is the question a refresh that has stopped actually answers.
+		LastEconomicObservation: newDualGaugeVec(
+			"talapala_api_last_economic_observation_timestamp_seconds",
+			"goldpred_api_last_economic_observation_timestamp_seconds",
+			"Unix timestamp of the newest economic observation's available_at, per provider.",
+			[]string{"provider"}),
 	}
 
 	app := [][]prometheus.Collector{
 		m.HTTPDuration.collectors(), m.HTTPTotal.collectors(),
 		m.JobLastSuccess.collectors(), m.JobFailures.collectors(), m.JobDuration.collectors(),
 		m.LastPriceTimestamp.collectors(), m.LastPredictionTimestamp.collectors(),
+		m.LastEquityBarTimestamp.collectors(), m.LastEquityBarRosterTimestamp.collectors(),
+		m.LastEconomicObservation.collectors(),
 	}
 	for _, group := range app {
 		reg.MustRegister(group...)

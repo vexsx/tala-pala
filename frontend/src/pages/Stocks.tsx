@@ -6,6 +6,7 @@ import {
   STOCK_PERIODS,
   STOCK_PERIOD_LABELS,
   type AbsentMetric,
+  type StockDataAge,
   type StockExcludedItem,
   type StockNumeraire,
   type StockPeriod,
@@ -32,7 +33,7 @@ import EmptyState from '../components/EmptyState'
  * Everything on it is arithmetic over stored bars, computed once by
  * GET /api/v1/stocks/screen: last price, period return, volatility, maximum
  * drawdown, liquidity, and the last price re-expressed in dollars and in grams
- * of 18k gold. Three properties of that endpoint are what this page is built
+ * of 18k gold. Four properties of that endpoint are what this page is built
  * to render faithfully:
  *
  *  1. RETURNS COME FROM ADJUSTED CLOSES, and every row says so. A screener
@@ -49,6 +50,13 @@ import EmptyState from '../components/EmptyState'
  *     dataset cannot support at all (P/E, EPS growth, ROE, dividend yield,
  *     market cap) are rendered from the response's `absent_metrics`, so the
  *     boundary this page states is the one the backend actually knows.
+ *  4. THE PRICES CAN BE OLD, and the response says by how much. These bars are
+ *     pushed by hand because TSETMC is unreachable from the server, so the
+ *     store falls behind whenever the push stops — fifteen days, measured on
+ *     2026-09-24 — while the window still ends today and the heading still
+ *     says "1 YEAR". `data_age` is the endpoint's answer to that and
+ *     `DataAgeNotice` is this page's, shown only when the API says these
+ *     prices must not be read as current.
  *
  * Nothing here is a recommendation. Every figure is a measurement of a window
  * that has already closed.
@@ -319,6 +327,91 @@ function ExcludedBlock({
   )
 }
 
+/**
+ * How old these prices are, said once, at the top, and only when it matters.
+ *
+ * This page has TWO CLASSES of data behind it and they fail differently. Gold,
+ * FX, coin and the global series are collected by the server's own cron and are
+ * current by construction. Tehran equity bars are not: cdn.tsetmc.com is
+ * unreachable from the production host, so they are fetched elsewhere and
+ * pushed by hand. On 2026-09-24 the newest stored session was 2026-09-09 —
+ * fifteen days — and every request in between was answered with a `to` of the
+ * current date and a heading that said "1 YEAR". Each field was individually
+ * true; together they read as today's market.
+ *
+ * WHAT DECIDES WHETHER THIS RENDERS is `data_age.warning`, which the API sets
+ * exactly when these prices must not be read as current, and leaves off
+ * otherwise. Not a bound this file keeps: `stale_after_days` is one number
+ * shared by the endpoint and by the EquityBarsStale alert, so the page a reader
+ * looks at and the page an operator is paged about cannot disagree about when
+ * this data has gone bad. Gating on the warning also covers the deployment that
+ * holds no bars at all, which is a different state from "old" — there is no
+ * stale price being served because there is no price — and which the API
+ * reports with a warning and a null age rather than an age of zero.
+ *
+ * WHAT IT DOES NOT DO is arithmetic. `age_days` is measured on the server
+ * against the server's clock; subtracting `newest_trade_date` from `Date.now()`
+ * here would be a second implementation of the same measurement, free to
+ * disagree with both the API and the alert over a timezone.
+ *
+ * The register is a statement of fact. Nothing here apologises and nothing here
+ * warns about markets: what is wrong is that the store is behind, and the
+ * reader is told what it holds, how old that is, and what fixes it.
+ */
+export function DataAgeNotice({
+  age,
+  calendar
+}: {
+  age: StockDataAge | undefined
+  calendar: 'jalali' | 'gregorian'
+}) {
+  // No banner on fresh data. A notice that is always on is a notice nobody
+  // reads, and the day it means something it will be furniture.
+  if (!age || !age.warning) return null
+
+  const newest = age.newest_trade_date
+  const days = age.age_days
+  return (
+    <div className="callout callout-warn stk-dataage" data-testid="stk-data-age" role="status">
+      <div className="stk-dataage-head">
+        These are the freshest Tehran prices <strong>stored</strong>, not the freshest that
+        exist.
+      </div>
+      {newest !== null && days !== null ? (
+        <div className="stk-dataage-fact" data-testid="stk-data-age-fact">
+          The newest stored session is{' '}
+          <strong data-testid="stk-data-age-date">{formatDate(newest, calendar)}</strong>,{' '}
+          <strong data-testid="stk-data-age-days">{ageText(days)}</strong> against{' '}
+          {formatDate(age.as_of, calendar)}. The window above ends today because the request
+          did, not because the data does.
+        </div>
+      ) : null}
+      {/* The API's own account of what is wrong and what to run. This page
+          holds no copy of its own about it, so the two cannot drift. */}
+      <div className="stk-dataage-warning">{age.warning}</div>
+      <div className="muted small stk-dataage-note">
+        {age.note} Refreshed by <span className="mono">{age.refresh_command}</span>.
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The age in words, from the server's day count.
+ *
+ * A negative count is not freshness: a bad dEven parse puts a whole series 621
+ * years out, and the API reports that as a date AFTER today rather than
+ * clamping it to zero. Clamping it here would undo that and render the fault as
+ * perfectly current.
+ */
+function ageText(days: number): string {
+  if (days < 0) {
+    const ahead = -days
+    return `dated ${ahead} day${ahead === 1 ? '' : 's'} AFTER`
+  }
+  return `${days} day${days === 1 ? '' : 's'} old`
+}
+
 const DEFAULT_PERIOD: StockPeriod = '1y'
 const DEFAULT_NUMERAIRE: StockNumeraire = 'IRR'
 /** Go's own default sort for this endpoint (`defaultScreenSort`), so the first
@@ -415,7 +508,16 @@ export default function Stocks() {
    * and is echoed on every response, filtered or not.
    */
   const rosterSize = sectors.reduce((total, s) => total + s.instrument_count, 0)
-  const warnings = data?.warnings ?? []
+  const dataAge = data?.data_age
+  /**
+   * The staleness warning travels in `warnings` TOO, deliberately: the backend
+   * puts it there so that a client already rendering that list gets the notice
+   * with no change at all. This page renders it in a block of its own, so the
+   * copy in the list is dropped rather than printed twice — a sentence shown
+   * twice reads as two problems, and the duplicate is the one with no date, no
+   * age and no refresh command beside it.
+   */
+  const warnings = (data?.warnings ?? []).filter((w) => w !== dataAge?.warning)
   const basis = data?.price_basis
   const totalColumns = columns.length + absent.length
 
@@ -429,6 +531,11 @@ export default function Stocks() {
         and in gold. Each figure describes a window that has already closed; a figure that could
         not be computed shows a dash and the API's reason for it, never a zero.
       </p>
+
+      {/* Ahead of the controls, the table and the window: a reader who never
+          scrolls past the first screen still learns which day these prices are
+          from. Renders nothing at all when the store is current. */}
+      <DataAgeNotice age={dataAge} calendar={calendar} />
 
       <div className="row wrap stk-controls">
         <div className="field">
@@ -542,10 +649,22 @@ export default function Stocks() {
                 {data.count + data.excluded_count}{' '}
                 {data.sector ? 'symbols in this sector' : 'roster symbols'}
               </div>
+              {/* The window, and — when the store is behind — where the prices
+                  in it actually stop. This line is where "1 YEAR ending today"
+                  is read, so it is where the correction belongs; the notice at
+                  the top of the page carries the age and the fix. `stale` is
+                  never true without the warning that raises that notice, so
+                  this mark never appears on its own. */}
               <div className="muted small">
                 {data.from ? formatDate(data.from, calendar) : 'each instrument’s own first bar'} →{' '}
                 {formatDate(data.to, calendar)}
                 {data.as_of ? ` · as of ${formatDate(data.as_of, calendar)}` : ''}
+                {dataAge?.stale && dataAge.newest_trade_date ? (
+                  <span className="stk-dataage-inline" data-testid="stk-window-stops">
+                    {' '}
+                    · prices stop {formatDate(dataAge.newest_trade_date, calendar)}
+                  </span>
+                ) : null}
               </div>
             </div>
 

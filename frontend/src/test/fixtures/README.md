@@ -69,13 +69,45 @@ serves the endpoint**, not written by hand:
   the reference price) and the **numéraire quotes** (daily toman quotes for
   `USD_IRT` and `IR_GOLD_18K`). Both are INPUTS. No output field is authored.
 
-The three files differ only in what was asked of that code:
+The four files differ only in what was asked of that code:
 
 | file | request | what it exercises |
 | --- | --- | --- |
 | `stocks-screen-1y-irr.json` | `period=1y&numeraire=IRR` | the default view; ذوب is halted for all but one session of the window, so its return, volatility and drawdown are null **with reasons** |
 | `stocks-screen-3m-usd.json` | `period=3m&numeraire=USD&sort=return&order=desc` | `numeraire_series`, the per-row `conversion` block, metrics measured in USD |
 | `stocks-screen-1y-nogold.json` | `period=1y&numeraire=IRR` against a deployment with **no gold series ingested** | `price_gold_grams: null` carrying the numéraire engine's own reason on every row |
+| `stocks-screen-1y-irr-stale.json` | `period=1y&numeraire=IRR`, clock at **2026-09-24**, bars stopping **2026-09-09** | `data_age.stale`, and the shape of the defect: a window ending today over a store fifteen days behind |
+
+## The freshness block (`data_age`)
+
+Tehran equity bars are a MANUALLY REFRESHED dataset — cdn.tsetmc.com is
+unreachable from the production host — so the screener can serve old prices
+under today's heading indefinitely. `data_age` is the endpoint's answer to
+that, and these fixtures carry it the same way they carry everything else.
+
+* On the **three captured files**, `data_age` was NOT written into them by
+  hand. It is a pure function of (newest `last_bar` across the universe,
+  `as_of`), and both of those already travelled on each captured payload, so
+  the block was produced by calling `equities.buildDataAge` on that file's own
+  two values and splicing the result in beside the window it qualifies.
+  Nothing else in those files changed. All three report `2026-09-09`, one day
+  old against the 2026-09-10 capture, and therefore `stale: false` with no
+  warning.
+* `stocks-screen-1y-irr-stale.json` is a **whole response**, not a doctored
+  copy of a fresh one. Shifting the clock on a captured payload would have left
+  its `to`, its per-row `metrics_from` and its window counts describing a
+  window nobody asked for — the invention this directory exists to keep out —
+  so the roster metadata was recovered from the capture and fed back through
+  the real `buildScreenResponse` with the clock at 2026-09-24 and the generated
+  bars stopping at 2026-09-09. Its `data_age`, its `to`, its `warnings` and its
+  251-session rows agree because the server made them agree.
+* `stocks-data-age-empty-roster.json` and `stocks-data-age-future-dated.json`
+  are single `dataAgeBlock` values, straight out of `buildDataAge`. They stand
+  alone because neither state can sit inside a screener payload without
+  contradicting its rows: a deployment with no bars has no rows to put them
+  beside, and a bar dated after today is a stored fault no captured response
+  contains. The first is the one case that warns while `stale` is **false** —
+  there is no old price being served because there is no price.
 
 ### Refreshing
 
@@ -89,3 +121,12 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 If a test then fails, the contract changed — read the diff before touching the
 test.
+
+The stale and edge-state files are the exception, and only because there is
+nothing to capture: waiting for production to break in each of those three ways
+is not a refresh procedure. Regenerate them the way they were made — a
+generator injected into `package equities` with `go test -overlay`, calling
+`buildScreenResponse` and `buildDataAge` directly, so that nothing is added to
+`backend-go/` and no output field is authored. Choosing the inputs (the clock,
+the newest stored bar, the bars themselves) is the whole job; everything the
+fixture then says is the server's.

@@ -1,0 +1,10 @@
+{
+  "newest_trade_date": "2026-09-27",
+  "age_days": -3,
+  "as_of": "2026-09-24",
+  "stale": true,
+  "stale_after_days": 10,
+  "refresh_command": "make refresh-equities",
+  "warning": "The newest stored trade date is 2026-09-27, which is 3 day(s) AFTER today (2026-09-24). A bar cannot be in the future, so this is a stored or parsed date fault, not a fresh dataset — do not read these prices as current.",
+  "note": "Tehran equity bars do not refresh themselves: TSETMC is unreachable from the production host, so bars arrive only when an operator runs the fetch script from a network that can reach it. This block is the age of the newest stored session across the roster, measured against today rather than against this response's window."
+}

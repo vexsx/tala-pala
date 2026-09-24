@@ -113,6 +113,163 @@ func (rn *Runner) Run(ctx context.Context) (int, error) {
 	return events, nil
 }
 
+// --- freshness of the manually refreshed data classes ------------------------
+//
+// This platform has two classes of data and only one of them looks after
+// itself.
+//
+//	SELF-UPDATING  gold, FX, coin and the global series, collected every ten
+//	               minutes by the collect cron on the server.
+//	MANUAL         Tehran equity bars (TSETMC) and SCI CPI. Neither source is
+//	               reachable from the production host — measured, not assumed:
+//	               amar.org.ir accepts TCP on 443 and 80 and then answers
+//	               nothing, and cdn.tsetmc.com fails TCP 443 outright with
+//	               http=000 while answering fine from outside that network.
+//	               So they are fetched elsewhere and pushed, by
+//	               scripts/sci_fetch.py and scripts/tsetmc_fetch.py.
+//
+// The architecture is right. What was missing is that nothing SCHEDULES those
+// runs and nothing NOTICED when they stopped: on 2026-09-24 the newest equity
+// bar in production was 2026-09-09, fifteen days old, and the screener had
+// been serving those prices under a window labelled with the current date the
+// whole time. The only reason anyone knew is that a human went looking. The
+// gauges below are what makes "the human stopped running the script" a
+// monitorable event instead of a discovery.
+//
+// Both follow the GROUP BY shape UpdateFreshness already uses for prices, and
+// for the same reason: a new symbol or a new provider produces a new series
+// with no code change here, so widening the roster stays an INSERT.
+
+// equityFreshnessSelect is the newest stored bar per ENABLED instrument.
+//
+// A constant so a test can assert its shape without a database. GROUP BY, not
+// DISTINCT ON, to match the prices read above; the join is to
+// equity_instruments because the label has to be the Persian trading symbol a
+// human recognises and /api/v1/stocks resolves, not the opaque 17-digit
+// TSETMC ins_code. max() over a group is never NULL, so there is no
+// null-timestamp case to get wrong.
+//
+// WHERE i.enabled is load-bearing, and it is here to match the FETCH rather
+// than the API. scripts/tsetmc_fetch.py takes its roster from
+// app/economic/ingest.py roster(include_disabled=False), so a disabled
+// instrument never receives another bar BY DESIGN. Without this filter its
+// gauge would keep publishing a frozen timestamp, and 30 days later
+// EquityInstrumentBarsStale would fire for it on every evaluation, forever,
+// while the system is behaving exactly as configured -- the precise failure
+// newestAcross below refuses to create, for the reason given there.
+//
+// This is latent rather than live: the only disabled instrument in production
+// today (کچاد, seeded disabled by migration 0028) has never been ingested, so
+// the inner join drops it anyway. It bites the moment anyone disables an
+// instrument that already HAS history, which is the ordinary way this switch
+// gets used. Note the API deliberately does the opposite and keeps disabled
+// instruments visible (internal/equities/handlers.go): listing an instrument
+// and expecting the fetch to refresh it are different questions.
+const equityFreshnessSelect = `
+	SELECT i.symbol_fa, max(b.trade_date)
+	  FROM equity_bars b
+	  JOIN equity_instruments i ON i.ins_code = b.ins_code
+	 WHERE i.enabled
+	 GROUP BY i.symbol_fa`
+
+// economicFreshnessSelect is the newest observation per provider, by
+// available_at.
+//
+// available_at, NOT ref_period_end. "What period does this describe" and "when
+// did we last learn something" are different questions and only the second one
+// is about staleness: SCI's Mordad 1405 print describes a period that ended
+// 2026-08-22 and reached us weeks later, so a ref_period_end gauge reports a
+// perfectly healthy pipeline as permanently weeks behind — and therefore
+// cannot distinguish it from a dead one. migration 0024 says the same thing
+// about this column: "every point-in-time read filters on this column and
+// nothing else".
+//
+// Grouped by provider rather than by series: a provider is what a refresh run
+// covers, so it is the unit at which a refresh can stop.
+const economicFreshnessSelect = `
+	SELECT s.provider_code, max(o.available_at)
+	  FROM economic_observations o
+	  JOIN economic_series s ON s.id = o.series_id
+	 GROUP BY s.provider_code`
+
+// freshnessRow is one (label, newest instant) pair from a GROUP BY read.
+type freshnessRow struct {
+	Label  string
+	Newest time.Time
+}
+
+// newestAcross reduces per-label freshness to the newest instant across all of
+// them, reporting false when there are no rows at all.
+//
+// The bool is the whole point and is why this is a function rather than a
+// max() in a loop. An empty equity_bars table must produce NO gauge: the zero
+// time would be published as a Unix timestamp of -6795364578 or, after a
+// float64 round trip through a Gauge, as something equally meaningless, and
+// every staleness rule reading it would compute an age of decades and fire
+// permanently on a fresh deployment that has simply never ingested. A rule
+// that fires forever on a correct system is worse than no rule, because it
+// teaches the operator to ignore the one that matters. Self-gating — no row,
+// no series, no alert — is the same property the news and economic rules in
+// observability/alerts.yml rely on.
+func newestAcross(rows []freshnessRow) (time.Time, bool) {
+	var newest time.Time
+	found := false
+	for _, r := range rows {
+		if r.Newest.IsZero() {
+			// A zero instant is not data. Skipping it here rather than at the
+			// call site keeps "the table is empty" and "the table holds a
+			// zero" on the same, silent path.
+			continue
+		}
+		if !found || r.Newest.After(newest) {
+			newest, found = r.Newest, true
+		}
+	}
+	return newest, found
+}
+
+// applyFreshness publishes one gauge per row and, when asked, the aggregate
+// across them.
+//
+// Pure over (gauges, rows): no clock, no database. It exists so the
+// no-row-no-gauge rule can be asserted directly — the test collects the
+// registry after calling this with an empty slice and requires zero series.
+func applyFreshness(per *obs.DualGaugeVec, roster *obs.DualGaugeVec, rows []freshnessRow) {
+	for _, r := range rows {
+		if r.Newest.IsZero() {
+			continue
+		}
+		per.WithLabelValues(r.Label).Set(float64(r.Newest.Unix()))
+	}
+	if roster == nil {
+		return
+	}
+	if newest, ok := newestAcross(rows); ok {
+		// Touched only inside the ok branch: an untouched zero-label Vec
+		// publishes nothing, which is what keeps the rule self-gating.
+		roster.WithLabelValues().Set(float64(newest.Unix()))
+	}
+}
+
+// scanFreshness runs one of the GROUP BY reads above.
+func (rn *Runner) scanFreshness(ctx context.Context, query string) ([]freshnessRow, error) {
+	rows, err := rn.Pool.Query(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []freshnessRow{}
+	for rows.Next() {
+		var r freshnessRow
+		if err := rows.Scan(&r.Label, &r.Newest); err != nil {
+			return nil, err
+		}
+		r.Newest = r.Newest.UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // UpdateFreshness refreshes the prediction/price freshness gauges (the
 // Go-side prediction-freshness job, run alongside alert evaluation).
 func (rn *Runner) UpdateFreshness(ctx context.Context, m *obs.Metrics) error {
@@ -140,16 +297,37 @@ func (rn *Runner) UpdateFreshness(ctx context.Context, m *obs.Metrics) error {
 	if err != nil {
 		return err
 	}
-	defer predRows.Close()
 	for predRows.Next() {
 		var hz string
 		var ts time.Time
 		if err := predRows.Scan(&hz, &ts); err != nil {
+			predRows.Close()
 			return err
 		}
 		m.LastPredictionTimestamp.WithLabelValues(hz).Set(float64(ts.Unix()))
 	}
-	return predRows.Err()
+	predRows.Close()
+	if err := predRows.Err(); err != nil {
+		return err
+	}
+
+	// The two manually refreshed classes. They are read here, in the job that
+	// already re-reads freshness from Postgres every five minutes, rather than
+	// being set by whatever ingested them: an ingest-time gauge only exists
+	// while the process that wrote it lives, and the thing being monitored
+	// here is precisely an ingest that is NOT happening.
+	equity, err := rn.scanFreshness(ctx, equityFreshnessSelect)
+	if err != nil {
+		return err
+	}
+	applyFreshness(m.LastEquityBarTimestamp, m.LastEquityBarRosterTimestamp, equity)
+
+	economic, err := rn.scanFreshness(ctx, economicFreshnessSelect)
+	if err != nil {
+		return err
+	}
+	applyFreshness(m.LastEconomicObservation, nil, economic)
+	return nil
 }
 
 func (rn *Runner) loadSnapshot(ctx context.Context) (Snapshot, error) {

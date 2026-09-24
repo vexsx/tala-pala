@@ -650,6 +650,13 @@ type screenResponse struct {
 	From *string `json:"from"`
 	To   string  `json:"to"`
 
+	// DataAge sits here, immediately after the window, because this is exactly
+	// where the response used to mislead: `to` is today and `period` is the
+	// last month, and for fifteen days in September 2026 every price under
+	// them came from 2026-09-09. The window says what was ASKED FOR; this says
+	// how far the stored data actually reaches.
+	DataAge dataAgeBlock `json:"data_age"`
+
 	Numeraire string `json:"numeraire"`
 	// NumeraireSeries is the backing series' identity and reach, in the same
 	// shape /api/v1/markets/performance publishes. Null for IRR, which is the
@@ -1295,6 +1302,13 @@ func buildScreenResponse(in screenInputs) screenResponse {
 				"would be expressed in "+q.Numeraire+" is null with that reason.")
 	}
 
+	// universe is every roster row the caller asked about, screened or not.
+	// The freshness block is measured over it rather than over `items`: an
+	// instrument excluded for a refused adjustment still receives bars from
+	// the same fetch, so its last_bar is evidence about whether that fetch
+	// ran, and dropping it would let one refused symbol make the dataset look
+	// staler than it is.
+	universe := make([]stockRow, 0, len(in.Roster))
 	for _, r := range in.Roster {
 		if q.Sector != "" && r.SectorCode != q.Sector {
 			// Not an exclusion. The caller narrowed the universe on purpose,
@@ -1302,6 +1316,7 @@ func buildScreenResponse(in screenInputs) screenResponse {
 			// symbols that genuinely could not be screened.
 			continue
 		}
+		universe = append(universe, r)
 		if ex, ok := screenable(r); !ok {
 			out.Excluded = append(out.Excluded, ex)
 			continue
@@ -1313,6 +1328,24 @@ func buildScreenResponse(in screenInputs) screenResponse {
 			latest = &l
 		}
 		out.Items = append(out.Items, buildScreenItem(r, bars, latest, q, in.Converter))
+	}
+
+	// q.AsOf is today's date floor, set by parseScreenQuery from the handler's
+	// clock. It equals q.To today, because this endpoint has no ?to= and the
+	// window always ends now — and it is still AsOf that is passed, because
+	// the two mean different things. AsOf is the clock; To is where the window
+	// ends. The day a ?to= is added, measuring the DATASET's age against a
+	// bound the CALLER chose would report a request for a historical window as
+	// perfectly current, which is a rename away from reintroducing exactly the
+	// failure this block was added for.
+	out.DataAge = buildDataAge(newestRosterBar(universe), q.AsOf)
+	if out.DataAge.Warning != "" {
+		// Also in `warnings`, and ahead of the truncation and exclusion notes
+		// that follow. A client already rendering that list gets the staleness
+		// banner with no change at all, which matters more here than tidiness:
+		// the failure being fixed is a reader trusting a number, not a
+		// developer missing a field.
+		out.Warnings = append(out.Warnings, out.DataAge.Warning)
 	}
 
 	out.Matched = len(out.Items)
