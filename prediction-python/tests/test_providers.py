@@ -10,6 +10,7 @@ from sqlalchemy import func, insert, select
 
 from app.core import validation
 from app.db import app_settings, data_providers, prices, raw_observations, utcnow
+from app.jobs import collect as collect_job
 from app.jobs.collect import PEER_DISPERSION_KEY, run_collect
 from app.providers import (
     alanchand,
@@ -1147,6 +1148,10 @@ def test_a_frozen_series_warns_once_per_cooldown(engine, settings, monkeypatch):
 
     _seed_provider(engine, "yahoo", priority=10, category="global_gold")
     now = utcnow()
+    # US10Y is a GLOBAL symbol, shut from Friday 21:00 UTC to Sunday 22:00, and
+    # the freeze warning now declines to fire while a market is closed. Without
+    # pinning that here the test passes on a Wednesday and fails every weekend.
+    monkeypatch.setattr(collect_job, "is_market_open", lambda *_a, **_k: True)
     _seed_us10y_prices(engine, 0.4697, now)
     # three earlier suspects, but only 30 minutes of them: past the alert
     # threshold, short of the span acceptance needs
@@ -1174,6 +1179,41 @@ def test_a_frozen_series_warns_once_per_cooldown(engine, settings, monkeypatch):
         marker = conn.execute(select(app_settings.c.value).where(
             app_settings.c.key == FREEZE_ALERT_KEY)).scalar()
     assert "US10Y" in marker
+
+
+def test_a_closed_market_is_not_a_frozen_series(engine, settings, monkeypatch):
+    """A repeated quote over a weekend is a shut exchange, not a stuck provider.
+
+    Measured on production over 72 hours before this guard existed: 38 of 48
+    warnings were US10Y and BRENT_OIL repeating their last value while
+    GLOBAL_SYMBOLS were closed. The issue log is the operational surface, and
+    four fifths of it was weekends -- which is how a real alert stops being read.
+
+    Suppressed rather than downgraded, because while the market is shut there is
+    no evidence that separates a stuck feed from a closed exchange. A genuinely
+    frozen series stays frozen into the next session and warns then; the US10Y
+    incident this alert was written for ran for weeks.
+    """
+    _seed_provider(engine, "yahoo", priority=10, category="global_gold")
+    now = utcnow()
+    monkeypatch.setattr(collect_job, "is_market_open", lambda *_a, **_k: False)
+    _seed_us10y_prices(engine, 0.4697, now)
+    _seed_suspect_run(engine, "yahoo", 4.68, now, count=3, spacing_minutes=10)
+    stub = CountingStub([_tnx_obs("yahoo", 4.682, now)])
+    _patch_registry(monkeypatch, {"yahoo": stub})
+
+    with _issue_capture(engine):
+        run_collect(engine, settings, ["macro"])
+        issues = _collect_issues(engine)
+
+    assert [i["message"] for i in issues if "frozen" in i["message"]] == []
+    # The suspect itself is still held -- suppressing the WARNING must not
+    # suppress the protection it describes.
+    with engine.connect() as conn:
+        assert conn.execute(
+            select(func.count()).select_from(prices)
+            .where(prices.c.symbol == "US10Y", prices.c.value > 1.0)
+        ).scalar() == 0
 
 
 def test_repaired_history_lets_the_real_parser_flow_again(engine, settings, monkeypatch):

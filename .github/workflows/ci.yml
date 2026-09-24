@@ -68,11 +68,23 @@ jobs:
       # Schema version currently applied in production: the upgrade check
       # replays everything above it the way the next deploy will. Bump this
       # after a release migrates prod.
-      # The schema version production is actually running. Keep this in step
-      # with the deployed database (SELECT version FROM schema_migrations) or
-      # the incremental-upgrade job stops testing the path production will take.
-      # Verified against 85.137.30.142 on 2026-09-08: version 23.
-      PRODUCTION_BASELINE: "23"
+      # The schema version production is actually running. Verified against
+      # 85.137.30.142 on 2026-09-24: version 28.
+      #
+      # This pin has now gone stale TWICE — it sat at 16 while production ran
+      # 23, and at 23 while production ran 28 — and each time the
+      # incremental-upgrade stage quietly stopped testing the path production
+      # would actually take. A comment saying "keep this in step" did not keep
+      # it in step, so the drift is now ENFORCED below rather than requested:
+      # MAX_BASELINE_DRIFT makes CI fail, with instructions, once the pin falls
+      # too far behind the tip. A loud failure is the only thing that has ever
+      # worked on this file.
+      PRODUCTION_BASELINE: "28"
+      # How many migrations the pin may lag HEAD before CI refuses. Three is a
+      # release's worth of schema change: far enough not to fire on a single
+      # merged migration, near enough that the upgrade stage still rehearses
+      # something close to production's real jump.
+      MAX_BASELINE_DRIFT: "3"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -154,6 +166,21 @@ jobs:
           set -eu
           latest=$(python3 scripts/check_migrations.py --list versions | tail -n 1 | sed 's/^0*//')
           baseline=$PRODUCTION_BASELINE
+
+          # Refuse a pin that has drifted, instead of silently testing a jump
+          # production will never make. See the comment on PRODUCTION_BASELINE.
+          drift=$((latest - baseline))
+          if [ "$drift" -gt "$MAX_BASELINE_DRIFT" ]; then
+            echo "::error::PRODUCTION_BASELINE is $baseline but the newest migration is $latest" \
+                 "— a drift of $drift, over the limit of $MAX_BASELINE_DRIFT."
+            echo "The upgrade stage is no longer rehearsing production's real jump."
+            echo "Fix: read the deployed version —"
+            echo "    ssh <host> 'cd /opt/tala-pala && sudo docker compose exec -T postgres \\"
+            echo "      psql -U goldpred -d goldpred -At -c \"SELECT version FROM schema_migrations\"'"
+            echo "then set PRODUCTION_BASELINE to it here, and re-check that the rows seeded"
+            echo "below still exercise the data migrations between that version and the tip."
+            exit 1
+          fi
           # Hold one migration back if the pin has caught up with the tip, so
           # the incremental stage is never a no-op that passes for free.
           if [ "$baseline" -ge "$latest" ]; then

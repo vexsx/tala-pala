@@ -300,6 +300,7 @@ def _warn_series_frozen(
     obs: Observation,
     streak: validation.SuspectStreak,
     reason: Optional[str],
+    settings: Optional[Settings] = None,
 ) -> None:
     """Throttled WARNING for a series that repeated suspects are holding shut.
 
@@ -312,6 +313,32 @@ def _warn_series_frozen(
     from ..jobs.evaluate import upsert_setting
 
     now = utcnow()
+
+    # A CLOSED market is not a frozen feed, and this warning could not tell them
+    # apart. Measured on production over 72 hours: 38 of 48 warnings were US10Y
+    # and BRENT_OIL repeating their last value across a weekend, when
+    # GLOBAL_SYMBOLS are shut from Friday 21:00 UTC to Sunday 22:00 -- a closure
+    # this module already knows about, since is_market_open is imported at the
+    # top of this file and used for freshness. The issue log is the operational
+    # surface, and four fifths of it was weekends, which is how a real alert
+    # stops being read.
+    #
+    # Suppressed rather than downgraded: while the market is shut there is no
+    # evidence that separates a stuck provider from a closed exchange, so the
+    # honest answer is to say nothing and re-examine on reopening. A series that
+    # is genuinely frozen stays frozen into the next session and warns then --
+    # the US10Y incident this alert was written for ran for WEEKS, so nothing
+    # that matters is lost by waiting out a weekend.
+    #
+    # Note this suppresses only the WARNING. The suspect is still held and the
+    # value still does not reach `prices`; the protection is unchanged.
+    if settings is not None and not is_market_open(obs.symbol, now, settings):
+        log.debug(
+            "%s repeated %s while its market is closed; not warning about a "
+            "frozen series until it reopens",
+            obs.symbol, obs.value,
+        )
+        return
     with engine.connect() as conn:
         stored = conn.execute(
             select(app_settings.c.value).where(app_settings.c.key == FREEZE_ALERT_KEY)
@@ -566,7 +593,7 @@ def run_collect(
                             suspects.setdefault(obs.symbol, []).append(obs)
                             _store(engine, obs, "suspect")
                             if frozen and streak.length >= validation.SUSPECT_ALERT_AFTER:
-                                _warn_series_frozen(engine, obs, streak, reason)
+                                _warn_series_frozen(engine, obs, streak, reason, settings)
                             errors.append(
                                 f"{code}/{obs.symbol}: held as suspect ({reason}); "
                                 "awaiting confirmation by a second source"
