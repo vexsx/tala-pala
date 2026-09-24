@@ -3146,3 +3146,37 @@ input[type='checkbox'] {
 .stk-excluded .card-title {
   color: var(--warn);
 }
+
+/* --- what things cost -------------------------------------------------------
+ *
+ * The cost-of-living card is deliberately NOT styled like the ranked asset
+ * table beside it. It carries a left border and a recessed surface so a reader
+ * scanning the page sees at a glance that it is a different kind of claim --
+ * what parts of the basket cost, not what anything returned. The API keeps
+ * these rows out of `items` so they cannot be sorted or ranked with the assets;
+ * this is the visual half of the same decision.
+ */
+.mkt-col {
+  border-inline-start: 3px solid var(--accent-muted, var(--border));
+}
+
+.mkt-col-note {
+  max-width: 90ch;
+  margin: 4px 0 12px;
+}
+
+/* The note carries the "this is not a house price index" caveat, so it must
+ * not be visually throwaway even though it is muted. */
+.mkt-col-note {
+  line-height: 1.55;
+}
+
+.mkt-col-table th[scope='row'] {
+  font-weight: 600;
+  text-align: start;
+}
+
+.mkt-col-table .mkt-note-list {
+  font-weight: 400;
+  margin-top: 4px;
+}

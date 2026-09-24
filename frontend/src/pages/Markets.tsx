@@ -7,7 +7,8 @@ import {
   type MarketPerformanceResponse,
   type MarketPeriod,
   type NumeraireOption,
-  type NumerairesResponse
+  type NumerairesResponse,
+  type CostOfLivingBlock
 } from '../api/types'
 import { unwrapList } from '../lib/unwrap'
 import { useSettings } from '../lib/settings'
@@ -34,6 +35,7 @@ import {
   formatToman,
   formatUsd,
   pctClass,
+  type CalendarMode,
   type DisplayUnit
 } from '../lib/format'
 import Provenance from '../components/Provenance'
@@ -232,6 +234,114 @@ function windowText(
 ): string {
   if (!from && !to) return ''
   return `${formatDate(from, calendar)} → ${formatDate(to, calendar)}`
+}
+
+/**
+ * What parts of the consumer basket COST over the window.
+ *
+ * A separate card from the ranked table, and that separation is the point. The
+ * API keeps these rows out of `items` so they cannot be sorted with the assets
+ * or win "best performer"; rendering them inside the same table would undo that
+ * in the one place a reader actually looks. Nobody can buy the housing index.
+ *
+ * The block's own `note` is rendered rather than summarised because it carries
+ * the caveat this page would otherwise imply away: the shelter row is
+ * rent-dominated and is NOT house prices, and this deployment has no house
+ * price index at all. A reader who takes "shelter −57%" for "houses lost
+ * value" has been misled by the page, not by the data.
+ *
+ * Exported so a test can render it on its own against a captured payload.
+ */
+export function CostOfLivingCard({
+  block,
+  calendar
+}: {
+  block: CostOfLivingBlock
+  calendar: CalendarMode
+}) {
+  return (
+    <div className="card mkt-col">
+      <div className="row space-between wrap">
+        <div className="card-title">What things cost</div>
+        <div className="muted small">
+          measured against <span className="mono">{block.deflator}</span>
+        </div>
+      </div>
+
+      <p className="muted small mkt-col-note">{block.note}</p>
+
+      <div className="table-wrap">
+        <table className="table mkt-col-table">
+          <thead>
+            <tr>
+              <th scope="col">Basket component</th>
+              <th scope="col" className="num">
+                Price change
+              </th>
+              <th scope="col" className="num">
+                vs. the basket
+              </th>
+              <th scope="col">Window</th>
+            </tr>
+          </thead>
+          <tbody>
+            {block.items.map((it) => {
+              const notes = it.notes ?? []
+              return (
+                <tr key={it.code}>
+                  <th scope="row">
+                    <div>{it.label}</div>
+                    <div className="muted small mono">{it.code}</div>
+                    {notes.length > 0 ? (
+                      <ul className="mkt-note-list">
+                        {notes.map((n, i) => (
+                          <li key={i}>{n}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </th>
+                  <td className="num" data-testid={`col-growth-${it.code}`}>
+                    {it.growth_pct === null ? (
+                      <Absent reason="This component has fewer than two reference months inside the window, and the index is never interpolated to fill one." />
+                    ) : (
+                      <span className="mono">{formatPct(it.growth_pct, { sign: true })}</span>
+                    )}
+                  </td>
+                  <td className="num" data-testid={`col-real-${it.code}`}>
+                    {it.real_growth_pct === null ? (
+                      <Absent reason="The headline index does not cover both of this component's reference periods, so deflating would report the coverage difference as a price movement." />
+                    ) : (
+                      <span className={`mono ${pctClass(it.real_growth_pct)}`}>
+                        {formatPct(it.real_growth_pct, { sign: true })}
+                      </span>
+                    )}
+                  </td>
+                  <td className="muted small">
+                    {it.from && it.to ? (
+                      <>
+                        {formatDate(it.from, calendar)} → {formatDate(it.to, calendar)}
+                        <div>
+                          {it.periods} reference month{it.periods === 1 ? '' : 's'}
+                        </div>
+                      </>
+                    ) : (
+                      <span className="muted">not measured</span>
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="muted small mkt-footer">
+        A positive figure in <strong>vs. the basket</strong> means this part of life got more
+        expensive faster than everything else; a negative one means it got relatively cheaper. It
+        is not a return, and none of these can be bought.
+      </div>
+    </div>
+  )
 }
 
 export default function Markets() {
@@ -737,6 +847,10 @@ export default function Markets() {
               both directions: a dash is not a smallest value.
             </div>
           </div>
+
+          {data.cost_of_living ? (
+            <CostOfLivingCard block={data.cost_of_living} calendar={calendar} />
+          ) : null}
         </>
       )}
     </div>

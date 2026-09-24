@@ -37,6 +37,63 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `GET /admin/audit` | Audit log |
 | `GET/POST /admin/users` · `PUT/DELETE /admin/users/{id}` | Full user management (list/create/change role/reset password/delete; self-registration is closed) |
 
+## Real returns and the cost of living (`GET /markets/performance`)
+
+### Two deflators, and which one answered
+
+A real return is only as fine as the index behind it, so every row names the
+series that deflated it in `real_return_deflator`.
+
+| | `SCI_CPI_URBAN` (preferred) | `WB_CPI_IRN` (fallback) |
+|---|---|---|
+| publisher | Statistical Centre of Iran | World Bank mirror |
+| frequency | **monthly** | annual |
+| coverage | 2002-03 → 2026-07 | 1960 → 2025-01 |
+| shortest answerable window | ~2 months | 2 calendar years |
+
+The monthly index is tried first and wins wherever it reaches — which is every
+asset in `prices`, the earliest of which begins in 2010. The annual series is
+used only when a window starts before 2002-03, today just deep Tehran equity
+history, and a row that fell back says so in its notes.
+
+**The two are never chained.** A ratio taken across the 2002 boundary would
+splice two baskets, two methodologies and two rebasings into a number neither
+publisher would endorse. A row uses one deflator or the other.
+
+This matters more than it sounds: under the annual series a **1-year window got
+no real return at all**, because deflating needed two covered calendar years.
+It was not an approximation — it was a null.
+
+### `cost_of_living`
+
+A **separate array** from `items`, holding what parts of the consumer basket
+cost over the same window. Separate because these are price indices nobody can
+buy: they must not be sortable with the assets or eligible to be the best
+performer.
+
+| field | meaning |
+|---|---|
+| `growth_pct` | the index's own change over the covered window |
+| `real_growth_pct` | that change against the **headline** index over the *same* reference periods. Positive = this part of life outpaced the basket; negative = it got relatively cheaper |
+| `periods` | reference months actually spanned, which can be fewer than requested |
+
+Because both legs come from one publisher with identical periods, this is the
+one real comparison in the API with **no leg mismatch to disclose** — unlike the
+asset rows, which must anchor a daily series inside a monthly period and report
+the residual in days.
+
+Two things this section deliberately cannot say:
+
+- **Shelter is not house prices.** `SCI_CPI_HOUSING` and `SCI_CPI_RENT`
+  correlate at 0.999996 across all 293 months and never diverge more than 1.11%
+  — the Iranian housing division is rent-dominated, so they are one fact twice.
+  Shelter is published **once**. There is no house price index on this
+  deployment, so the API cannot say what a home was worth, only what shelter
+  cost.
+- **An index has no numéraire.** Gold in dollars is a price; the vehicle index
+  in dollars is nothing, because the index is already a ratio to its own base.
+  These rows are never converted, whatever `?numeraire=` asked for.
+
 ## Equity data age (`data_age`)
 
 `GET /stocks` and `GET /stocks/screen` both carry a top-level `data_age` block.

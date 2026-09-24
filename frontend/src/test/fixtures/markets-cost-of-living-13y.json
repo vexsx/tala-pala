@@ -1,0 +1,32 @@
+{
+  "deflator": "SCI_CPI_URBAN",
+  "items": [
+    {
+      "code": "SCI_CPI_HOUSING",
+      "label": "Shelter (rent-dominated)",
+      "growth_pct": 1430.118712,
+      "real_growth_pct": -53.042172,
+      "from": "2013-08-23",
+      "to": "2026-07-23",
+      "periods": 155,
+      "notes": [
+        "The housing division of the urban CPI. It is dominated by rent, actual and imputed, so it is the cost of OCCUPYING a home and not the price of buying one. Do not read it as a housing-market return.",
+        "Measured over 1392-06..1405-05 (155 reference months). Against the headline index, which rose 3158.50% over the identical periods."
+      ]
+    },
+    {
+      "code": "SCI_CPI_VEHICLES",
+      "label": "Vehicles",
+      "growth_pct": 5800.13113,
+      "real_growth_pct": 81.069182,
+      "from": "2013-08-23",
+      "to": "2026-07-23",
+      "periods": 155,
+      "notes": [
+        "The vehicle component of the urban CPI: what cars cost a consumer. Closer to a transactable price than the shelter row, but still an index of consumer prices rather than the resale value of a particular car.",
+        "Measured over 1392-06..1405-05 (155 reference months). Against the headline index, which rose 3158.50% over the identical periods."
+      ]
+    }
+  ],
+  "note": "These are CONSUMER PRICE INDICES, not assets: they say what part of the basket cost, not what anything returned, and none of them can be bought. They are kept out of the ranked table above for that reason. `real_growth_pct` measures each component against the headline SCI_CPI_URBAN over the SAME reference periods, so unlike the asset rows there is no leg mismatch to report. Shelter is published once: SCI_CPI_HOUSING and SCI_CPI_RENT are the same fact twice on this data (correlation 0.999996 over 293 months, never more than 1.11% apart), because the Iranian housing division is rent-dominated. This deployment carries NO house PRICE index, so it cannot say what a home was worth -- only what shelter cost."
+}

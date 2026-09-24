@@ -1109,6 +1109,14 @@ export interface MarketPerformanceItem {
   real_return_from: string | null
   real_return_to: string | null
   /**
+   * Which CPI series deflated THIS row. Two rows in one response can honestly
+   * differ: `SCI_CPI_URBAN` is monthly and preferred wherever it reaches, and a
+   * window beginning before it starts (2002-03) falls back to the annual
+   * `WB_CPI_IRN`. Null when no deflator produced a number. Read it before
+   * comparing two real returns — one may be twelve times coarser than the other.
+   */
+  real_return_deflator?: string | null
+  /**
    * Sample stdev of log returns between CONSECUTIVE OBSERVATIONS — these
    * symbols do not quote every day. NOT annualised: do not scale it in the UI.
    *
@@ -1170,8 +1178,54 @@ export interface MarketPerformanceResponse {
   as_of: string | null
   items: MarketPerformanceItem[]
   count?: number
+  /**
+   * What parts of the consumer basket COST over the same window.
+   *
+   * A separate array from `items` on purpose, and it must stay separate in the
+   * UI too: these are price indices nobody can buy, so they are not sortable
+   * with the assets and cannot be the "best performer". Null when the
+   * deployment carries no SCI components or the window holds fewer than two of
+   * their reference months.
+   */
+  cost_of_living?: CostOfLivingBlock | null
   /** Names every instrument left OUT of `items`, and why. Never null. */
   warnings: string[] | null
+}
+
+/** One component of the consumer basket — `relvalue.costOfLivingItem`. */
+export interface CostOfLivingItem {
+  code: string
+  label: string
+  /** The index's own change over the covered window. */
+  growth_pct: number | null
+  /**
+   * That change measured against the HEADLINE index over the SAME reference
+   * periods: positive means this part of the basket outpaced the basket,
+   * negative means it became relatively cheaper. Exact — both legs are one
+   * publisher's identical periods, so unlike the asset rows there is no leg
+   * mismatch.
+   */
+  real_growth_pct: number | null
+  from: string | null
+  to: string | null
+  /** Reference months actually spanned, which can be fewer than requested. */
+  periods: number
+  notes: string[] | null
+}
+
+/** `relvalue.costOfLivingBlock`. */
+export interface CostOfLivingBlock {
+  /** The headline index each component is measured against. */
+  deflator: string
+  items: CostOfLivingItem[]
+  /**
+   * Why this section is separate, and the two things it cannot say: shelter is
+   * rent-dominated and is NOT house prices, and there is no house price index
+   * on this deployment at all. Render it — it is the difference between a
+   * reader learning what shelter cost and believing they learned what a home
+   * was worth.
+   */
+  note: string
 }
 
 /** The provenance half of a relative-value side. */
