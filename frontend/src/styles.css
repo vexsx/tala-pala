@@ -3192,3 +3192,66 @@ input[type='checkbox'] {
   font-size: 11px;
   white-space: nowrap;
 }
+
+/* --- one instrument -------------------------------------------------------- */
+
+.sd-controls {
+  gap: 12px;
+  margin: 12px 0;
+}
+
+/* The unit sentence sits above every number on the page and says "rials" on
+ * the one endpoint that is not toman, so it is not decoration. */
+.sd-unit {
+  max-width: 90ch;
+  line-height: 1.55;
+}
+
+.sd-chart {
+  margin: 8px 0 4px;
+}
+
+/* The halt count explains the gaps in the line above it, so it belongs to the
+ * chart rather than reading as a footnote. */
+.sd-halts {
+  max-width: 90ch;
+  line-height: 1.55;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+
+.sd-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.sd-stat .stat-value {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 2px 0;
+}
+
+.sd-refusal {
+  max-width: 90ch;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-inline-start: 3px solid var(--danger, var(--border));
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+}
+
+/* The screener's symbol is the way into this page. It should look like the
+ * link it is without turning the table into a wall of blue. */
+.stk-symbol-link {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px dotted var(--muted);
+}
+
+.stk-symbol-link:hover,
+.stk-symbol-link:focus-visible {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}

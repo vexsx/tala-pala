@@ -109,6 +109,27 @@ that, and these fixtures carry it the same way they carry everything else.
   contains. The first is the one case that warns while `stale` is **false** —
   there is no old price being served because there is no price.
 
+## The bars endpoint (`stock-bars-*.json`)
+
+Captured from production `GET /api/v1/stocks/{symbol}/bars` on 2026-09-24, for
+the window `from=2026-06-01&to=2026-09-09`. Not authored — the halted sessions
+in particular are the reason these are captures rather than constructions.
+
+| file | request | what it exercises |
+| --- | --- | --- |
+| `stock-bars-foolad-adjusted.json` | فولاد, adjusted (the default) | **43 of 66 sessions halted** — a real two-month suspension, 2026-06-01 → 2026-08-07. The case a chart must not draw a line through |
+| `stock-bars-foolad-raw.json` | فولاد, `adjusted=false` | the same window unadjusted, so the two bases can be compared in one test |
+| `stock-bars-zoob-adjusted.json` | ذوب, adjusted | an ordinary instrument: 60 of 66 traded, 3 corporate actions rather than 31 |
+
+**Why the halts matter enough to capture.** TSETMC stores a suspended session
+as a bar with zeros for open/high/low and the *carried reference price* in
+`close`, so a halt is indistinguishable from a flat trading day unless you read
+`traded`. Hand-written fixtures would have had every session trading, the
+chart would have looked perfect in tests, and it would have drawn a confident
+price line through two months in which فولاد did not trade once. The spread is
+real and per-instrument: فولاد 43 halted in this window, فارس 28, نوری 15,
+شستا and کگل none.
+
 ### Refreshing
 
 Once the endpoint is deployed, prefer a capture, exactly as above:

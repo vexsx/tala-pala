@@ -27,6 +27,7 @@ import Drivers from './pages/Drivers'
 import Markets from './pages/Markets'
 import RelativeValue from './pages/RelativeValue'
 import Stocks from './pages/Stocks'
+import StockDetail from './pages/StockDetail'
 import Portfolio from './pages/Portfolio'
 import Alerts from './pages/Alerts'
 import Models from './pages/Models'
@@ -200,6 +201,13 @@ export default function App() {
               <Route path="/markets" element={<Markets />} />
               <Route path="/relative-value" element={<RelativeValue />} />
               <Route path="/stocks" element={<Stocks />} />
+              {/*
+               * The screener ranks nineteen instruments; this is where a reader
+               * goes to look at one. The symbol is a Persian trading symbol, so
+               * it arrives percent-encoded and useParams decodes it -- the same
+               * identifier /api/v1/stocks/{symbol}/bars resolves.
+               */}
+              <Route path="/stocks/:symbol" element={<StockDetail />} />
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/alerts" element={<Alerts />} />
               <Route path="/models" element={<Models />} />

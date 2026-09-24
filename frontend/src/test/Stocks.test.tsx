@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Stocks, { DataAgeNotice } from '../pages/Stocks'
+import { MemoryRouter } from 'react-router-dom'
 import { SettingsProvider } from '../lib/settings'
 // The page's own source. Two rules on this screen are properties of the FILE
 // rather than of any one render — that it never applies the toman→rial ×10 to
@@ -55,10 +56,16 @@ function mockApi(payload: StockScreenResponse = IRR): void {
 
 async function renderPage(payload: StockScreenResponse = IRR) {
   mockApi(payload)
+  // MemoryRouter because each symbol is now a <Link> to /stocks/:symbol —
+  // ranking nineteen instruments and offering no way to open one was the gap
+  // this screener shipped with. Without a router context react-router throws
+  // on the first row it renders.
   const result = render(
-    <SettingsProvider>
-      <Stocks />
-    </SettingsProvider>
+    <MemoryRouter>
+      <SettingsProvider>
+        <Stocks />
+      </SettingsProvider>
+    </MemoryRouter>
   )
   await screen.findByTestId(`stk-row-${payload.items[0].symbol}`)
   return result

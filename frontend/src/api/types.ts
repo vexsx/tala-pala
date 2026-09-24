@@ -1713,3 +1713,63 @@ export interface StockScreenResponse {
   excluded_note: string
   warnings: string[]
 }
+
+/**
+ * One stored session — `equities.barItem`.
+ *
+ * `traded` is the field that matters most on a chart. TSETMC stores a halt as
+ * a bar with zeros for open/high/low and the carried reference price in
+ * `close`, so a halted session LOOKS like a flat day rather than an absent
+ * one. Drawing a line through those is drawing prices nobody transacted at:
+ * فولاد had 43 such sessions in a single 66-session window (2026-06-01 to
+ * 2026-08-07) while فارس had 28 and شستا had none, so this is real market
+ * structure and varies enormously per instrument.
+ */
+export interface StockBar {
+  /** YYYY-MM-DD. */
+  date: string
+  /** Zero on a halted session: no trade occurred. See `traded`. */
+  open: number
+  high: number
+  low: number
+  close: number
+  final_close: number
+  volume: number
+  trade_count: number
+  value: number
+  /** False when the session had no trade at all. */
+  traded: boolean
+  /**
+   * Only on an adjusted response, and only when it is not 1: the factor this
+   * bar's prices were multiplied by. It is what makes an adjusted number
+   * checkable against the raw one without a second request.
+   */
+  adjustment_factor?: number
+}
+
+/**
+ * GET /stocks/{symbol}/bars — `equities.barsResponse`.
+ *
+ * NOTE THE CURRENCY. This endpoint serves **rials**, stated on every response,
+ * while the rest of this API reports Iranian amounts in toman. A client that
+ * assumes the house convention is off by a factor of ten.
+ */
+export interface StockBarsResponse {
+  symbol: string
+  ins_code: string
+  name_fa: string
+  /** Defaults to true on the server: the raw close series is not a price history. */
+  adjusted: boolean
+  /** Present whether or not `adjusted`, so the two can be compared. */
+  adjustment: StockAdjustment
+  /** 'IRR' — rials, not toman. */
+  currency: string
+  count: number
+  items: StockBar[]
+  /** The window actually served, echoed so an empty page is distinguishable. */
+  from?: string
+  to?: string
+  limit: number
+  has_more: boolean
+  note?: string
+}

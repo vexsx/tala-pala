@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useApi } from '../hooks/useApi'
+import { Link } from 'react-router-dom'
 import {
   STOCK_NUMERAIRES,
   STOCK_NUMERAIRE_LABELS,
@@ -781,10 +782,23 @@ export default function Stocks() {
                           <div className="stk-symbol">
                             {/* Persian symbol and company name, each isolated:
                                 without bidi isolation an RTL name beside LTR
-                                digits reorders the whole cell. */}
-                            <span className="bidi-fa mono stk-symbol-code" lang="fa" dir="rtl">
+                                digits reorders the whole cell.
+
+                                The symbol is a LINK because ranking nineteen
+                                instruments and offering no way to look at one
+                                was the gap this screener shipped with: the
+                                bars endpoint behind /stocks/:symbol carries
+                                twenty-five years of adjusted history and had
+                                no interface at all. */}
+                            <Link
+                              className="bidi-fa mono stk-symbol-code stk-symbol-link"
+                              to={`/stocks/${encodeURIComponent(item.symbol)}`}
+                              lang="fa"
+                              dir="rtl"
+                              data-testid={`stk-link-${item.symbol}`}
+                            >
                               {item.symbol}
-                            </span>
+                            </Link>
                             <span className="bidi-fa stk-symbol-name" lang="fa" dir="rtl">
                               {item.name_fa}
                             </span>
