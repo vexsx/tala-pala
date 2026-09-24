@@ -111,6 +111,13 @@ type performanceItem struct {
 	RealReturnPct  *float64 `json:"real_return_pct"`
 	RealReturnFrom *string  `json:"real_return_from"`
 	RealReturnTo   *string  `json:"real_return_to"`
+	// RealReturnDeflator names the series that deflated THIS row, because two
+	// rows in one response can legitimately use different ones: the monthly
+	// SCI index is preferred wherever it reaches, and a window that begins
+	// before it starts (2002-03) falls back to the annual World Bank series.
+	// Without this field a reader would have to parse the note to find out
+	// which resolution the number in front of them actually has.
+	RealReturnDeflator *string `json:"real_return_deflator"`
 
 	// ObservationVolatilityPct is the sample standard deviation of log returns
 	// between CONSECUTIVE OBSERVATIONS, not between consecutive calendar days.
@@ -186,6 +193,13 @@ type performanceResponse struct {
 	// fields they have always been; this block is what makes the real returns
 	// interpretable.
 	CPIProvenance *cpiProvenanceBlock `json:"cpi_provenance"`
+	// CostOfLiving is what parts of the consumer basket did over the same
+	// window. A SEPARATE array from `items`, never merged into it: these are
+	// price indices nobody can buy, so they must not be sortable with the
+	// assets or eligible to be the best performer. Null when this deployment
+	// carries no SCI components, or when the window holds fewer than two of
+	// their reference months. See costofliving.go.
+	CostOfLiving *costOfLivingBlock `json:"cost_of_living"`
 	AsOf          time.Time           `json:"as_of"`
 
 	Items []performanceItem `json:"items"`
@@ -208,7 +222,18 @@ type performanceInputs struct {
 	// converting would silently drop the first days of every window whose first
 	// day the numeraire did not quote.
 	Series map[string]dailySeries
-	CPI    cpiTable
+	// CPI is the ANNUAL World Bank deflator and CPIMonthly the MONTHLY SCI one.
+	// Both are carried because neither covers the other's ground: SCI is twelve
+	// times finer and eighteen months more current, and it begins in 2002-03,
+	// which is after the earliest Tehran equity bar. See deflate below for the
+	// rule, and cpi_monthly.go for why they are never chained.
+	CPI        cpiTable
+	CPIMonthly monthlyTable
+	// Components holds the SCI basket series keyed by code, including the
+	// headline. Raw observations rather than a projected table, because the
+	// cost-of-living comparison is period-to-period within one publisher and
+	// never needs the daily anchoring the asset rows do.
+	Components map[string][]economic.Observation
 	// CPIProvenance is nil when this deployment carries no CPI series at all.
 	CPIProvenance *economic.SeriesProvenance
 	CPIError      string
@@ -485,10 +510,14 @@ func buildPerformanceItem(inst instrumentRow, in performanceInputs) performanceI
 		if in.Query.Window.From != nil {
 			from = *in.Query.Window.From
 		}
-		rr := realReturn(pts, in.CPI, from, in.Query.Window.To)
+		rr, deflator := in.deflate(pts, from, in.Query.Window.To)
 		item.RealReturnPct = rr.Pct
 		item.RealReturnFrom = dayStringPtr(rr.From)
 		item.RealReturnTo = dayStringPtr(rr.To)
+		if rr.Pct != nil {
+			d := deflator
+			item.RealReturnDeflator = &d
+		}
 		item.Notes = append(item.Notes, rr.Note)
 		if rr.Pct != nil && num.Key != "IRT" {
 			item.Notes = append(item.Notes, fmt.Sprintf(
@@ -498,6 +527,47 @@ func buildPerformanceItem(inst instrumentRow, in performanceInputs) performanceI
 		}
 	}
 	return item
+}
+
+// deflate picks the deflator for one row and applies it, returning the result
+// and the series code that produced it.
+//
+// THE MONTHLY INDEX IS TRIED FIRST, ALWAYS. SCI_CPI_URBAN resolves to a month
+// where WB_CPI_IRN resolves to a calendar year, and it runs eighteen months
+// further forward. The practical difference is not a rounding one: a 1-year
+// window has exactly one covered World Bank year inside it and therefore gets
+// NO real return at all, while the monthly index answers it from twelve. Every
+// asset in `prices` begins in 2010 or later, comfortably inside SCI's 2002-03
+// start, so the annual fallback exists for one case — a window reaching back
+// past 2002, which today means only deep Tehran equity history.
+//
+// The fallback is a SEPARATE answer, never a splice. Chaining the two indices
+// across 2002 would multiply ratios from two different baskets, two
+// methodologies and two rebasings into a single number neither publisher would
+// stand behind. A row uses one deflator or the other, and says which.
+//
+// When both refuse, the MONTHLY refusal is the one reported: it is the
+// preferred deflator, so its reason is the one that explains the absence. The
+// annual refusal is appended so a reader can see the fallback was tried rather
+// than forgotten.
+func (in performanceInputs) deflate(pts dailySeries, from, to time.Time) (realReturnResult, string) {
+	monthly := realReturnMonthly(pts, in.CPIMonthly, from, to)
+	if monthly.Pct != nil {
+		return monthly, sciCPISeriesCode
+	}
+
+	annual := realReturn(pts, in.CPI, from, to)
+	if annual.Pct != nil {
+		annual.Note = fmt.Sprintf(
+			"Deflated with the ANNUAL %s rather than the monthly %s, because the monthly "+
+				"index could not cover this window: %s | %s",
+			cpiSeriesCode, sciCPISeriesCode, monthly.Note, annual.Note)
+		return annual, cpiSeriesCode
+	}
+
+	monthly.Note = fmt.Sprintf("%s The annual %s was tried as a fallback and also "+
+		"declined: %s", monthly.Note, cpiSeriesCode, annual.Note)
+	return monthly, ""
 }
 
 // buildPerformanceResponse assembles the whole table. Pure function (unit
@@ -517,7 +587,16 @@ func buildPerformanceResponse(in performanceInputs) performanceResponse {
 	if in.CPIProvenance != nil {
 		code := in.CPIProvenance.Code
 		out.CPISeries = &code
-		out.CPICoverageTo = dayStringPtr(in.CPI.coverageTo())
+		// The coverage reported must belong to the series NAMED beside it. The
+		// provenance is the monthly deflator whenever this deployment has one,
+		// so reading coverage from the annual table here would publish the
+		// World Bank's 2025 bound under SCI's name and understate how current
+		// the deflator is by eighteen months.
+		if len(in.CPIMonthly) > 0 {
+			out.CPICoverageTo = dayStringPtr(in.CPIMonthly.coverageTo())
+		} else {
+			out.CPICoverageTo = dayStringPtr(in.CPI.coverageTo())
+		}
 		out.CPIProvenance = cpiProvenanceOf(*in.CPIProvenance, out.CPICoverageTo)
 	} else if in.CPIError != "" {
 		out.Warnings = append(out.Warnings, in.CPIError)
@@ -586,6 +665,17 @@ func buildPerformanceResponse(in performanceInputs) performanceResponse {
 				out.From = &u
 			}
 		}
+	}
+
+	// What the basket did over the SAME window the assets were measured on.
+	// Built after out.From is resolved so period=max uses the window actually
+	// served rather than an open lower bound.
+	if len(in.Components) > 0 {
+		colFrom := time.Time{}
+		if out.From != nil {
+			colFrom = *out.From
+		}
+		out.CostOfLiving = buildCostOfLiving(in.Components, colFrom, out.To)
 	}
 
 	today := floorDay(in.AsOf)
@@ -740,21 +830,70 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 	// never re-implemented here. Its absence is a degraded response (real
 	// returns withheld, warning stated), not an error: the nominal table is
 	// still true without a deflator.
+	//
+	// The MONTHLY deflator is read first and is the preferred one; see deflate.
+	// Its absence is not an error and not even a warning on its own — a
+	// deployment that has never run `make refresh-cpi` still gets real returns
+	// from the annual series, just at annual resolution.
+	if mprov, mobs, mErr := economic.PointInTime(ctx, h.Pool, sciCPISeriesCode, now); mErr == nil {
+		in.CPIMonthly = buildMonthlyCPITable(mobs)
+		if len(in.CPIMonthly) > 0 {
+			in.CPIProvenance = &mprov
+			in.Components = map[string][]economic.Observation{sciCPISeriesCode: mobs}
+		}
+	} else if !errors.Is(mErr, economic.ErrSeriesNotFound) {
+		h.Log.Error("performance_cpi_monthly", "error", mErr)
+		httpserver.Internal(w, "database error")
+		return
+	}
+
+	// The basket components, read through the same point-in-time rule. Each is
+	// optional: a deployment that has not ingested the SCI workbook simply gets
+	// no cost-of-living section, which is a smaller response and not a broken
+	// one. Only the headline is required, and it was read above -- without it
+	// there is nothing to measure a component AGAINST, so the whole section is
+	// withheld rather than published as bare index growth a reader would
+	// inevitably compare with the deflated asset returns beside it.
+	if in.Components != nil {
+		for _, code := range []string{sciShelterSeriesCode, sciVehiclesSeriesCode} {
+			_, cobs, cErr := economic.PointInTime(ctx, h.Pool, code, now)
+			switch {
+			case cErr == nil:
+				in.Components[code] = cobs
+			case errors.Is(cErr, economic.ErrSeriesNotFound):
+				// Absent on this deployment; buildCostOfLiving says so per row.
+			default:
+				h.Log.Error("performance_cpi_component", "code", code, "error", cErr)
+				httpserver.Internal(w, "database error")
+				return
+			}
+		}
+	}
+
 	prov, obs, cpiErr := economic.PointInTime(ctx, h.Pool, cpiSeriesCode, now)
 	switch {
 	case cpiErr == nil:
-		in.CPIProvenance = &prov
 		in.CPI = buildCPITable(obs)
-		if len(in.CPI) == 0 {
+		// Provenance names the deflator a reader should look up first, so it
+		// only falls back to the annual series when the monthly one is absent.
+		if in.CPIProvenance == nil {
+			in.CPIProvenance = &prov
+		}
+		if len(in.CPI) == 0 && len(in.CPIMonthly) == 0 {
 			in.CPIProvenance = nil
 			in.CPIError = fmt.Sprintf(
-				"No real returns: %s is registered but carries no observation available "+
-					"at this cutoff.", cpiSeriesCode)
+				"No real returns: neither %s nor %s carries an observation available "+
+					"at this cutoff.", sciCPISeriesCode, cpiSeriesCode)
 		}
 	case errors.Is(cpiErr, economic.ErrSeriesNotFound):
-		in.CPIError = fmt.Sprintf(
-			"No real returns: this deployment does not carry the CPI series %s, so "+
-				"nothing here is deflated.", cpiSeriesCode)
+		// Only a problem when the monthly index is missing too. With SCI
+		// present this is the ordinary state of a deployment that never
+		// ingested the World Bank mirror, and every row still deflates.
+		if len(in.CPIMonthly) == 0 {
+			in.CPIError = fmt.Sprintf(
+				"No real returns: this deployment carries neither %s nor %s, so "+
+					"nothing here is deflated.", sciCPISeriesCode, cpiSeriesCode)
+		}
 	default:
 		h.Log.Error("performance_cpi", "error", cpiErr)
 		httpserver.Internal(w, "database error")
