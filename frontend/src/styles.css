@@ -3255,3 +3255,80 @@ input[type='checkbox'] {
   color: var(--accent);
   border-bottom-color: var(--accent);
 }
+
+/* --- the economic series --------------------------------------------------- */
+
+.ec-preamble {
+  max-width: 90ch;
+  line-height: 1.55;
+}
+
+.ec-picker {
+  display: grid;
+  gap: 14px;
+}
+
+.ec-group .chip-row {
+  margin-top: 4px;
+}
+
+/* A series that forecasts is marked in the picker, before it is opened. */
+.ec-proj-dot {
+  opacity: 0.7;
+}
+
+.ec-controls {
+  gap: 12px;
+  align-items: center;
+  margin: 10px 0 4px;
+}
+
+.ec-chart {
+  margin: 4px 0;
+}
+
+/* The legend is load-bearing: it is what tells a reader that the dashed
+ * stroke is a forecast rather than a different measured series. */
+.ec-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.ec-key {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  border-top-width: 2px;
+  border-top-style: solid;
+}
+
+.ec-key-measured {
+  border-top-color: var(--accent);
+}
+
+.ec-key-projected {
+  border-top-color: var(--muted);
+  border-top-style: dashed;
+  margin-inline-start: 14px;
+}
+
+.ec-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.ec-notes,
+.ec-pit {
+  max-width: 90ch;
+  line-height: 1.55;
+}
+
+.ec-tier {
+  margin: 8px 0;
+}

@@ -28,6 +28,7 @@ import Markets from './pages/Markets'
 import RelativeValue from './pages/RelativeValue'
 import Stocks from './pages/Stocks'
 import StockDetail from './pages/StockDetail'
+import Economy from './pages/Economy'
 import Portfolio from './pages/Portfolio'
 import Alerts from './pages/Alerts'
 import Models from './pages/Models'
@@ -42,6 +43,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean; adminOnly?: b
   { to: '/technical', label: 'Technical' },
   { to: '/drivers', label: 'Drivers' },
   { to: '/markets', label: 'Purchasing power' },
+  { to: '/economy', label: 'Economy' },
   { to: '/relative-value', label: 'Relative value' },
   { to: '/stocks', label: 'Stocks' },
   { to: '/portfolio', label: 'Portfolio' },
@@ -200,6 +202,7 @@ export default function App() {
               <Route path="/drivers" element={<Drivers />} />
               <Route path="/markets" element={<Markets />} />
               <Route path="/relative-value" element={<RelativeValue />} />
+              <Route path="/economy" element={<Economy />} />
               <Route path="/stocks" element={<Stocks />} />
               {/*
                * The screener ranks nineteen instruments; this is where a reader

@@ -130,6 +130,25 @@ price line through two months in which فولاد did not trade once. The spread
 real and per-instrument: فولاد 43 halted in this window, فارس 28, نوری 15,
 شستا and کگل none.
 
+## The economic series (`economy-*.json`)
+
+Captured from production on 2026-09-24.
+
+| file | request | what it exercises |
+| --- | --- | --- |
+| `economy-series-list.json` | `GET /series` | the picker: 18 registered series across sci, worldbank and imf_weo |
+| `economy-imf-irn-with-projections.json` | `IMF_PCPIPCH_IRN`, `include_projections=true` | **46 measured periods (1980–2025) and 6 projected (2026–2031)** — the boundary this page exists to draw |
+| `economy-imf-irn-measured.json` | the same series, default | `projections_in_page: 0` with `projections_available: 6`, which is the pair that stops "none in this page" being read as "this series has none" |
+| `economy-sci-urban-60.json` | `SCI_CPI_URBAN`, 60 periods | a monthly series with no projections at all |
+
+**Why the IMF pair had to be captured.** The measured/projected boundary sits
+at a specific year that moves with every WEO release, and a hand-written
+fixture would have put it wherever the author guessed. This page's single most
+important job is that an IMF forecast for 2031 never renders in the same stroke
+as measured history — a bug this codebase has already had once, when a calendar
+rollover turned a 2026 forecast into "measured history" and manufactured a
+vintage. Testing that against invented data would prove nothing.
+
 ### Refreshing
 
 Once the endpoint is deployed, prefer a capture, exactly as above:

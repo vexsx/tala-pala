@@ -1795,3 +1795,106 @@ export interface StockBarsResponse {
   has_more: boolean
   note?: string
 }
+
+/** Coverage of one registered series — `economic.coverage`. */
+export interface SeriesCoverage {
+  first_period: string | null
+  last_period: string | null
+  /** Distinct non-projection reference periods. */
+  observation_count: number
+  latest_available_at: string | null
+  max_vintage: number | null
+  /** Distinct PROJECTED periods. Non-zero means this series forecasts. */
+  projection_count: number
+}
+
+/** One registered series — `economic.seriesItem`. */
+export interface EconomicSeries {
+  code: string
+  name_en: string
+  name_fa: string
+  domain: string
+  /** 'M' | 'A' | 'Q' | 'D' … */
+  frequency: string
+  calendar: string
+  measure: string
+  seasonal_adjustment: string
+  /**
+   * The index's own 100. Two series on DIFFERENT bases cannot be compared
+   * level-for-level, only by growth — which is why a chart of two series must
+   * either rebase them or plot them separately.
+   */
+  base_period: string
+  unit: string
+  decimals: number
+  provider_code: string
+  provider_series_id: string
+  publication_lag_days: number | null
+  revisable: boolean
+  splice_policy: string
+  quality_tier: string
+  notes: string
+  enabled: boolean
+  coverage: SeriesCoverage
+}
+
+export interface EconomicSeriesListResponse {
+  items: EconomicSeries[]
+  count: number
+}
+
+/**
+ * One observation — `economic.observationItem`.
+ *
+ * `is_projection` is the field that must never be ignored. An IMF WEO row for
+ * 2031 is a FORECAST, and rendering it in the same stroke as measured history
+ * turns a projection into a fact. The API withholds projections by default for
+ * exactly this reason; a client that asks for them takes on the duty of
+ * drawing them differently.
+ */
+export interface EconomicObservation {
+  ref_period_start: string
+  ref_period_end: string
+  ref_period_label: string
+  value: number
+  /** 1 is a first print; a higher number is a revision. */
+  vintage: number
+  /** When THIS system could first have known the value. */
+  available_at: string
+  /** When the publisher released it, when the publisher states one. */
+  published_at: string | null
+  is_projection: boolean
+  is_nowcast: boolean
+}
+
+/** GET /series/{code}/observations — `economic.observationsResponse`. */
+export interface EconomicObservationsResponse {
+  code: string
+  measure: string
+  unit: string
+  frequency: string
+  calendar: string
+  provider_code: string
+  quality_tier: string
+  base_period: string
+  splice_policy: string
+  /** The catalog's caveat, carried onto the payload holding the numbers. */
+  notes: string
+  as_of: string
+  as_of_provided: boolean
+  effective_window: { from: string | null; to: string | null; before: string | null }
+  /** Distinct vintages present. A mixed list is a partially revised history. */
+  vintages_used: number[]
+  include_projections: boolean
+  /** Projections in THIS page. */
+  projections_in_page: number
+  /**
+   * Every stored projected period for the series, unfiltered. "0 in page, 6
+   * available" must not be read as "there are none".
+   */
+  projections_available: number
+  has_more: boolean
+  next_before: string | null
+  observations: EconomicObservation[]
+  count: number
+}
