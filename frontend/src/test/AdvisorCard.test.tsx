@@ -393,3 +393,81 @@ describe('AdvisorCard — a number must never look more measured than it is', ()
     expect(screen.getByText(/model-based assessment/i)).toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// A risk is a disclosure. It is never dropped to make room.
+//
+// The card used to concatenate `conflicting` and `risks` and slice the result
+// to five, with conflicting FIRST — so on any reading with more than five
+// between them the risks were the ones silently discarded. That is exactly
+// backwards on a card whose purpose is to be honest about what could go wrong:
+// the analysis was kept and the warning thrown away, with nothing on screen
+// admitting it.
+// ---------------------------------------------------------------------------
+
+describe('AdvisorCard — every risk reaches the reader', () => {
+  const MANY_CONFLICTING = [
+    'Local premium is rich versus its 30-day norm.',
+    'The dollar has run ahead of gold for six sessions.',
+    'Volume is thin into the close.',
+    'The 50-day and 200-day averages have converged.',
+    'Open interest fell while price rose.'
+  ]
+  const MANY_RISKS = [
+    'Volatility is elevated.',
+    'A policy announcement is expected this week.',
+    'The coin premium has been unstable for ten sessions.',
+    'Liquidity thins sharply around Nowruz.'
+  ]
+
+  it('shows every risk even when the conflicting list alone would fill the card', () => {
+    renderCard({
+      signal: sig('buy', { conflicting: MANY_CONFLICTING, risks: MANY_RISKS })
+    })
+    // Nine items between them, well past the old cap of five.
+    const body = document.body.textContent ?? ''
+    for (const risk of MANY_RISKS) {
+      expect(body).toContain(risk)
+    }
+  })
+
+  it('keeps risks under their own heading, not blended into conflicting', () => {
+    renderCard({
+      signal: sig('buy', { conflicting: MANY_CONFLICTING, risks: MANY_RISKS })
+    })
+    const risks = screen.getByTestId('advisor-risks')
+    expect(risks.querySelectorAll('li').length).toBe(MANY_RISKS.length)
+    const conflicting = screen.getByTestId('advisor-conflicting')
+    expect(conflicting.querySelectorAll('li').length).toBe(MANY_CONFLICTING.length)
+    // A risk must not appear in the conflicting list.
+    expect(conflicting.textContent).not.toContain(MANY_RISKS[0])
+  })
+
+  it('renders risks when there are no conflicting factors at all', () => {
+    renderCard({ signal: sig('buy', { conflicting: [], risks: MANY_RISKS }) })
+    expect(screen.getByTestId('advisor-risks').querySelectorAll('li').length).toBe(
+      MANY_RISKS.length
+    )
+  })
+
+  // The supporting side is still capped — an argument FOR is not a disclosure —
+  // but the cap must announce itself rather than silently swallow items.
+  it('announces a capped supporting list instead of hiding the cap', () => {
+    const many = [
+      'Momentum over the last 10 days is positive.',
+      'The premium has compressed toward its norm.',
+      'Global gold is above its 50-day average.',
+      'The rial has weakened for three sessions.',
+      'Fund flows turned positive this week.',
+      'Coin premium is near its median.'
+    ]
+    renderCard({ signal: sig('buy', { supporting: many }) })
+    expect(screen.getByTestId('advisor-supporting').querySelectorAll('li').length).toBe(4)
+    expect(screen.getByTestId('advisor-supporting-hidden').textContent).toContain('2')
+  })
+
+  it('says nothing about a cap when nothing was capped', () => {
+    renderCard({ signal: sig('buy', { supporting: ['One factor.'] }) })
+    expect(screen.queryByTestId('advisor-supporting-hidden')).toBeNull()
+  })
+})

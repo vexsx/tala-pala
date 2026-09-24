@@ -3332,3 +3332,11 @@ input[type='checkbox'] {
 .ec-tier {
   margin: 8px 0;
 }
+
+/* Risks sit under their own heading inside the "But" column. They are a
+ * different kind of claim from a conflicting indicator — one says the evidence
+ * disagrees, the other says what could go wrong regardless — and blending them
+ * into one list is what once let a slice silently drop the second kind. */
+.advisor-risk-title {
+  margin-top: 12px;
+}

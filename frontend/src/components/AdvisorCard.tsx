@@ -487,8 +487,24 @@ export function AdvisorCard({
     )
   const marketClosed = hasClosedMarketNote(signal)
 
-  const supporting = (signal.supporting ?? []).slice(0, 4)
-  const conflicting = (signal.conflicting ?? []).concat(signal.risks ?? []).slice(0, 5)
+  // A RISK IS A DISCLOSURE AND IS NEVER DROPPED.
+  //
+  // These two lists used to be concatenated and sliced to five, with
+  // `conflicting` first — so on any reading with more than five between them
+  // the RISKS were the ones silently discarded, which is precisely backwards:
+  // the analysis was kept and the warning thrown away, on a card whose whole
+  // purpose is to be honest about what could go wrong. Risks are now rendered
+  // in full and separately from conflicting indicators, which are a different
+  // kind of claim.
+  //
+  // The supporting side is still capped, because an argument FOR is not a
+  // disclosure — but the cap now announces itself instead of hiding.
+  const SUPPORTING_SHOWN = 4
+  const allSupporting = signal.supporting ?? []
+  const supporting = allSupporting.slice(0, SUPPORTING_SHOWN)
+  const supportingHidden = Math.max(0, allSupporting.length - supporting.length)
+  const conflicting = signal.conflicting ?? []
+  const risks = signal.risks ?? []
 
   const invalidation =
     signal.invalidation && signal.invalidation.trim().length > 0
@@ -538,16 +554,24 @@ export function AdvisorCard({
         </div>
       </div>
 
-      {(supporting.length > 0 || conflicting.length > 0) ? (
+      {(supporting.length > 0 || conflicting.length > 0 || risks.length > 0) ? (
         <div className="advisor-lists">
           <div className="advisor-list">
             <h4 className="advisor-list-title pos">Why</h4>
             {supporting.length > 0 ? (
-              <ul>
-                {supporting.map((f, i) => (
-                  <li key={i}>{f}</li>
-                ))}
-              </ul>
+              <>
+                <ul data-testid="advisor-supporting">
+                  {supporting.map((f, i) => (
+                    <li key={i}>{f}</li>
+                  ))}
+                </ul>
+                {supportingHidden > 0 ? (
+                  <p className="muted small" data-testid="advisor-supporting-hidden">
+                    {supportingHidden} further supporting factor
+                    {supportingHidden === 1 ? '' : 's'} not shown.
+                  </p>
+                ) : null}
+              </>
             ) : (
               <p className="muted small">No clearly supporting factors were reported.</p>
             )}
@@ -555,14 +579,30 @@ export function AdvisorCard({
           <div className="advisor-list">
             <h4 className="advisor-list-title neg">But</h4>
             {conflicting.length > 0 ? (
-              <ul>
+              <ul data-testid="advisor-conflicting">
                 {conflicting.map((f, i) => (
                   <li key={i}>{f}</li>
                 ))}
               </ul>
             ) : (
-              <p className="muted small">No conflicting factors or notable risks were reported.</p>
+              <p className="muted small">No conflicting factors were reported.</p>
             )}
+            {/*
+             * Risks, in full, under their own heading. A conflicting indicator
+             * says the evidence disagrees; a risk says what could go wrong
+             * regardless of the evidence. Blending them into one list was what
+             * let a slice drop the second kind.
+             */}
+            {risks.length > 0 ? (
+              <>
+                <h4 className="advisor-list-title neg advisor-risk-title">Risks</h4>
+                <ul data-testid="advisor-risks">
+                  {risks.map((f, i) => (
+                    <li key={i}>{f}</li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
           </div>
         </div>
       ) : (
