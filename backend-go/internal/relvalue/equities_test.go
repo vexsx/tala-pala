@@ -44,6 +44,20 @@ func TestAValidatedEquityBecomesATomanQuotedRegistryRow(t *testing.T) {
 	if !strings.Contains(inst.Notes, "TOMAN") {
 		t.Errorf("the note must state the unit: %s", inst.Notes)
 	}
+	// No invented English name: the UI falls back to the code, which is the
+	// Persian trading symbol a reader recognises. Filling name_en with the
+	// symbol would print the same string twice in one cell.
+	if inst.NameEN != "" {
+		t.Errorf("name_en = %q, want empty: TSETMC publishes no English name and a "+
+			"transliteration would be an invented fact", inst.NameEN)
+	}
+	if inst.NameFA == "" {
+		t.Error("the Persian company name must travel, or the row is only a ticker")
+	}
+	if inst.Domain != equityDomain {
+		t.Errorf("domain = %q, want %q so the UI can mark these as equities",
+			inst.Domain, equityDomain)
+	}
 }
 
 func TestTheAdjustmentGateExcludesWithADistinctReasonEachTime(t *testing.T) {

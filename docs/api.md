@@ -64,6 +64,32 @@ This matters more than it sounds: under the annual series a **1-year window got
 no real return at all**, because deflating needed two covered calendar years.
 It was not an approximation — it was a null.
 
+### Tehran equities in `items`
+
+Equities are ordinary rows, measured by the same code, in the same unit, over
+the same window as gold and the dollar. `domain` is `ir_equity` and `code` is
+the Persian trading symbol, the same one `/stocks/{symbol}/bars` resolves.
+
+| property | value | why |
+|---|---|---|
+| `quote_currency` | `IRT` | TSETMC quotes **rials**; the closes are divided into toman once, at the loader. Returns are ratios so the ten cancels — a wrong unit would hide in every percentage and surface only in an end-of-window level printed beside gold |
+| `is_derived` | `true` | the close served is the raw close times a cumulative corporate-action factor this platform computed, so it will not match a TSETMC screen |
+| `is_proxy` | `false` | these are the exchange's own prints |
+
+**Only validated adjustments appear.** An instrument whose corporate-action
+adjustment the gate did not pass is excluded and named in `warnings`, with one
+of four distinct reasons: disabled, no stored bar, never adjusted, or refused
+(carrying the gate's own refusal text). It is never served raw — فولاد is
+×1.52 raw against ×907.86 adjusted over nineteen years, because capital
+increases are not price moves.
+
+Halted sessions are dropped: TSETMC stores a halt as a bar whose `final_close`
+is the carried reference price rather than a print.
+
+Cross-checked on production: all 19 symbols' returns agree with
+`/stocks/screen` to **0.0000 percentage points**, which is two independent code
+paths validating the adjustment, the halt filter and the windowing at once.
+
 ### `cost_of_living`
 
 A **separate array** from `items`, holding what parts of the consumer basket

@@ -254,9 +254,14 @@ func equityEligibility(r equityRosterRow) (instrumentRow, equityExclusion, bool)
 	}
 
 	return instrumentRow{
-		Code:   r.Symbol,
-		Kind:   "market_price",
-		NameEN: r.Symbol,
+		Code: r.Symbol,
+		Kind: "market_price",
+		// NameEN is deliberately EMPTY. These instruments have no English name
+		// in TSETMC's data and inventing a transliteration would be inventing
+		// a fact; the UI falls back to the code, which IS the Persian trading
+		// symbol a reader recognises. Filling it with the symbol would print
+		// the same string twice in one cell, once as a name and once as a code.
+		NameEN: "",
 		NameFA: r.NameFA,
 		Domain: equityDomain,
 		// IRT because loadEquitySeries divides these closes into toman before

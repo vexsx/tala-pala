@@ -740,6 +740,19 @@ export default function Markets() {
                           </div>
                           <div className="mkt-asset-meta">
                             <span className="mono muted small">{item.code}</span>
+                            {/*
+                             * Tehran equities arrived in this table beside gold,
+                             * silver and the dollar, and a reader scanning
+                             * twenty-seven rows has no other way to tell that
+                             * شپنا is a listed company rather than a commodity.
+                             * Driven off the registry's own domain so a future
+                             * asset class marks itself without touching this.
+                             */}
+                            {item.domain === 'ir_equity' && (
+                              <span className="tag tag-equity" title="Tehran Stock Exchange listing, corporate-action adjusted">
+                                Tehran equity
+                              </span>
+                            )}
                             <span className="muted small">
                               quoted in {item.quote_currency}
                               {item.unit ? ` / ${item.unit}` : ''}
