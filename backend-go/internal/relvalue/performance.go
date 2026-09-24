@@ -128,6 +128,17 @@ type performanceItem struct {
 	ObservationVolatilityPct *float64 `json:"observation_volatility_pct"`
 
 	MaxDrawdownPct *float64 `json:"max_drawdown_pct"`
+	// The drawdown's SHAPE IN TIME. A percentage alone cannot distinguish a bad
+	// fortnight from a decade a holder is still living in, and this deployment
+	// can tell them apart. All NOMINAL, and `days` are CALENDAR days rather
+	// than trading sessions -- see drawdown.go for why both matter here.
+	DrawdownPeak         *string  `json:"drawdown_peak_date"`
+	DrawdownTrough       *string  `json:"drawdown_trough_date"`
+	DrawdownRecovered    *string  `json:"drawdown_recovered_date"`
+	DrawdownRecoveryDays *int     `json:"drawdown_recovery_days"`
+	UnderwaterDays       *int     `json:"underwater_days"`
+	StillUnderwater      bool     `json:"still_underwater"`
+	CurrentDrawdownPct   *float64 `json:"current_drawdown_pct"`
 	Observations   int      `json:"observations"`
 	CoverageFrom   *string  `json:"coverage_from"`
 	CoverageTo     *string  `json:"coverage_to"`
@@ -453,7 +464,18 @@ func buildPerformanceItem(inst instrumentRow, in performanceInputs) performanceI
 				"different facts and must not render the same.", inst.Code, num.Unit))
 	} else {
 		item.NominalReturnPct = totalReturnPct(pts)
-		item.MaxDrawdownPct = maxDrawdownPct(pts)
+		dd := computeDrawdown(pts)
+		item.MaxDrawdownPct = dd.MaxPct
+		item.DrawdownPeak = dayStringPtr(dd.PeakDate)
+		item.DrawdownTrough = dayStringPtr(dd.TroughDate)
+		item.DrawdownRecovered = dayStringPtr(dd.RecoveredDate)
+		item.DrawdownRecoveryDays = dd.RecoveryDays
+		item.UnderwaterDays = dd.UnderwaterDays
+		item.StillUnderwater = dd.StillUnderwater
+		item.CurrentDrawdownPct = dd.CurrentPct
+		if dd.Note != "" {
+			item.Notes = append(item.Notes, dd.Note)
+		}
 		item.ObservationVolatilityPct = observationVolatilityPct(pts)
 		if item.ObservationVolatilityPct == nil {
 			item.Notes = append(item.Notes,

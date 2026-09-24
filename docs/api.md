@@ -64,6 +64,43 @@ This matters more than it sounds: under the annual series a **1-year window got
 no real return at all**, because deflating needed two covered calendar years.
 It was not an approximation — it was a null.
 
+### How long the fall lasted
+
+`max_drawdown_pct` says how far an asset fell. On its own a reader cannot act
+on it, because "fell 60%" is a different fact depending on whether the holder
+waited three weeks or is still waiting six years later — and on this market the
+second is common. Each item now also carries:
+
+| field | meaning |
+|---|---|
+| `drawdown_peak_date` / `drawdown_trough_date` | the two ends of the worst fall |
+| `drawdown_recovered_date` | when the peak was regained — **null when it never was** |
+| `drawdown_recovery_days` | trough → recovery: how long the climb back took |
+| `underwater_days` | peak → recovery, or peak → today while still under water. The number a holder actually felt |
+| `still_underwater` | whether the peak has yet to be regained |
+| `current_drawdown_pct` | the last close against the highest close before it; `0` means a new high |
+
+Two things these numbers are not, both stated in the item's `notes` rather than
+left to be assumed:
+
+- **Days are CALENDAR days, not trading sessions.** The Tehran exchange is shut
+  two days in seven plus Nowruz, so a session count understates the wait by
+  about a third — and the question is about the holder's life, not the
+  exchange's diary.
+- **The prices are NOMINAL.** Regaining a toman level after years of Iranian
+  inflation is still a large real loss. A real-terms drawdown is **deliberately
+  not offered**: the deflator is monthly, and holding its level flat across a
+  month would make the price level jump at every reference-period boundary, so
+  a month with 5% inflation would appear as a 5% one-day fall. A drawdown table
+  whose troughs are partly artifacts of the deflator's frequency is worse than
+  no table, and interpolating the index onto days would invent an intra-month
+  path nobody measured.
+
+The worst drawdown is the worst **fall**, not the lowest close: a series that
+drops 50% from an early peak, then makes a higher peak and eases 10%, has its
+worst drawdown at the first trough even though the later dip's close is
+numerically greater.
+
 ### Tehran equities in `items`
 
 Equities are ordinary rows, measured by the same code, in the same unit, over

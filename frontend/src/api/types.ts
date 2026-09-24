@@ -1128,6 +1128,28 @@ export interface MarketPerformanceItem {
   /** @deprecated Go's former name for observation_volatility_pct. */
   daily_volatility_pct?: number | null
   max_drawdown_pct: number | null
+  /**
+   * The drawdown's shape IN TIME. A percentage alone cannot tell a bad
+   * fortnight from a decade the holder is still living in.
+   *
+   * All NOMINAL, and `days` are CALENDAR days rather than trading sessions —
+   * the Tehran market is shut two days in seven plus Nowruz, so a session count
+   * understates the wait by about a third. A real-terms drawdown is deliberately
+   * not offered: the deflator is monthly, and holding it flat across a month
+   * would inject a step at every reference-period boundary and manufacture
+   * troughs that never happened.
+   */
+  drawdown_peak_date?: string | null
+  drawdown_trough_date?: string | null
+  /** Null when the peak has never been regained. */
+  drawdown_recovered_date?: string | null
+  /** Trough → recovery: how long the climb back took. */
+  drawdown_recovery_days?: number | null
+  /** Peak → recovery, or peak → today when still under water. */
+  underwater_days?: number | null
+  still_underwater?: boolean
+  /** Last close against the highest close before it. 0 means a new high. */
+  current_drawdown_pct?: number | null
   /** Go marshals a plain int: 0 observations is a measured zero, not a null. */
   observations: number | null
   /** YYYY-MM-DD. */

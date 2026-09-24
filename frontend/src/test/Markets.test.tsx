@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import Markets from '../pages/Markets'
+import Markets, { Recovery } from '../pages/Markets'
 import { SettingsProvider } from '../lib/settings'
 import type {
   MarketPerformanceItem,
@@ -499,7 +499,9 @@ const USD_COL = 4
 const GOLD_COL = 5
 const VOL = 6
 const DRAWDOWN = 7
-const OBS = 8
+/** How long the worst fall lasted — days under water, or that it never came back. */
+const RECOVERY = 8
+const OBS = 9
 
 function rowOrder(): string[] {
   return Array.from(document.querySelectorAll('tbody tr[data-testid]')).map((el) =>
@@ -990,5 +992,93 @@ describe('Markets — CPI provenance', () => {
         'No CPI series is configured for this deployment, so real returns are not computed.'
       )
     ).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Recovery. "Fell 60%" is a different fact depending on whether the holder
+// waited three weeks or is still waiting six years later, and on this market
+// the second is common.
+// ---------------------------------------------------------------------------
+
+describe('Markets — how long the fall lasted, not only how deep it was', () => {
+  function withDrawdown(extra: Partial<MarketPerformanceItem>): MarketPerformanceItem {
+    return { ...IRT_ROWS[1], ...extra }
+  }
+
+  it('renders a duration and not a date when still under water', () => {
+    render(
+      <SettingsProvider>
+        <Recovery
+          item={withDrawdown({
+            max_drawdown_pct: -62.4,
+            drawdown_peak_date: '2020-08-16',
+            drawdown_trough_date: '2022-03-01',
+            still_underwater: true,
+            underwater_days: 2143
+          })}
+          calendar="gregorian"
+        />
+      </SettingsProvider>
+    )
+    // "5.9 yr" lands; "peak 2020-08-16" does not.
+    expect(screen.getByText(/still down/i).textContent).toMatch(/5\.9 yr/)
+  })
+
+  it('reports a recovery when the peak was regained', () => {
+    render(
+      <SettingsProvider>
+        <Recovery
+          item={withDrawdown({
+            max_drawdown_pct: -18,
+            drawdown_peak_date: '2024-01-02',
+            drawdown_trough_date: '2024-02-10',
+            drawdown_recovered_date: '2024-04-01',
+            drawdown_recovery_days: 51,
+            underwater_days: 90,
+            still_underwater: false
+          })}
+          calendar="gregorian"
+        />
+      </SettingsProvider>
+    )
+    expect(screen.getByText(/back in/i).textContent).toMatch(/90 d/)
+  })
+
+  it('distinguishes "never fell" from "not measured"', () => {
+    const { unmount } = render(
+      <SettingsProvider>
+        <Recovery
+          item={withDrawdown({ max_drawdown_pct: 0, underwater_days: null })}
+          calendar="gregorian"
+        />
+      </SettingsProvider>
+    )
+    expect(screen.getByText(/never fell/i)).toBeTruthy()
+    unmount()
+
+    render(
+      <SettingsProvider>
+        <Recovery
+          item={withDrawdown({ max_drawdown_pct: null, underwater_days: null })}
+          calendar="gregorian"
+        />
+      </SettingsProvider>
+    )
+    // A dash with a reason, never a zero: "0 days under water" would read as
+    // "it recovered immediately", which is the opposite of "we cannot say".
+    expect(screen.queryByText(/never fell/i)).toBeNull()
+    expect(document.querySelector('[data-absent="true"]')).toBeTruthy()
+  })
+
+  it('occupies its own column in the table, between drawdown and observations', async () => {
+    await renderPage()
+    const c = cells('IR_GOLD_18K')
+    expect(c[RECOVERY]).toBe(
+      screen.getByTestId('mkt-recovery-IR_GOLD_18K').closest('td') as HTMLElement
+    )
+    // And the fixture rows carry no drawdown dates, so this must be an absence
+    // with a reason rather than an invented duration.
+    expect(c[RECOVERY].textContent).not.toMatch(/\d+\s*(d|yr)\b/)
   })
 })

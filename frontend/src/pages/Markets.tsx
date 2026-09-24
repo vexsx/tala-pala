@@ -52,6 +52,7 @@ type ColKey =
   | 'gold'
   | 'volatility'
   | 'drawdown'
+  | 'recovery'
   | 'observations'
 
 interface Column {
@@ -140,6 +141,19 @@ function buildColumns(valueUnit: ValueUnit): Column[] {
       metric: (i) => finiteOrNull(i.max_drawdown_pct)
     },
     {
+      key: 'recovery',
+      // Sorted on DAYS UNDER WATER, which is what the column is really about:
+      // a percentage says how far something fell, this says how long it took
+      // to stop being a problem — or that it has not.
+      label: 'Recovery',
+      numeric: true,
+      help:
+        'How long the worst fall lasted. Days are CALENDAR days, not trading sessions, ' +
+        'and the prices are NOMINAL — regaining a toman level after years of Iranian ' +
+        'inflation is still a large real loss.',
+      metric: (i) => finiteOrNull(i.underwater_days)
+    },
+    {
       key: 'observations',
       label: 'Obs',
       numeric: true,
@@ -184,6 +198,60 @@ function Absent({ reason }: { reason: string }) {
   return (
     <span className="mono metric-absent" title={reason} data-absent="true">
       —
+    </span>
+  )
+}
+
+/**
+ * How long the worst fall lasted — the question `max_drawdown_pct` cannot
+ * answer on its own.
+ *
+ * "Fell 60%" is a different fact depending on whether the holder waited three
+ * weeks or is still waiting six years later, and on this market the second is
+ * common. Still under water is rendered as a DURATION rather than a date,
+ * because "2,143 days" lands and "peak 2020-08-16" does not.
+ */
+export function Recovery({
+  item,
+  calendar
+}: {
+  item: MarketPerformanceItem
+  calendar: CalendarMode
+}) {
+  const days = finiteOrNull(item.underwater_days ?? null)
+  if (item.max_drawdown_pct === null || item.max_drawdown_pct === undefined) {
+    return <Absent reason={absentReason(item, 'A recovery time')} />
+  }
+  if (item.max_drawdown_pct === 0) {
+    return (
+      <span className="muted small" title="This series never closed below a previous close inside the window.">
+        never fell
+      </span>
+    )
+  }
+  if (days === null) {
+    return <Absent reason={absentReason(item, 'A recovery time')} />
+  }
+
+  const years = days / 365.25
+  const span = years >= 1 ? `${years.toFixed(1)} yr` : `${formatGrouped(days)} d`
+
+  if (item.still_underwater) {
+    return (
+      <span
+        className="mono neg"
+        title={`Peak ${item.drawdown_peak_date ?? '—'}, trough ${item.drawdown_trough_date ?? '—'}. Calendar days, nominal prices.`}
+      >
+        still down · {span}
+      </span>
+    )
+  }
+  return (
+    <span
+      className="mono"
+      title={`Recovered ${item.drawdown_recovered_date ? formatDate(item.drawdown_recovered_date, calendar) : ''} — ${formatGrouped(item.drawdown_recovery_days ?? 0)} days from the trough. Calendar days, nominal prices.`}
+    >
+      back in {span}
     </span>
   )
 }
@@ -822,6 +890,9 @@ export default function Markets() {
                             reason={absentReason(item, 'A maximum drawdown')}
                             tint={false}
                           />
+                        </td>
+                        <td className="num" data-testid={`mkt-recovery-${item.code}`}>
+                          <Recovery item={item} calendar={calendar} />
                         </td>
                         <td className="num">
                           {observations === null ? (
