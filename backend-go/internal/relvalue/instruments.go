@@ -36,9 +36,9 @@ type instrumentRow struct {
 	// DerivedFrom is the instrument this one's SOURCE publishes as a fixed
 	// multiple of (migration 0031): TGJU's 24k gold is its 18k gram price x
 	// 4/3 and its melted gold per mesghal x 4.3318. Measured against that
-	// instrument it is constant by construction, so no return, ratio or gap
-	// against it is a market fact. Empty for everything observed in its own
-	// right.
+	// instrument it is fixed at the source (on the median day; TGJU's tables
+	// drift off the multiple on some days), so no return, ratio or gap against
+	// it is a market fact. Empty for everything observed in its own right.
 	DerivedFrom string
 	// Source names the table this instrument's prices come from. Empty means
 	// `prices`, which is every row the registry itself returns. Tehran

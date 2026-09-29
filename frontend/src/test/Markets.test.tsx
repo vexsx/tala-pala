@@ -1198,6 +1198,35 @@ describe('Markets — asset classes', () => {
     expect(within(row('IR_SILVER_999')).queryByText(/derived from/)).toBeNull()
   })
 
+  it('ranks no derived series and counts none in "N of M", but keeps it in the table', async () => {
+    // 24k gold is TGJU's 18k price x 4/3: in the toman view it tracks 18k
+    // almost exactly and could take a ranking card under its own name.
+    const items = WITH_0031().items.map((i) =>
+      i.code === 'IR_GOLD_24K' ? { ...i, real_return_pct: 999, max_drawdown_pct: -99 } : i
+    )
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/markets/numeraires')) return Promise.resolve(NUMERAIRES)
+      if (path.startsWith('/markets/performance'))
+        return Promise.resolve({ ...WITH_0031(), items, count: items.length })
+      return Promise.resolve({})
+    })
+    render(
+      <SettingsProvider>
+        <Markets />
+      </SettingsProvider>
+    )
+    await screen.findByTestId('mkt-row-IR_GOLD_24K')
+    const cards = Array.from(document.querySelectorAll('.mkt-rank'))
+    expect(cards).toHaveLength(3)
+    for (const card of cards) {
+      expect(card.querySelector('.stat-value')?.textContent).not.toBe('24k gold (gram)')
+      // Seven assets are ranked; the eighth row is the derived one.
+      expect(card.textContent).toMatch(/ of 7 assets have one/)
+      expect(card.textContent).toContain('1 derived series (listed in the table, tagged) are not ranked')
+    }
+    expect(rowOrder()).toContain('IR_GOLD_24K')
+  })
+
   it('shows no class filter when every row is of one class', async () => {
     apiMock.mockImplementation((path: string) => {
       if (path.startsWith('/markets/numeraires')) return Promise.resolve(NUMERAIRES)

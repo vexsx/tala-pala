@@ -271,7 +271,11 @@ def test_migration_0031_registers_exactly_the_jobs_series(engine):
         assert rows[code]["domain"] == "gold", code
     for code in ("IR_GOLD_24K", "IR_GOLD_MESGHAL"):
         assert rows[code]["derived_from"] == "IR_GOLD_18K"
-        assert "constant by construction" in rows[code]["notes"]
+        # Fixed at the source, and not claimed constant on every day: TGJU's
+        # tables drift off the multiple (24k/18k on 707 of 3,272 days).
+        assert "fixed at the source" in rows[code]["notes"]
+        assert "constant by construction" not in rows[code]["notes"]
+        assert "publishing" in rows[code]["notes"]
     assert {c for c, r in rows.items() if r["derived_from"]} == {"IR_GOLD_24K", "IR_GOLD_MESGHAL"}
     silver = rows["IR_SILVER_999"]["notes"]
     for fragment in ("8,000", "8,200", "2,008,800", "x1.6", "XAGUSD", "premium"):

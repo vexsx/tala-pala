@@ -508,10 +508,15 @@ func buildRelativeResponse(in relativeInputs) relativeResponse {
 	// performance.
 	constant := constantByConstruction(in.A, in.B)
 	if constant != "" {
+		// "Fixed at the source", not "constant": TGJU applies the multiple, and
+		// on the median day the ratio is exactly it, but its two tables drift
+		// off it (24k/18k by more than 0.1% on 707 of 3,272 days, both legs
+		// TGJU), so the reason must not blame only the live feed.
 		out.Warnings = append(out.Warnings, fmt.Sprintf(
-			"%s, so their ratio is constant by construction. No gap, percentile or ratio "+
+			"%s, so their ratio is fixed at the source. No gap, percentile or ratio "+
 				"drawdown is reported: any movement between the two legs below is the "+
-				"difference between the sources' prices on each day, not relative "+
+				"source's own publishing (its tables are not always updated together) or "+
+				"the difference between two sources' prices on the day, not relative "+
 				"performance.", constant))
 	}
 

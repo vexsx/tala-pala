@@ -497,9 +497,20 @@ export default function Markets() {
     return copy.sort((a, b) => compareNullable(metric(a), metric(b), sortDir))
   }, [items, columns, sortKey, sortDir])
 
-  const bestReal = rankBy(items, (i) => finiteOrNull(i.real_return_pct), 'highest')
-  const worstReal = rankBy(items, (i) => finiteOrNull(i.real_return_pct), 'lowest')
-  const deepestDrawdown = rankBy(items, (i) => finiteOrNull(i.max_drawdown_pct), 'lowest')
+  // The ranking cards compare assets, and a series TGJU derives from another
+  // (24k gold and melted gold are fixed multiples of its 18k price) is not a
+  // second asset: in the default toman view it tracks 18k almost exactly and
+  // could take a card under its own name. So those rows are ranked by nothing
+  // and counted in no "N of M"; the table still lists them, with their tag.
+  const ranked = useMemo(() => items.filter((i) => !i.derived_from), [items])
+  const derivedCount = items.length - ranked.length
+  const bestReal = rankBy(ranked, (i) => finiteOrNull(i.real_return_pct), 'highest')
+  const worstReal = rankBy(ranked, (i) => finiteOrNull(i.real_return_pct), 'lowest')
+  const deepestDrawdown = rankBy(ranked, (i) => finiteOrNull(i.max_drawdown_pct), 'lowest')
+  const derivedNote =
+    derivedCount > 0
+      ? ` ${derivedCount} derived series (listed in the table, tagged) are not ranked: each is a fixed multiple of another listed series.`
+      : ''
 
   const toggleSort = (key: ColKey) => {
     if (key === sortKey) {
@@ -701,8 +712,8 @@ export default function Markets() {
                     {formatPct(bestReal.value)}
                   </div>
                   <div className="muted small">
-                    Ranked on real (CPI-deflated) return · {bestReal.measured} of {items.length}{' '}
-                    assets have one over this window.
+                    Ranked on real (CPI-deflated) return · {bestReal.measured} of {ranked.length}{' '}
+                    assets have one over this window.{derivedNote}
                   </div>
                 </>
               ) : (
@@ -727,7 +738,7 @@ export default function Markets() {
                       ? `It has lagged CPI by ${formatPct(-worstReal.value, { sign: false })} over this window.`
                       : 'Every measured asset kept pace with CPI over this window.'}{' '}
                     Ranked on the lowest real (CPI-deflated) return · {worstReal.measured} of{' '}
-                    {items.length} assets have one over this window.
+                    {ranked.length} assets have one over this window.{derivedNote}
                   </div>
                 </>
               ) : (
@@ -747,7 +758,7 @@ export default function Markets() {
                   <div className="delta flat mono">{formatPct(deepestDrawdown.value)}</div>
                   <div className="muted small">
                     Ranked on maximum peak-to-trough drawdown inside the window ·{' '}
-                    {deepestDrawdown.measured} of {items.length} assets have one.
+                    {deepestDrawdown.measured} of {ranked.length} assets have one.{derivedNote}
                   </div>
                 </>
               ) : (

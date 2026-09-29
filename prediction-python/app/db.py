@@ -390,7 +390,8 @@ instruments = Table(
     Column("updated_at", _TS, nullable=False, server_default=func.now()),
     # Migration 0031: the instrument this one's SOURCE publishes as a fixed
     # multiple of (TGJU's geram24 and mesghal are geram18 x 4/3 and x 4.3318).
-    # Measured against that instrument it is constant by construction.
+    # Measured against that instrument it is fixed at the source (on the median
+    # day; TGJU's two tables drift off the multiple on some days).
     Column("derived_from", Text, ForeignKey("instruments.code", ondelete="RESTRICT")),
     CheckConstraint(
         "derived_from IS NULL OR derived_from <> code",

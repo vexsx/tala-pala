@@ -957,8 +957,14 @@ func TestPerformance_ADerivedSeriesInItsOwnBaseUnitIsWithheldLikeTheIdentity(t *
 			t.Errorf("%s = %v, want null: a constant by construction measures nothing", name, *v)
 		}
 	}
-	if !notesMentioning(k24, "constant by construction") {
+	if !notesMentioning(k24, "fixed at the source") {
 		t.Errorf("the withheld row must say why: %v", k24.Notes)
+	}
+	// "Constant by construction" was true of the median day only: TGJU's two
+	// tables drift off the multiple (24k/18k by more than 0.1% on 707 of
+	// 3,272 days, both legs TGJU), so the note blames no single source.
+	if notesMentioning(k24, "constant by construction") || !notesMentioning(k24, "own publishing") {
+		t.Errorf("the note must not overstate the fixed ratio: %v", k24.Notes)
 	}
 	if !notesMentioning(k24, "No real return") {
 		t.Errorf("the withheld real return must say why: %v", k24.Notes)

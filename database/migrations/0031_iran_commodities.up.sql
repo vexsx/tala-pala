@@ -47,9 +47,15 @@
 -- as fixed multiples of its 18k gram price. Measured over 2,963 shared days
 -- (2015-08-30..2026-09-28), geram24 / geram18 has median 1.33332 (x 4/3) and
 -- mesghal / geram18 median 4.3316 (x 4.3318, i.e. 4.6083 g at 705 per mille).
--- So measured in grams of 18k gold they are CONSTANT BY CONSTRUCTION, and any
--- movement left in such a ratio here is the difference between TGJU's 18k and
--- the live 18k feed in `prices`, not a market fact.
+-- So measured in grams of 18k gold they are FIXED AT THE SOURCE: TGJU applies
+-- the multiple itself. Fixed on the median day, not on every day -- TGJU's two
+-- tables drift off the multiple by more than 0.1% on 707 of 3,272 paired days
+-- for 24k (the worst 7.2%) and 638 of 3,511 for mesghal (8.5%), almost all
+-- before 2025 (2 and 6 days in the year to 2026-09-29), when one table was
+-- updated before the other (measured on the local rehearsal's TGJU backfill,
+-- both legs TGJU). Any movement left in such a ratio is that publishing, plus,
+-- where the 18k leg is the live feed rather than TGJU's own 18k, the
+-- difference between the two sources -- never a market fact.
 --
 -- `is_derived` cannot carry that: it means "computed by us", and these are
 -- observed from TGJU. A free-text note alone cannot carry it either, because
@@ -114,10 +120,10 @@ VALUES
      'TGJU gerami: the Tehran bazaar price of one gram coin, published in rials and stored as toman (/10). One daily settled close per day, stamped 23:00 UTC on its own date and written the next morning -- not a live quote. History from 2013-07-22. Priced per COIN, including its premium over its gold content; it is not the price of a gram of gold.'),
   ('IR_GOLD_24K','market_price','24k gold (gram)','طلای ۲۴ عیار','gold','IRT','gram',0,
      'tehran_bazaar','official_mirror',FALSE,FALSE,'IR_GOLD_18K',
-     'TGJU geram24, published in rials and stored as toman (/10). One daily settled close per day, stamped 23:00 UTC on its own date and written the next morning -- not a live quote. History from 2014-05-02. TGJU DERIVES it from its 18k gram price (x 4/3; median ratio 1.33332 over 2,963 days), so measured against 18k gold it is constant by construction: its return in grams of 18k gold is withheld, and any gap against IR_GOLD_18K reflects the difference between TGJU''s 18k and the live 18k feed, not the market.'),
+     'TGJU geram24, published in rials and stored as toman (/10). One daily settled close per day, stamped 23:00 UTC on its own date and written the next morning -- not a live quote. History from 2014-05-02. TGJU DERIVES it from its 18k gram price (x 4/3; median ratio 1.33332 over 2,963 days), so measured against 18k gold it is fixed at the source: its return in grams of 18k gold is withheld, and any gap against IR_GOLD_18K reflects TGJU''s publishing (its two tables are off the multiple by more than 0.1% on 707 of 3,272 days, rarely since 2025) or, where the 18k is the live feed, the difference between TGJU''s 18k and that feed -- not the market.'),
   ('IR_GOLD_MESGHAL','market_price','Melted gold (mesghal)','مثقال طلا (آبشده)','gold','IRT','mesghal',0,
      'tehran_bazaar','official_mirror',FALSE,FALSE,'IR_GOLD_18K',
-     'TGJU mesghal: melted (آبشده) gold priced per MESGHAL -- 4.6083 g at 705 per mille -- published in rials and stored as toman (/10). One daily settled close per day, stamped 23:00 UTC on its own date and written the next morning -- not a live quote. History from 2013-07-22. TGJU DERIVES it from its 18k gram price (x 4.3318; median ratio 4.3316), so measured against 18k gold it is constant by construction: its return in grams of 18k gold is withheld, and any gap against IR_GOLD_18K reflects the difference between TGJU''s 18k and the live 18k feed, not the market. Never compare it per gram without that conversion.')
+     'TGJU mesghal: melted (آبشده) gold priced per MESGHAL -- 4.6083 g at 705 per mille -- published in rials and stored as toman (/10). One daily settled close per day, stamped 23:00 UTC on its own date and written the next morning -- not a live quote. History from 2013-07-22. TGJU DERIVES it from its 18k gram price (x 4.3318; median ratio 4.3316), so measured against 18k gold it is fixed at the source: its return in grams of 18k gold is withheld, and any gap against IR_GOLD_18K reflects TGJU''s publishing (its two tables are off the multiple by more than 0.1% on 638 of 3,511 days, rarely since 2025) or, where the 18k is the live feed, the difference between TGJU''s 18k and that feed -- not the market. Never compare it per gram without that conversion.')
 ON CONFLICT (code) DO NOTHING;
 
 -- A pre-existing 24k or mesghal row keeps its own notes (ON CONFLICT above) but

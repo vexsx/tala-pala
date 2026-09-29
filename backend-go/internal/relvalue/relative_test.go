@@ -585,7 +585,10 @@ func TestBuildRelativeResponse_AFixedRatioReportsNoGap(t *testing.T) {
 	}
 	found := false
 	for _, w := range got.Warnings {
-		if strings.Contains(w, "constant by construction") && strings.Contains(w, "IR_GOLD_18K") {
+		// Fixed at the source, drifting with its publishing: both are said,
+		// and neither is blamed on the live feed alone.
+		if strings.Contains(w, "fixed at the source") && strings.Contains(w, "IR_GOLD_18K") &&
+			strings.Contains(w, "own publishing") && !strings.Contains(w, "constant by construction") {
 			found = true
 		}
 	}

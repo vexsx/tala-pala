@@ -275,11 +275,12 @@ func identityNumeraire(inst instrumentRow, key string) bool {
 //
 // The same defect as identityNumeraire one step removed: TGJU publishes 24k
 // gold as its 18k gram price x 4/3 and melted gold per mesghal as x 4.3318
-// (migration 0031, `derived_from`), so in grams of 18k gold both are a
-// CONSTANT at the source. What is left in them here is the difference between
-// TGJU's 18k and the live 18k feed that defines the gram -- a spread between
-// two sources, not a return -- and printed in a return column it would read as
-// one. Those cells are null with the reason instead.
+// (migration 0031, `derived_from`), so in grams of 18k gold both are FIXED at
+// the source. What is left in them here is TGJU's own publishing (its tables
+// drift off the multiple on some days) and the difference between TGJU's 18k
+// and the live 18k feed that defines the gram -- spreads, not a return -- and
+// printed in a return column it would read as one. Those cells are null with
+// the reason instead.
 func derivedNumeraire(inst instrumentRow, key string) bool {
 	spec, ok := lookupNumeraire(key)
 	return ok && spec.Series != "" && inst.DerivedFrom == spec.Series
@@ -350,10 +351,10 @@ func numeraireReturn(windowed dailySeries, inst instrumentRow, key string,
 func derivedNote(inst instrumentRow, key string, spec numeraireSpec) string {
 	return fmt.Sprintf(
 		"no %s return: %s is published by its source as a fixed multiple of %s, the "+
-			"series that DEFINES this unit, so measured in %s it is constant by "+
-			"construction. Any movement left in it here is the difference between the "+
-			"two sources' %s prices, not a return, so the cell is null rather than a "+
-			"number that would read as one.",
+			"series that DEFINES this unit, so measured in %s it is fixed at the source. "+
+			"Any movement left in it here is the source's own publishing or the "+
+			"difference between two sources' %s prices, not a return, so the cell is null "+
+			"rather than a number that would read as one.",
 		key, inst.Code, spec.Series, spec.Unit, spec.Series)
 }
 
@@ -501,10 +502,10 @@ func buildPerformanceItem(inst instrumentRow, in performanceInputs) performanceI
 	case derived:
 		item.Notes = append(item.Notes, fmt.Sprintf(
 			"%s is published by its source as a fixed multiple of %s, the series that "+
-				"DEFINES this numeraire, so measured in %s it is constant by construction. "+
+				"DEFINES this numeraire, so measured in %s it is fixed at the source. "+
 				"nominal_return_pct, observation_volatility_pct, max_drawdown_pct and "+
-				"real_return_pct are null: what moves in it here is the difference between "+
-				"two sources' %s prices, not a return.",
+				"real_return_pct are null: what moves in it here is the source's own "+
+				"publishing or the difference between two sources' %s prices, not a return.",
 			inst.Code, inst.DerivedFrom, num.Unit, inst.DerivedFrom))
 	default:
 		item.NominalReturnPct = totalReturnPct(pts)
@@ -580,9 +581,9 @@ func buildPerformanceItem(inst instrumentRow, in performanceInputs) performanceI
 		// The same, for a constant one step removed: deflated, it would be
 		// minus inflation plus a spread between two sources.
 		item.Notes = append(item.Notes,
-			"No real return: deflating a series that is constant by construction would "+
-				"report the negative of Iranian inflation, plus a spread between two "+
-				"sources, and label it this instrument's real return.")
+			"No real return: deflating a series that is fixed at the source would "+
+				"report the negative of Iranian inflation, plus a spread, and label it "+
+				"this instrument's real return.")
 	} else {
 		from := start.Day
 		if in.Query.Window.From != nil {
