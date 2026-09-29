@@ -285,7 +285,7 @@ Go is a pure reader: it re-projects stored measurements and computes no MAs.
 
 **What `prices` actually holds.** Ticks, not exchange OHLC. Every candle this API returns is synthesized by bucketing ticks, and the two consequences are reported rather than hidden. `IR_GOLD_18K` has exactly one observation per day from 2022-04-20 to 2026-07-19 and one every ~5 minutes from 2026-07-20 (measured inter-tick p50 300.0s, p90 300.5s), so 1198 of 1224 daily buckets have `open == high == low == close`; `XAUUSD` is the same shape. There is no volume column anywhere in `prices`.
 
-**`GET /api/v1/market/candles`** — query: `symbol` (default `IR_GOLD_18K`, must be in the canonical symbol set), `interval` (default `1d`), `limit` (default 500, 1..2000), `before` (RFC3339 **or** unix seconds; the pagination cursor), `from`/`to` (explicit window, same two formats), `overlays` (`1` default, `0` for cheap history pages), `days` (legacy). Invalid values are **refused with 400**, never clamped — the `/intelligence/news` rule, for the same reason: a caller that asked for 15m and silently received 1h cannot tell its chart is wrong.
+**`GET /api/v1/market/candles`** — query: `symbol` (default `IR_GOLD_18K`; the canonical symbol set, widened by Addendum 29 to chartable registry rows and to the Tehran market's `IDX:`/`EQ:` symbols), `interval` (default `1d`), `limit` (default 500, 1..2000), `before` (RFC3339 **or** unix seconds; the pagination cursor), `from`/`to` (explicit window, same two formats), `overlays` (`1` default, `0` for cheap history pages), `days` (legacy). Invalid values are **refused with 400**, never clamped — the `/intelligence/news` rule, for the same reason: a caller that asked for 15m and silently received 1h cannot tell its chart is wrong.
 
 **Canonical intervals.** `5m 10m 15m 20m 30m 45m 1h 2h 3h 4h 6h 8h 12h 1d 2d 3d 1w`. `daily` → `1d` and `hourly` → `1h` remain accepted; the response always echoes the **canonical** name, so a client that branched on `interval === 'hourly'` must branch on `interval_seconds` instead. `days` still works and keeps its old lenient clamp: it is converted to a bucket count (`ceil(days*86400/interval_seconds)`, capped at 2000), which reproduces the old windows exactly — `interval=daily&days=120` → 120 buckets, `interval=hourly&days=14` → 336. An explicit `limit` wins over `days`.
 
@@ -721,3 +721,97 @@ passed anyway because the fixture invented the contract. A fixture that invents 
 worse than no fixture — it manufactures confidence. P1 fixtures are now verbatim copies of Go's
 marshalled output with a comment naming the type they came from, and the pages were verified in a
 real browser against the deployed API, not only in jsdom.
+
+## Addendum 29 — the Tehran market on the Trade chart (2026-09-29)
+
+The Trade chart can now draw TEDPIX, the equal-weighted index, TEPIX, the equal-weighted price
+index, IFX and every other servable TSETMC index, every roster share, and every chartable
+commodity in the instrument registry. One endpoint still serves it all — `GET /api/v1/market/candles`
+— so the chart's store, its backwards paging and its refusal handling are unchanged. What each
+series IS travels on the response.
+
+**The symbol set.** Three shapes, told apart by the string:
+- **A registry code** (`IR_GOLD_18K`, `XAUUSD`, `IR_SILVER_999`, …) — ticks from `prices`, bucketed
+  exactly as Addendum 21 describes. Accepted when it is in `KnownSymbols` **or** is an **enabled**
+  `instruments` row of kind `market_price`/`fx` quoted in `IRT`/`USD`. The registry is read at most
+  once per 5 minutes (`prices.InstrumentRegistry`); a failed read is a 500, never an "unknown
+  symbol", and is not cached. `KnownSymbols` never wait on it. So a commodity added to the registry
+  charts without a code change once its rows land; a flow ratio (`IR_GOLD_FUND_FLOW`, PCT), a yield
+  (`US10Y`) or an index level (`DXY`) is not offered as a price.
+- **`IDX:<insCode>`** — a TSETMC index (`market_indices`), read from `internal/bourse`'s in-memory
+  store, **not** `LoadIndexPoints`: the store holds enabled indices only and flags an unchanged
+  session over the whole series, where `LoadIndexPoints` would reset the flag at every page boundary.
+- **`EQ:<insCode>`** — a roster share (`equity_instruments`), served ADJUSTED by
+  `internal/equities` under the same P3 gate as `/stocks/{symbol}/bars`.
+
+Shape: `^(IDX|EQ):[0-9]{6,20}$` after `ToUpper(TrimSpace)`, which candles now applies like
+drawings always did. A Tehran symbol names the exchange's numeric key, never a Persian name.
+`main.go` builds ONE bourse handler and ONE equities handler and hands the same instances to the
+`/bourse`, `/stocks` and chart routes, so the ~10 MB index store exists once.
+
+**Tehran symbols are daily only.** Any interval but `1d` is the 400 with the exact Addendum-21 text
+(`"This timeframe is not available for the current data source."`) and
+`details.supported_intervals: ["1d"]`, checked before either source is touched. TSETMC stores one
+settled row per session; 2d/3d epoch buckets straddle the Saturday–Wednesday week, and a weekly
+candle for a close-only series would invent its open.
+
+**Candles for a Tehran symbol** (`t` = 00:00 UTC of the trade date, `close_time = t + 86400`,
+`confirmed: true`, and **no** `ticks`/`synthetic` — those describe tick buckets):
+- **Index: close-only.** `open`, `high`, `low` and `volume` are `null` — TSETMC publishes no open
+  and its stored low/high are not a traded range. `unchanged: true` marks a close that repeats the
+  previous one exactly (a closed market: TEDPIX held 3,713,955.9 for 50 sessions from 2026-02-25);
+  `rescaled: true` marks a close that needed the power-of-ten correction. The chart draws a line.
+- **Share:** `open/high/low` adjusted trade prices; `close` the official closing price
+  (`final_close × factor`, the price every return in the app uses) — it can sit outside the range
+  (`close_outside_range: true`); `last_trade`; `volume` in shares; `adjustment_factor` when ≠ 1;
+  `traded`. A halted session is `traded: false` with the carried reference close and `null`
+  open/high/low, and the chart draws it as a gap. A traded bar with a zero in its range is served
+  the same way and counted in the notes.
+
+**Overlays and levels.** Index-aligned with the candles, as before. A closed index session and a
+halted share session are left OUT of every indicator input and get `null` at their index (the
+alternative — feeding repeats in — would drag a 50-session average flat through a closure). Index:
+SMA 20/50 and Bollinger only; `supertrend`, `supertrend_dir`, `psar` and the four `ichimoku_*`
+fields are `null` (the whole field), `pivots` is `null`. Share: every overlay, the high/low ones
+over traded sessions with a range; pivots from the newest traded session. Support/resistance: 20
+included sessions or `null`, as Addendum 21.
+
+**Response keys added for a Tehran symbol** (every Addendum-21 key is still present):
+`price_fields` (`["close"]` for an index, `["open","high","low","close"]` for a share), `unit`
+(`"index_points"` | `"IRR"` — rials, NOT the house toman), `source` (`"TSETMC"`), `instrument` (index:
+`ins_code, name_fa, name_en, market, kind, sector_code, weighting, return_basis, check_status,
+rows_rescaled, refusal_reason`; share: `ins_code, symbol, name_fa, market, board, sector_code,
+sector_fa, adjustment`), `data_age` (the same block and 10-day bound as `/bourse/*` and `/stocks`;
+`as_of` is when the response was built, `data_age` is how old the DATA is), `notes` (what the series
+is and is not), `revision` (changes whenever stored sessions are restated — the index store's key,
+or a share's `last_bar|adjustment_version|computed_at`; the chart reloads every page when it
+moves, because the live poll's three newest sessions cannot show a restated history). `coverage`
+is `{base_granularity_seconds: 86400, intraday_from: null, history_from, supported_intervals:
+["1d"], note}`.
+
+**Refusals.** Unknown/disabled index → 404 `not_found`; refused or never-ingested index → 409
+`index_unavailable` with `status` and `refusal_reason`; share not in the roster → 404; share whose
+adjustment is not validated → 409 `adjustment_unavailable` with the verdict (the chart has no raw
+mode).
+
+**Drawings** accept the same symbol set; a Tehran symbol only at `1d` (`problems.interval`).
+
+**The page.** The picker groups Gold & coins, Silver, Commodity funds, FX, Global (from
+`/instruments?enabled=true`), then Tehran · All-share, Tehran · Boards & segments, Bourse ·
+Sectors, Farabourse · Sectors (from `/bourse/indices`) and Tehran · Shares (from `/stocks`). The two
+gold symbols and the five headline indices render before any list answers. An entry that cannot be
+charted is shown DISABLED with its reason. Prices are written per kind: index points ignore the
+toman/rial toggle, share rials are never ×10, dollar-quoted codes are dollars, toman codes follow
+the toggle. The status bar's freshness for a Tehran series is `data_age`, not the 3×-interval
+heuristic that would flag every Saturday morning. SuperTrend/PSAR/Ichimoku/Pivots on a close-only
+series are shown as refused with the reason, never as "no data". A Tehran symbol forces 1D **without
+writing it to the stored timeframe preference** (visiting TEDPIX from 4H gold used to reset gold to
+1D for good); neither fallback writes it for any symbol any more. A registered symbol with no stored
+rows shows an empty state, once, not an error loop.
+
+**Two defects fixed on the way.** The forecast overlay fetched `/predictions` with no `symbol`, so
+18k gold's toman forecasts were drawn over XAU/USD; it now asks `/predictions?symbol=<charted>` and
+only for the forecast symbols. The SuperTrend row under the 18k gold card read the CHARTED symbol's
+direction; it is now 18k gold's or nothing. On a Tehran chart the gold signal card is not shown and
+not fetched, and gold/macro news markers are not placed (they would read as causes); the forecast
+card says no forecast is produced, and the gold-only cards that remain say "· 18k gold".
