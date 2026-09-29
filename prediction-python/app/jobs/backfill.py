@@ -30,6 +30,15 @@ The legacy ``app/seed/seed_history.py`` used 12:00 UTC, which overstates
 availability by ~9 hours. Daily models bucket both to the same day so the
 existing series are unaffected; new backfills use the honest convention.
 
+The same rule applies to the NEWEST bar.  During a session Yahoo's chart
+serves today's bar with its price so far, and stamped 23:00 UTC today that
+row claims a close that does not exist yet — a row from the future.
+Measured on the local rehearsal (2026-09-29): a run at 12:18 UTC stored DXY
+and BRENT_OIL at 2026-09-29 23:00, and ``/prices/current`` then served
+Brent's forming 96.36 as the current price, not stale, with a -7.63% change
+computed from it.  So a bar whose close stamp is still ahead of the run is
+not stored (``unsettled_skipped``); the next run stores its close.
+
 Idempotency
 -----------
 Days that already have a price row for the symbol are skipped, so the job can
@@ -116,15 +125,22 @@ def backfill_symbol(
     price_rows: list[dict] = []
     raw_rows: list[dict] = []
     skipped = 0
+    unsettled = 0
     for bar_ts, value in pairs:
         if not (isinstance(value, (int, float)) and value > 0):
             continue
         day = bar_ts.astimezone(timezone.utc).date()
+        stamp = _close_stamp(bar_ts)
+        if stamp > now:
+            # Today's bar, still forming: its close does not exist yet
+            # (module docstring). Checked before `have`, so the day stays
+            # open for the run that stores its close.
+            unsettled += 1
+            continue
         if day in have:
             skipped += 1
             continue
         have.add(day)  # guard against duplicate bars inside one payload
-        stamp = _close_stamp(bar_ts)
         price_rows.append({
             "symbol": symbol, "value": float(value), "currency": currency,
             "unit": unit, "source": "yahoo_backfill", "observed_at": stamp,
@@ -151,6 +167,7 @@ def backfill_symbol(
     log.info("backfill %s: %d inserted, %d already present", symbol, inserted, skipped)
     return {
         "symbol": symbol, "inserted": int(inserted), "skipped_existing": skipped,
+        "unsettled_skipped": unsettled,
         "fetched": len(pairs), "range": range_,
         "first": price_rows[0]["observed_at"].date().isoformat() if price_rows else None,
         "last": price_rows[-1]["observed_at"].date().isoformat() if price_rows else None,

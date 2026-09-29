@@ -16,9 +16,12 @@ It also fills ONE hole in an existing series.  ``IR_COIN_EMAMI`` has no row of
 any source on 83 UTC days, 2026-04-28 → 2026-07-20 (measured on production
 2026-09-29), between the pricedb mirror going stale and live collection
 starting.  TGJU's ``sekee`` close is written on exactly those days and on no
-other: a day that already holds an observation keeps it, and a day is judged
-empty only once it has ENDED in UTC (until midnight a live row can still land
-in it).  ``USD_IRT`` and
+other: only from :data:`GAP_FILL_FROM` on (the hole begins after the deep
+backfill's last rows, 2026-04-26/27; an empty day before that is a Friday or
+a holiday in the backfilled era, not a hole, and is not filled from a second
+source), a day that already holds an observation keeps it, and a day is
+judged empty only once it has ENDED in UTC (until midnight a live row can
+still land in it).  ``USD_IRT`` and
 ``IR_GOLD_18K`` are refused rather than filled — production's USD_IRT is the
 USDT/toman market, a different instrument from TGJU's cash dollar, and 18k has
 no hole to fill.
@@ -90,6 +93,14 @@ the Emami coin's first pass is what reaches its 83-day hole.  Otherwise the
 not reach back to the newest bar the previous pass saw, rows in between were
 never seen (the job was down for weeks), so the whole table is read again.
 Never ``length=-1``: measured, it silently drops the oldest row.
+
+The provider's off-switch
+-------------------------
+``data_providers.enabled = FALSE`` for ``tgju`` (migration 0023 once set it)
+stops this job too: every symbol is reported ``skipped`` with that reason, no
+request is made, and the pass is not a failure — an operator's switch is a
+decision, not an outage.  A deployment without a ``tgju`` row has no switch
+to read, and the job runs.
 """
 from __future__ import annotations
 
@@ -108,6 +119,7 @@ from ..config import Settings
 from ..core.normalize import SYMBOL_META
 from ..db import (
     app_settings,
+    data_providers,
     ensure_utc,
     insert_ignore,
     instruments,
@@ -157,6 +169,16 @@ SERIES_SLUGS: dict[str, str] = {
 # Existing series whose EMPTY UTC days are filled from TGJU, and only those.
 GAP_FILL_SLUGS: dict[str, str] = {
     "IR_COIN_EMAMI": "sekee",
+}
+
+# The first day each gap-filled series may be filled on.  Production's Emami
+# hole begins after the deep backfill's last rows (tgju_history to
+# 2026-04-26, one pricedb row on 2026-04-27); every empty UTC day before that
+# is a Friday or a holiday inside the backfilled decade — a day the bazaar did
+# not trade, not a hole — and filling it from a second source would put
+# TGJU's closes on days the series deliberately has none.
+GAP_FILL_FROM: dict[str, date] = {
+    "IR_COIN_EMAMI": date(2026, 4, 27),
 }
 
 # Symbols a caller might reasonably ask for and this job will not touch, with
@@ -394,6 +416,7 @@ def ingest_symbol(
         "held_unjudged": 0,
         "skipped_not_settled": 0,
         "skipped_other_source": 0,
+        "skipped_before_window": 0,
         "first_written": None,
         "last_written": None,
     }
@@ -502,6 +525,10 @@ def ingest_symbol(
                 # neighbourhood at the old edge of a 40-row page file a
                 # spurious suspect row against a close that was fine.)
                 report["unchanged"] += 1
+                continue
+            if gap_fill and not on_day and bar.day < GAP_FILL_FROM[symbol]:
+                # An empty day before the hole: not traded, not missing.
+                report["skipped_before_window"] += 1
                 continue
             if item.verdict == "suspect":
                 report["suspect"] += 1
@@ -698,11 +725,21 @@ def run_tgju_daily(
         )
     now = ensure_utc(now or utcnow())
     ordered = list(dict.fromkeys(requested))
-    results = [ingest_symbol(engine, settings, s, dry_run=dry_run, now=now) for s in ordered]
+    switched_off = _provider_disabled(engine)
+    if switched_off:
+        log.info("tgju daily skipped: %s", switched_off)
+        results = [
+            {"symbol": s, "status": "skipped", "reason": switched_off, "inserted": 0,
+             "would_insert": 0, "suspect": 0, "restated": 0}
+            for s in ordered
+        ]
+    else:
+        results = [ingest_symbol(engine, settings, s, dry_run=dry_run, now=now) for s in ordered]
     failed = [r for r in results if r["status"] in ("refused", "error")]
     out = {
         "dry_run": bool(dry_run),
         "as_of": now.isoformat(),
+        "skipped": switched_off,
         "tehran_today": tehran_today(now).isoformat(),
         "symbols": results,
         "total_inserted": sum(int(r["inserted"]) for r in results),
@@ -715,6 +752,20 @@ def run_tgju_daily(
         raise DailyIngestFailed(
             f"every symbol failed ({len(failed)} of {len(results)})", out
         )
-    if not dry_run:
+    if not dry_run and not switched_off:
         JOB_LAST_SUCCESS.labels(job="tgju_daily").set(time.time())
     return out
+
+
+def _provider_disabled(engine: Engine) -> Optional[str]:
+    """The reason this pass is skipped, when an operator switched TGJU off."""
+    with engine.connect() as conn:
+        enabled = conn.execute(
+            select(data_providers.c.enabled).where(data_providers.c.code == PROVIDER_CODE)
+        ).scalar()
+    if enabled is False:
+        return (
+            f"data_providers.enabled is FALSE for '{PROVIDER_CODE}': an operator switched "
+            "TGJU off, so no daily history is read until it is switched back on"
+        )
+    return None

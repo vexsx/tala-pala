@@ -35,10 +35,11 @@ import respx
 from sqlalchemy import func, insert, select, text
 
 from app.core.normalize import SYMBOL_META
-from app.db import app_settings, instruments, prices, raw_observations, utcnow
+from app.db import app_settings, data_providers, instruments, prices, raw_observations, utcnow
 from app.jobs import tgju_daily
 from app.jobs.tgju_backfill import MAX_HISTORY_ROWS, SPLICE_NOTE_MARKER
 from app.jobs.tgju_daily import (
+    GAP_FILL_FROM,
     GAP_FILL_NOTE_MARKER,
     GAP_FILL_SLUGS,
     RECENT_ROWS,
@@ -635,6 +636,46 @@ def test_emami_is_not_filled_on_a_utc_day_that_has_not_ended(engine, settings):
     morning = ingest_symbol(engine, settings, EMAMI, now=NOW)
     assert morning["inserted"] == 1
     assert date(2026, 9, 28) in _stored_days(engine, EMAMI)
+
+
+@respx.mock
+def test_emami_is_not_filled_before_the_hole(engine, settings):
+    """An empty day inside the backfilled era is a Friday or a holiday the
+    bazaar did not trade — TGJU has a close for it, and the deep backfill
+    deliberately stored none. The gap-fill starts at the hole (2026-04-27)."""
+    assert GAP_FILL_FROM[EMAMI] == date(2026, 4, 27)
+    _seed_emami_like_production(engine)
+    with engine.begin() as conn:
+        conn.execute(prices.delete().where(
+            prices.c.symbol == EMAMI,
+            prices.c.observed_at >= datetime(2026, 4, 18, tzinfo=timezone.utc),
+            prices.c.observed_at < datetime(2026, 4, 19, tzinfo=timezone.utc)))
+    _serve_fixture("sekee")
+
+    report = ingest_symbol(engine, settings, EMAMI, now=NOW)
+
+    assert report["skipped_before_window"] == 1
+    assert date(2026, 4, 18) not in _stored_days(engine, EMAMI)
+    assert report["first_written"] == "2026-04-28"
+
+
+@respx.mock
+def test_a_switched_off_provider_skips_the_pass_without_failing_it(engine, settings):
+    """data_providers.enabled = FALSE for tgju stops this job as it stops the
+    live collection: every symbol is skipped with the reason, nothing is
+    requested, and the pass is not a failure (the Go scheduler reads 200)."""
+    with engine.begin() as conn:
+        conn.execute(insert(data_providers).values(
+            code="tgju", name="TGJU", category="iran_gold", enabled=False))
+    route = respx.get(url__regex=r".*").mock(return_value=httpx.Response(500))
+
+    out = run_tgju_daily(engine, settings, now=NOW)
+
+    assert not route.called
+    assert out["skipped"] and "switched TGJU off" in out["skipped"]
+    assert out["failed"] == [] and out["total_inserted"] == 0
+    assert {r["status"] for r in out["symbols"]} == {"skipped"}
+    assert len(out["symbols"]) == len(SERIES_SLUGS) + len(GAP_FILL_SLUGS)
 
 
 @respx.mock
