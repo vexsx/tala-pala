@@ -879,10 +879,18 @@ requested, and the answer is `200` with `skipped` set.
 minutes apart. A stored row is never overwritten; one the current copy states differently is kept and
 reported as restated (`restated`, `rows_restated`, `bars_restated`, …) and the new rows are stored.
 Only a payload unlike most of what it overlaps (≥ 4 rows compared, more than half differing) fails its
-item. Index values compare to within the two print formats (1e-5 relative or 0.1 point). Fund
-restatements are judged only where a run writes, and a pair that skips a TEDPIX session is a gap in
-the served copy; fund closes stop before the first day a live source observed the fund. Corporate
-actions are derived over the stored bars (`actions_retired`, `actions_superseded`). The market-watch
+item — judged over the whole overlap AND over its newest 10 rows, because bars, index histories and
+fund lists arrive as whole histories and a different recent stretch was under half of thousands. A
+new bar or index value that joins onto a stored row the payload restates (a bar: the new session's
+reference is the payload's close, not the stored one) fails its item too: stored, it would be a
+corporate action or a step nobody made. Index values compare to within the two print formats (1e-5
+relative or 0.1 point). Fund restatements are judged only where a run writes, against the STORED
+close a new session follows, and a pair that skips a TEDPIX session is a gap in the served copy; fund
+closes stop before the first day a live source observed the fund. Corporate actions are derived over
+the stored bars (`actions_retired`, `actions_superseded`); every other copy served of a stored bar is
+kept in `equity_bar_alternatives` (0032), and a reference break that some served copy chains is
+contested — not an action — and reported (`contested_breaks`, `contested_examples`), so the two
+copies store the same actions in either order. The market-watch
 delist guard applies per market too. `POST /internal/bourse/shares/ingest` and
 `/internal/bourse/funds/ingest` answer `200` with the full report (`all_failed: true`) when every item
 of a call failed, and record the failure on the provider's health row; `/internal/bourse/ingest` keeps

@@ -42,11 +42,15 @@ bar keeps the stored bar, and the disagreement is counted and named in the
 report; the payload's NEW sessions are still stored.  The two CDN copies
 disagree on four roster bars (2021-12-15 and 2022-03-26, by a trade or two),
 and refusing the symbol on them failed it on every other run.  Only a payload
-that disagrees with most of the stored bars it overlaps — not a restatement
-but some other series — fails the symbol (the rule of
-app.bourse.ingest.restatement_is_systematic).  There is no vintage machinery
-here on purpose: ``economic_observations`` has it because macro statistics
-are restated by their publishers, and a daily bar is not.
+that disagrees with most of the stored bars it overlaps, or with most of
+the newest ten of them — not a restatement but some other series — fails the
+symbol (app.bourse.ingest.restatement_is_systematic and
+newest_overlap_is_systematic), and so does a new session whose reference
+chains to the payload's copy of a stored bar whose close the store holds
+differently: stored, that would read as a corporate action nobody made.
+There is no vintage machinery here on purpose: ``economic_observations`` has
+it because macro statistics are restated by their publishers, and a daily bar
+is not.
 
 *The gate is enforced by a row.*  ``equity_adjustments`` records the verdict per
 symbol per ``adjustment_version``, and the read API serves an adjusted series
@@ -70,12 +74,19 @@ from ..db import (
     corporate_actions,
     ensure_utc,
     equity_adjustments,
+    equity_bar_alternatives,
     equity_bars,
     equity_instruments,
     insert_ignore,
     utcnow,
 )
-from ..bourse.ingest import RESTATED_EXAMPLES, restatement_is_systematic
+from ..bourse.ingest import (
+    RECENT_OVERLAP,
+    RESTATED_EXAMPLES,
+    joins_onto_restated,
+    newest_overlap_is_systematic,
+    restatement_is_systematic,
+)
 from .adjust import (
     ADJUSTMENT_VERSION,
     KIND_CLOSE_RESTATED,
@@ -86,6 +97,7 @@ from .adjust import (
     STATUS_REFUSED,
     STATUS_VALIDATED,
     AdjustedSeries,
+    Alternatives,
     Bar,
     BarParseError,
     adjust,
@@ -228,15 +240,45 @@ def _write_bars(
             )
 
     compared = len(bars) - len(pending)
-    if restatement_is_systematic(len(restated), compared):
+    restated_days = [date.fromisoformat(r["date"]) for r in restated]
+    overlap = [bar.trade_date for bar in bars if bar.trade_date in stored]
+    newest = newest_overlap_is_systematic(overlap, restated_days)
+    if newest or restatement_is_systematic(len(restated), compared):
         shown = "; ".join(
-            f"{r['date']}: stored {r['stored']}, payload {r['served']}" for r in restated[:3]
+            f"{r['date']}: stored {r['stored']}, payload {r['served']}" for r in restated[-3:]
+        )
+        where = (
+            f"the newest {min(RECENT_OVERLAP, len(overlap))} stored bar(s) it overlaps"
+            if newest else f"the {compared} stored bar(s) it overlaps"
         )
         raise BarParseError(
-            f"{ins_code}: the payload contradicts {len(restated)} of the {compared} stored "
-            f"bar(s) it overlaps ({shown}). That is not a restatement of this history but "
-            "a different one; nothing is overwritten and nothing was written."
+            f"{ins_code}: the payload contradicts {len(restated)} stored bar(s), most of "
+            f"{where} ({shown}). That is not a restatement of this history but a different "
+            "one; nothing is overwritten and nothing was written."
         )
+
+    # A new session whose reference chains to the payload's copy of the stored
+    # bar before it, where that copy's close is not the stored one: stored, the
+    # reference against the stored close is a break in the chain, which the
+    # detector reads as a corporate action — rescaling every adjusted price
+    # before it — that the exchange never made.  Refused; the copy that agrees
+    # with the store at the join stores the session.  A join restated only in
+    # its volume chains the same close and is not refused.
+    served = {bar.trade_date: bar for bar in bars}
+    for day, before in joins_onto_restated(stored, [row["trade_date"] for row in pending],
+                                           restated_days):
+        kept = float(stored[before]["final_close"])
+        copy_close = served[before].final_close if before in served else kept
+        reference = served[day].price_yesterday
+        if copy_close != kept and reference == copy_close:
+            raise BarParseError(
+                f"{ins_code}: the new session of {day.isoformat()} joins onto the stored bar "
+                f"of {before.isoformat()}, whose close this payload states as {copy_close!r} "
+                f"against {kept!r} stored; the new session's reference ({reference!r}) is "
+                "the payload's close, so stored it would read as a corporate action that "
+                "no one made. Nothing was written; the copy that agrees with the store at "
+                "the join stores it."
+            )
     if restated:
         log.warning(
             "equity %s: %d stored bar(s) differ from TSETMC's current copy and were kept; "
@@ -244,12 +286,32 @@ def _write_bars(
         )
 
     inserted = insert_ignore(conn, equity_bars, pending) if pending else 0
+    # The copy's statement of each restated bar is kept beside the stored one
+    # (migration 0032): a break in the reference chain it chains is contested,
+    # not an action (adjust.detect_actions), and that has to hold whichever
+    # copy is served next — decided from the payload alone it would flip.
+    alternatives = insert_ignore(
+        conn,
+        equity_bar_alternatives,
+        [
+            {
+                "ins_code": ins_code,
+                "trade_date": date.fromisoformat(r["date"]),
+                "final_close": r["served"]["close"],
+                "price_yesterday": r["served"]["yesterday"],
+                "volume": r["served"]["volume"],
+                "first_seen_at": collected_at,
+            }
+            for r in restated
+        ],
+    )
     return {
         "bars_total": len(bars),
         "bars_inserted": inserted,
         "bars_existing": len(bars) - len(pending),
         "bars_restated": len(restated),
         "restated_examples": restated[:RESTATED_EXAMPLES],
+        "alternatives_recorded": alternatives,
         # A row that was pending and did not insert lost a race with a
         # concurrent ingest of the same symbol.  The unique constraint made
         # that safe; the count says it happened.
@@ -273,8 +335,9 @@ def _write_actions(
       it is replaced by the one the stored bars now imply (``superseded``);
     * no longer detected — the stored bars no longer imply any action there
       (the phantom 2023-03-28 action becomes a ratio of exactly 1 once
-      2023-03-27 is stored): it is removed (``retired``), and the report names
-      its dates and ratio.
+      2023-03-27 is stored), or another copy TSETMC served chains the break
+      it was read from (a contested break, adjust.ContestedBreak): it is
+      removed (``retired``), and the report names its dates and ratio.
 
     Bars are never overwritten, so an action measured from the SAME two bars
     can only be re-detected with the same ratio; a disagreement there means
@@ -374,9 +437,9 @@ def _write_actions(
         stored.pop(day, None)
     if retired or superseded:
         log.warning(
-            "equity %s: %d stored action(s) retired and %d superseded — a session stored "
-            "since they were detected lies between the bars they were measured from; "
-            "first %s", ins_code, len(retired), len(superseded), (retired or superseded)[0],
+            "equity %s: %d stored action(s) retired and %d superseded — the stored bars, "
+            "and the copies served of them, no longer imply them as detected; first %s",
+            ins_code, len(retired), len(superseded), (retired or superseded)[0],
         )
 
     # The cumulative factor of EVERY earlier action changes when a new action
@@ -549,6 +612,20 @@ def _stored_bars(conn: Connection, ins_code: str) -> list[Bar]:
     ]
 
 
+def _stored_alternatives(conn: Connection, ins_code: str) -> Alternatives:
+    """Every other statement a copy has served of a stored bar of
+    ``ins_code``, per trade date (migration 0032)."""
+    t = equity_bar_alternatives
+    out: dict[date, list[tuple[float, float]]] = {}
+    for r in conn.execute(
+        select(t.c.trade_date, t.c.final_close, t.c.price_yesterday).where(
+            t.c.ins_code == ins_code
+        )
+    ):
+        out.setdefault(r.trade_date, []).append((float(r.final_close), float(r.price_yesterday)))
+    return out
+
+
 # --- the ingest --------------------------------------------------------------
 
 
@@ -590,9 +667,31 @@ def ingest_payload(
         }
         report.update(_write_bars(conn, series.ins_code, series.bars, collected_at))
         # What the read API will multiply: the stored bars, this payload's new
-        # sessions included, and never the payload alone.
-        series = adjust(_stored_bars(conn, series.ins_code))
+        # sessions included, and never the payload alone — with every other
+        # copy's statement of them, so a break a served copy chains is
+        # contested rather than an action.
+        series = adjust(
+            _stored_bars(conn, series.ins_code),
+            alternatives=_stored_alternatives(conn, series.ins_code),
+        )
         report.update(_write_actions(conn, series.ins_code, series, collected_at))
+        report["contested_breaks"] = len(series.contested)
+        report["contested_examples"] = [
+            {
+                "effective_date": c.effective_date.isoformat(),
+                "prev_trade_date": c.prev_trade_date.isoformat(),
+                "stored_prev_close": c.prev_close,
+                "stored_price_yesterday": c.price_yesterday,
+                "chained_by": c.chained_by,
+            }
+            for c in series.contested[:RESTATED_EXAMPLES]
+        ]
+        if series.contested:
+            log.warning(
+                "equity %s: %d break(s) in the reference chain are contested — another copy "
+                "TSETMC served chains them — and are not actions; first %s",
+                series.ins_code, len(series.contested), report["contested_examples"][0],
+            )
         report["verdict"] = _write_verdict(conn, series.ins_code, series, collected_at)
         _write_coverage(conn, series.ins_code, collected_at)
 

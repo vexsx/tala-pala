@@ -514,6 +514,53 @@ def test_an_index_payload_unlike_most_of_the_store_fails_the_index(engine):
         ingest_index_history(engine, changed, _live())
 
 
+INDEX_FIELDS = ("xNivInuClMresIbs", "xNivInuPbMresIbs", "xNivInuPhMresIbs")
+
+
+def _index_newest(payload, rows, factor=None):
+    """``payload`` without its ``rows`` newest values, or with them times ``factor``."""
+    out = copy.deepcopy(payload)
+    newest_first = sorted(out["indexB2"], key=lambda r: -r["dEven"])
+    if factor is None:
+        out["indexB2"] = newest_first[rows:]
+        return out
+    for row in newest_first[:rows]:
+        for field in INDEX_FIELDS:
+            row[field] = round(row[field] * factor, 1)
+    return out
+
+
+def test_an_index_payload_restating_its_newest_stored_values_fails_the_index(engine):
+    """MEASURED on a replay: TEDPIX with its newest forty values x1.3 against a
+    store lacking the newest five was 35 restated of ~4,600 compared — under
+    the whole-overlap rule — so it was stored with a +28% step and a
+    'validated' verdict. The newest overlap is judged on its own too."""
+    _register_index(engine, FINANCIAL)
+    payload = load_fixture_json_gz("tsetmc_index_financial.json.gz")
+    ingest_index_history(engine, _index_newest(payload, 5), _live())
+    with pytest.raises(IndexContradiction, match="newest"):
+        ingest_index_history(engine, _index_newest(payload, 40, 1.3), _live())
+    with engine.connect() as conn:
+        count = conn.execute(select(func.count()).select_from(market_index_values)).scalar()
+    assert count == len(payload["indexB2"]) - 5
+
+
+def test_new_values_joining_a_restated_index_value_fail_the_index(engine):
+    """The newest stored value is restated and the new values follow the
+    payload's copy of it: stored, they would join the stored value with a step
+    no session made."""
+    _register_index(engine, FINANCIAL)
+    payload = load_fixture_json_gz("tsetmc_index_financial.json.gz")
+    ingest_index_history(engine, _index_newest(payload, 5), _live())
+    with pytest.raises(IndexContradiction, match="joins onto"):
+        ingest_index_history(engine, _index_newest(payload, 6, 1.05), _live())
+    # One printed tenth at the join is the same value: stored.
+    printed = copy.deepcopy(payload)
+    join = sorted(printed["indexB2"], key=lambda r: -r["dEven"])[5]
+    join["xNivInuClMresIbs"] = round(join["xNivInuClMresIbs"] + 0.1, 1)
+    assert ingest_index_history(engine, printed, _live())["values_inserted"] == 5
+
+
 def test_restatement_is_systematic_only_past_half_of_enough_rows():
     assert not restatement_is_systematic(1, 10)
     assert not restatement_is_systematic(5, 10)

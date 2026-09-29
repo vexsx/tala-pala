@@ -74,7 +74,7 @@ import re
 import unicodedata
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 log = logging.getLogger(__name__)
 
@@ -279,6 +279,53 @@ class CorporateAction:
 
 
 @dataclass(frozen=True)
+class ContestedBreak:
+    """A break in the reference chain that another served copy of the same
+    two bars chains: the copies disagreeing, not the exchange restating.
+
+    TSETMC's CDN serves two copies of a history, and one of them disagrees
+    with itself — کگل's 2021-12-15 close is 20,620 there while the next
+    session's reference is 20,610 in both copies, and the other copy's close
+    is 20,610.  Read as an action, that break rescaled every adjusted price
+    before it by 0.05%, and only when that copy happened to be stored first.
+    A contested break is not an action: the adjusted series simply carries
+    the stored copy's close across it, and the ingest report names it.
+    """
+
+    effective_date: date
+    prev_trade_date: date
+    prev_close: float          # stored
+    price_yesterday: float     # stored
+    # The served statement that chains them: a close of the earlier bar, or a
+    # reference of the later one, that a copy served and the store does not hold.
+    chained_by: float
+
+
+# Every other statement a TSETMC copy has served of a stored bar, per trade
+# date: (final_close, price_yesterday) pairs (migration 0032).
+Alternatives = Mapping[date, Sequence[tuple[float, float]]]
+
+
+def chained_by_a_copy(
+    previous: Bar, current: Bar, alternatives: Optional[Alternatives]
+) -> Optional[float]:
+    """The served value that chains ``previous`` to ``current`` although the
+    stored pair does not, or None.  Pure.
+
+    Any close a copy served for ``previous`` (the stored one included) that
+    equals any reference a copy served for ``current``: somewhere the exchange
+    printed the two as one chain, so the stored break is the copies
+    disagreeing, and nothing in the stored bars alone can say otherwise.
+    """
+    if not alternatives:
+        return None
+    closes = {previous.final_close, *(c for c, _ in alternatives.get(previous.trade_date, ()))}
+    refs = {current.price_yesterday, *(r for _, r in alternatives.get(current.trade_date, ()))}
+    common = closes & refs
+    return min(common) if common else None
+
+
+@dataclass(frozen=True)
 class SessionMove:
     """One adjusted return, and what kind of boundary it crossed."""
 
@@ -330,6 +377,9 @@ class AdjustedSeries:
     pre_listing_bars: int
     adjusted_closes: tuple[float, ...]  # aligned with bars[pre_listing_bars:]
     validation: Validation
+    # Breaks in the reference chain another served copy chains: not actions
+    # (ContestedBreak).  Empty unless the caller passed alternatives.
+    contested: tuple[ContestedBreak, ...] = ()
 
     @property
     def traded_bars(self) -> tuple[Bar, ...]:
@@ -497,7 +547,11 @@ def first_traded_index(bars: Sequence[Bar]) -> int:
     return len(bars)
 
 
-def detect_actions(bars: Sequence[Bar]) -> list[CorporateAction]:
+def detect_actions(
+    bars: Sequence[Bar],
+    alternatives: Optional[Alternatives] = None,
+    contested: Optional[list[ContestedBreak]] = None,
+) -> list[CorporateAction]:
     """Find every restatement of the price basis, oldest first.
 
     TSETMC signals an action in TWO ways, and a detector that knows only the
@@ -527,12 +581,30 @@ def detect_actions(bars: Sequence[Bar]) -> list[CorporateAction]:
     ``cumulative_factor`` is filled in by :func:`chain_factors`; the actions
     returned here carry a placeholder of 1.0, because the cumulative value is
     only defined once the whole series is known.
+
+    ``alternatives`` are the other statements TSETMC's copies have served of
+    these bars (migration 0032).  A reference break that one of them chains
+    is the copies disagreeing, not the exchange restating: it is no action,
+    and is appended to ``contested`` when a list is given (ContestedBreak).
     """
     actions: list[CorporateAction] = []
     for index in range(1, len(bars)):
         current, previous = bars[index], bars[index - 1]
 
         if current.price_yesterday != previous.final_close:
+            chained = chained_by_a_copy(previous, current, alternatives)
+            if chained is not None:
+                if contested is not None:
+                    contested.append(
+                        ContestedBreak(
+                            effective_date=current.trade_date,
+                            prev_trade_date=previous.trade_date,
+                            prev_close=previous.final_close,
+                            price_yesterday=current.price_yesterday,
+                            chained_by=chained,
+                        )
+                    )
+                continue
             if current.price_yesterday <= 0 or previous.final_close <= 0:
                 # Only an instrument's very first bar legitimately carries
                 # price_yesterday = 0 (there is no yesterday), and that bar is
@@ -776,6 +848,7 @@ def adjust(
     max_session_return: float = MAX_SESSION_RETURN,
     max_reopening_return: float = MAX_REOPENING_RETURN,
     session_gap_days: int = SESSION_GAP_DAYS,
+    alternatives: Optional[Alternatives] = None,
 ) -> AdjustedSeries:
     """Detect, chain, adjust and validate one instrument's bars.
 
@@ -792,7 +865,8 @@ def adjust(
 
     # Detection runs over ALL bars, including halt placeholders: فولاد's 2022
     # capital increase is restated in two steps across four zero-volume bars.
-    actions = chain_factors(detect_actions(ordered))
+    contested: list[ContestedBreak] = []
+    actions = chain_factors(detect_actions(ordered, alternatives, contested))
 
     # Adjustment and validation run over the TRADED span only: the placeholder
     # bars before an instrument's first trade are at the 1,000-rial par value
@@ -825,6 +899,7 @@ def adjust(
         pre_listing_bars=lead,
         adjusted_closes=tuple(adjusted),
         validation=validation,
+        contested=tuple(contested),
     )
 
 

@@ -143,8 +143,17 @@ index values are compared to within the two print formats; a stored row the
 current copy states differently is **kept** (never overwritten) and listed
 under RESTATED at the end of the run, which does not fail it; new rows are
 stored beside it; and only a payload unlike MOST of what it overlaps (at
-least four rows compared) fails its item. A fund list that skips a session
-TEDPIX records is a gap in that copy, not a restated reference. A corporate
-action detected across the missing session is retired as soon as the other
-copy stores it, because the actions are derived over the stored bars.
+least four rows compared) — over the whole overlap or over its newest ten
+rows — fails its item, as does a new row that joins onto a stored row the
+payload restates (it would meet the stored one with a step, or for a bar a
+corporate action, that nobody made; a fund's new close is judged against the
+stored close it follows). A fund list that skips a session TEDPIX records is
+a gap in that copy, not a restated reference. A corporate action detected
+across the missing session is retired as soon as the other copy stores it,
+because the actions are derived over the stored bars. Every other copy
+served of a stored bar is kept (`equity_bar_alternatives`, 0032): one copy
+disagrees with itself (کگل's 2021-12-15 close is 20,620 there, the next
+reference 20,610 in both copies), and a break in the reference chain that
+some served copy chains is contested, not an action — so which copy answered
+first no longer decides whether the adjusted history carries it.
 

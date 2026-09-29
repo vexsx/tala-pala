@@ -33,7 +33,7 @@ import logging
 import math
 import os
 from datetime import date, datetime
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from sqlalchemy import and_, bindparam, func, select, update
 from sqlalchemy.engine import Connection, Engine
@@ -196,6 +196,46 @@ def restatement_is_systematic(restated: int, compared: int) -> bool:
     return compared >= SYSTEMATIC_MIN_COMPARED and restated > SYSTEMATIC_FRACTION * compared
 
 
+# THE NEWEST OVERLAP IS JUDGED ON ITS OWN AS WELL.  Bars, index histories and
+# fund lists arrive as WHOLE histories, so the rule above measured a
+# disagreement against 2,000 to 4,600 overlapping rows, and a payload whose
+# newest stretch is some other series could never reach half of them.
+# Replayed on the rehearsal's copies (TEDPIX, فولاد, عیار), a payload with its
+# newest forty rows x1.3 against a store lacking the newest five was 35
+# restated of thousands compared: فولاد stored a x1.3 "corporate action"
+# under a 'validated' verdict, TEDPIX a +28% step, عیار a +31% close step.
+# So the same rule is applied to the newest RECENT_OVERLAP rows compared,
+# which is exactly the overlap a share's flow file ships — one rule for both.
+RECENT_OVERLAP = 10
+
+
+def newest_overlap_is_systematic(compared: Iterable[date], restated: Iterable[date]) -> bool:
+    """:func:`restatement_is_systematic` over the newest ``RECENT_OVERLAP``
+    of the ``compared`` dates, counting those in ``restated``.  Pure."""
+    newest = sorted(compared)[-RECENT_OVERLAP:]
+    hit = set(restated)
+    return restatement_is_systematic(sum(1 for d in newest if d in hit), len(newest))
+
+
+def joins_onto_restated(
+    stored: Iterable[date], new: Iterable[date], restated: Iterable[date]
+) -> list[tuple[date, date]]:
+    """Every (new, stored) pair where a new row's predecessor in the merged
+    series is a stored row the payload restates, ascending.  Pure.
+
+    A new row follows the copy it was served in; stored beside a stored row
+    that copy states differently, the two meet with a step that no session
+    made.  The caller decides which of these it refuses."""
+    new_set = set(new)
+    merged = sorted(set(stored) | new_set)
+    hit = set(restated)
+    return [
+        (day, before)
+        for before, day in zip(merged, merged[1:])
+        if day in new_set and before in hit
+    ]
+
+
 def _bulk_insert_ignore(conn: Connection, table, rows: Sequence[dict]) -> None:
     """executemany INSERT ... ON CONFLICT DO NOTHING, in batches.
 
@@ -322,17 +362,33 @@ def ingest_index_history(
             restated.append(
                 {"date": v.trade_date.isoformat(), "stored": old, "served": v.close}
             )
-        if restatement_is_systematic(len(restated), compared):
+        restated_days = [date.fromisoformat(r["date"]) for r in restated]
+        overlap = [v.trade_date for v in settled if v.trade_date in stored]
+        newest = newest_overlap_is_systematic(overlap, restated_days)
+        if newest or restatement_is_systematic(len(restated), compared):
             shown = "; ".join(
                 f"{r['date']}: stored {r['stored']!r}, payload {r['served']!r}"
-                for r in restated[:3]
+                for r in restated[-3:]
+            )
+            where = (
+                f"the newest {min(RECENT_OVERLAP, len(overlap))} stored value(s) it overlaps"
+                if newest else f"the {compared} stored value(s) it overlaps"
             )
             raise IndexContradiction(
-                f"index {code}: the payload contradicts {len(restated)} of the {compared} "
-                f"stored value(s) it overlaps ({shown}). That is not a restatement of "
-                "this series but a different one; nothing was written. If TSETMC "
-                "genuinely changed the whole series, delete its rows from "
-                "market_index_values and re-run the fetch."
+                f"index {code}: the payload contradicts {len(restated)} stored value(s), "
+                f"most of {where} ({shown}). That is not a restatement of this series but "
+                "a different one; nothing was written. If TSETMC genuinely changed the "
+                "series, delete its rows from market_index_values and re-run the fetch."
+            )
+        joins = joins_onto_restated(stored, [row["trade_date"] for row in pending], restated_days)
+        if joins:
+            day, before = joins[0]
+            raise IndexContradiction(
+                f"index {code}: the new value of {day.isoformat()} joins onto the stored value "
+                f"of {before.isoformat()}, which this payload states differently. The new "
+                "values follow the payload's copy; stored beside the stored one they would "
+                "meet with a step no session made. Nothing was written; the next copy that "
+                "agrees with the store at the join stores them."
             )
         if restated:
             log.warning(
@@ -645,7 +701,10 @@ def ingest_client_flows(
                     {"date": row["trade_date"].isoformat(), "fields": differing[:3]}
                 )
         compared = len(rows) - len(pending)
-        if restatement_is_systematic(len(restated), compared):
+        if restatement_is_systematic(len(restated), compared) or newest_overlap_is_systematic(
+            [r["trade_date"] for r in rows if r["trade_date"] in stored],
+            [date.fromisoformat(r["date"]) for r in restated],
+        ):
             shown = "; ".join(f"{r['date']} ({', '.join(r['fields'])})" for r in restated[:3])
             raise FlowContradiction(
                 f"{share.symbol_fa} ({code}): the client-type payload contradicts "
@@ -845,6 +904,9 @@ __all__ = [
     "FlowContradiction",
     "IndexContradiction",
     "MarketIngestFailed",
+    "RECENT_OVERLAP",
+    "joins_onto_restated",
+    "newest_overlap_is_systematic",
     "restatement_is_systematic",
     "settled_cutoff",
     "index_roster",

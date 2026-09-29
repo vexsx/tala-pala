@@ -624,6 +624,34 @@ equity_bars = Table(
     Index("idx_equity_bars_read", "ins_code", text("trade_date DESC")),
 )
 
+# Every other statement of a stored bar a TSETMC copy has served (migration
+# 0032).  The stored bar is never overwritten; a break in the reference chain
+# that one of these chains is contested, not a corporate action
+# (app/equities/adjust.py detect_actions).
+equity_bar_alternatives = Table(
+    "equity_bar_alternatives",
+    metadata,
+    _big_pk(),
+    Column(
+        "ins_code",
+        Text,
+        ForeignKey("equity_instruments.ins_code", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("trade_date", Date, nullable=False),
+    Column("final_close", _NUM, nullable=False),
+    Column("price_yesterday", _NUM, nullable=False),
+    Column("volume", BigInteger, nullable=False),
+    Column("first_seen_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("final_close > 0"),
+    CheckConstraint("price_yesterday >= 0"),
+    CheckConstraint("volume >= 0"),
+    UniqueConstraint(
+        "ins_code", "trade_date", "final_close", "price_yesterday", "volume",
+        name="equity_bar_alternatives_unique",
+    ),
+)
+
 # One detected action, kept with BOTH numbers that imply it so the ratio is
 # auditable rather than asserted.
 corporate_actions = Table(

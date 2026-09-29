@@ -998,8 +998,13 @@ def _print_bars_report(report: dict, failures: "Failures", restated: "Restated")
         for key, what in (("actions_retired", "retired"), ("actions_superseded", "superseded")):
             if result.get(key):
                 examples = result.get(f"{what}_examples", [])[:2]
-                restated.add("actions", symbol, f"{result[key]} corporate action(s) {what}: a "
-                             f"session stored since lies between their bars; {examples}")
+                restated.add("actions", symbol, f"{result[key]} corporate action(s) {what}: the "
+                             f"stored bars, and the copies served of them, no longer imply them "
+                             f"as detected; {examples}")
+        if result.get("contested_breaks"):
+            restated.add("actions", symbol, f"{result['contested_breaks']} break(s) in the "
+                         "reference chain contested — another copy TSETMC served chains them — "
+                         f"and not read as actions; {result.get('contested_examples', [])[:2]}")
     for error in report.get("errors") or []:
         failures.add("ingest bars", error["path"], f"{error['error']}: {error['message']}")
 

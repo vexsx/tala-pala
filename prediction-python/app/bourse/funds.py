@@ -28,8 +28,9 @@ WHAT A ROW HERE IS
   whose reference restates beyond rounding (a unit split, a restated close on
   a halt) is REFUSED rather than stored with a step in it that no price made.
   Only the pairs a run would WRITE are checked — a new close against its
-  neighbours — and a pair the served list could not have chained is not a
-  restatement: one of TSETMC's two CDN copies omits the whole 2023-03-27
+  neighbours AS STORED, so a new session chained to the list's own copy of a
+  close the store holds differently is refused like any other step — and a
+  pair the served list could not have chained is not a restatement: one of TSETMC's two CDN copies omits the whole 2023-03-27
   session, so its 2023-03-28 reference (77,041, AYAR) is the missing
   session's close, not the 2023-03-26 one it follows (75,820).  A pair that
   skips a session TEDPIX records is therefore reported as a gap in the
@@ -40,7 +41,9 @@ WHAT A ROW HERE IS
   opens on 93,443, the close the other copy has.  A first ingest from that
   copy refuses Tala for it — ten rials is not the exchange's rounding — and
   the other copy stores it on a later run, after which the difference is a
-  reported restatement like any other.
+  reported restatement like any other.  A list that disagrees with most of
+  the stored closes it overlaps — or with most of the newest ten of them — is
+  not a restatement but another series, and fails the fund.
 * **Not written into the live era.**  AYAR and TALA have BrsApi's intraday
   mirror (provider ``tse_funds``) from 2026-07-21.  A daily close written into
   a day that holds those observations is a second, different-source row for
@@ -62,6 +65,7 @@ from __future__ import annotations
 
 import logging
 from bisect import bisect_left, bisect_right
+from dataclasses import replace
 from datetime import date, datetime
 from typing import Any, Iterable, Optional, Sequence
 
@@ -75,9 +79,11 @@ from ..jobs.tgju_backfill import close_stamp
 from ..db import market_index_values
 from .ingest import (
     PROVIDER_CODE,
+    RECENT_OVERLAP,
     RESTATED_EXAMPLES,
     MarketIngestFailed,
     _bulk_insert_ignore,
+    newest_overlap_is_systematic,
     read_payload_file,
     restatement_is_systematic,
 )
@@ -309,15 +315,24 @@ def ingest_fund_closes(
                 "dedupe_key": f"{PROVIDER_CODE}|{symbol}|close|{bar.trade_date.isoformat()}",
             })
         compared = len(settled) - len(new_bars)
-        if restatement_is_systematic(len(restated), compared):
+        overlap = [b.trade_date for b in settled if close_stamp(b.trade_date) in stored]
+        newest = newest_overlap_is_systematic(
+            overlap, [date.fromisoformat(r["date"]) for r in restated]
+        )
+        if newest or restatement_is_systematic(len(restated), compared):
             shown = "; ".join(
-                f"{r['date']}: stored {r['stored']!r}, served {r['served']!r}" for r in restated[:3]
+                f"{r['date']}: stored {r['stored']!r}, served {r['served']!r}"
+                for r in restated[-3:]
+            )
+            where = (
+                f"the newest {min(RECENT_OVERLAP, len(overlap))} stored close(s) it overlaps"
+                if newest else f"the {compared} stored close(s) it overlaps"
             )
             raise FundContradiction(
-                f"{fund.symbol_fa} ({code}): the daily list contradicts {len(restated)} of the "
-                f"{compared} stored close(s) it overlaps ({shown}). That is not a restatement "
-                "of this fund's history but a different one; nothing was written. Delete the "
-                "rows deliberately if TSETMC genuinely changed them all."
+                f"{fund.symbol_fa} ({code}): the daily list contradicts {len(restated)} stored "
+                f"close(s), most of {where} ({shown}). That is not a restatement of this "
+                "fund's history but a different one; nothing was written. Delete the rows "
+                "deliberately if TSETMC genuinely changed them."
             )
 
         # Restatements are judged only where this run WRITES: a new close
@@ -330,7 +345,18 @@ def ingest_fund_closes(
             if not b.traded and (newest_stored is None or b.trade_date > newest_stored)
         }
         sessions = _market_sessions(conn, bars[0].trade_date, bars[-1].trade_date)
-        restatements = reference_restatements(bars, only=judged, sessions=sessions)
+        # Judged against what is STORED.  A new close's reference is checked
+        # against the stored close it follows, not against the list's own copy
+        # of that session: where the list restates it (Tala's 2021-12-15 is
+        # 93,433 in one copy and 93,443 in the other), the list chains with
+        # itself while the stored series would carry a step no price made —
+        # replayed with the newest six rows x1.05, عیار stored a +5.9% step.
+        as_stored = [
+            replace(b, final_close=stored[close_stamp(b.trade_date)] * 10)
+            if b.traded and close_stamp(b.trade_date) in stored else b
+            for b in bars
+        ]
+        restatements = reference_restatements(as_stored, only=judged, sessions=sessions)
         if restatements:
             shown = "; ".join(
                 f"{d.isoformat()}: {a:,.0f} -> {b:,.0f}" for d, a, b in restatements[:3]

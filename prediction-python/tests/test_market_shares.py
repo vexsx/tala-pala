@@ -1065,6 +1065,57 @@ def test_a_fund_list_unlike_most_of_the_store_fails_the_fund(engine):
     assert _count(engine, prices) == 158
 
 
+FUND_PRICE_FIELDS = ("priceMin", "priceMax", "priceYesterday", "priceFirst", "pClosing",
+                     "pDrCotVal")
+
+
+def _fund_newest(payload, rows, factor=None):
+    """``payload`` without its ``rows`` newest rows, or with their prices times
+    ``factor``."""
+    out = copy.deepcopy(payload)
+    newest_first = sorted(out["closingPriceDaily"], key=lambda r: -r["dEven"])
+    if factor is None:
+        out["closingPriceDaily"] = newest_first[rows:]
+        return out
+    for row in newest_first[:rows]:
+        for field in FUND_PRICE_FIELDS:
+            row[field] = round(row[field] * factor, 1)
+    return out
+
+
+def test_a_fund_list_restating_its_newest_stored_closes_fails_the_fund(engine):
+    """MEASURED on a replay: عیار's list with its newest forty rows x1.3,
+    against a store lacking the newest five, was accepted — 35 restated of
+    ~1,950 compared is under half — and the first new close was stored with a
+    +31% step no price made. The newest overlap is judged on its own too."""
+    _seed_funds(engine)
+    payload = load_fixture_json("tsetmc_fund_silver_daily.json")
+    first = ingest_fund_closes(engine, _fund_newest(payload, 5), now=CAPTURED)
+    with pytest.raises(FundContradiction, match="newest"):
+        ingest_fund_closes(engine, _fund_newest(payload, 40, 1.3), now=CAPTURED)
+    assert _count(engine, prices) == first["closes_inserted"]
+
+
+def test_a_new_close_is_judged_against_the_stored_close_it_follows(engine):
+    """The stored close a new session follows is restated, and the new
+    session's reference chains to the list's copy of it. Judged against the
+    list, the pair chained; stored, the new close sat 5% from the stored one
+    with no price in between. It is judged against what is stored."""
+    _seed_funds(engine)
+    payload = load_fixture_json("tsetmc_fund_silver_daily.json")
+    first = ingest_fund_closes(engine, _fund_newest(payload, 5), now=CAPTURED)
+    with pytest.raises(FundRestated, match="restated the reference"):
+        ingest_fund_closes(engine, _fund_newest(payload, 6, 1.05), now=CAPTURED)
+    assert _count(engine, prices) == first["closes_inserted"]
+    # One rial at the join is the exchange's rounding: stored.
+    rounded = copy.deepcopy(payload)
+    newest_first = sorted(rounded["closingPriceDaily"], key=lambda r: -r["dEven"])
+    newest_first[5]["pClosing"] += 1
+    newest_first[4]["priceYesterday"] += 1
+    report = ingest_fund_closes(engine, rounded, now=CAPTURED)
+    assert report["closes_inserted"] > 0 and report["restated"] == 0
+
+
 def _tedpix_sessions(engine, payload):
     """The exchange calendar the fund check reads: TEDPIX on every day the
     fixture's list carries."""

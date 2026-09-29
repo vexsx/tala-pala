@@ -51,6 +51,7 @@ from sqlalchemy import func, select
 from app.db import (
     corporate_actions,
     equity_adjustments,
+    equity_bar_alternatives,
     equity_bars,
     equity_instruments,
 )
@@ -646,6 +647,58 @@ def test_a_payload_disagreeing_with_most_of_the_store_is_refused(seeded, payload
     assert float(newest) == 2881.0  # untouched
 
 
+PRICE_FIELDS = ("priceMin", "priceMax", "priceYesterday", "priceFirst", "pClosing", "pDrCotVal")
+
+
+def _newest_restated(payload, rows, factor, fields=PRICE_FIELDS, key="closingPriceDaily"):
+    """``payload`` with its ``rows`` newest rows' prices multiplied by ``factor``."""
+    out = copy.deepcopy(payload)
+    for row in sorted(out[key], key=lambda r: -r["dEven"])[:rows]:
+        for field in fields:
+            row[field] = round(row[field] * factor, 1)
+    return out
+
+
+def _without_newest(payload, rows, key="closingPriceDaily"):
+    out = copy.deepcopy(payload)
+    out[key] = sorted(out[key], key=lambda r: -r["dEven"])[rows:]
+    return out
+
+
+def test_a_payload_restating_the_newest_stored_bars_is_refused(seeded, payload):
+    """A different recent series, not a restatement of this one. Measured
+    against the whole overlap — 4,600 rows of a full history — thirty-five
+    restated bars were under one percent of it, so the newest were stored
+    beside them and the join read as a x1.3 corporate action under a
+    'validated' verdict. The newest overlap is judged on its own too."""
+    first = ingest_payload(seeded, _without_newest(payload, 5), ins_code=FOOLAD)
+    with pytest.raises(BarParseError, match="newest"):
+        ingest_payload(seeded, _newest_restated(payload, 40, 1.3), ins_code=FOOLAD)
+    with seeded.connect() as conn:
+        assert conn.execute(select(func.count()).select_from(equity_bars)).scalar() == 4631
+        assert conn.execute(
+            select(func.count()).select_from(corporate_actions)
+        ).scalar() == first["actions_inserted"]
+
+
+def test_a_new_session_chained_to_a_restated_bar_is_refused(seeded, payload):
+    """The stored bar a new session joins onto is restated, and the new
+    session's reference chains to the payload's copy of it: stored, that
+    reference against the stored close would read as a x1.05 corporate action
+    — rescaling every adjusted price before it — that no price made."""
+    ingest_payload(seeded, _without_newest(payload, 5), ins_code=FOOLAD)
+    with pytest.raises(BarParseError, match="joins onto"):
+        ingest_payload(seeded, _newest_restated(payload, 6, 1.05), ins_code=FOOLAD)
+    with seeded.connect() as conn:
+        assert conn.execute(select(func.count()).select_from(equity_bars)).scalar() == 4631
+    # A join restated only in its volume chains the same close: stored.
+    other = copy.deepcopy(payload)
+    join = sorted(other["closingPriceDaily"], key=lambda r: -r["dEven"])[5]
+    join["qTotTran5J"] += 1_000
+    report = ingest_payload(seeded, other, ins_code=FOOLAD)
+    assert (report["bars_inserted"], report["bars_restated"]) == (5, 1)
+
+
 def _drop_session(payload, deven):
     """The copy of a history TSETMC's CDN served without one session."""
     short = copy.deepcopy(payload)
@@ -691,6 +744,75 @@ def test_a_copy_missing_a_session_leaves_no_phantom_action_once_the_session_arri
     assert [r.effective_date for r in stored] == [a.effective_date for a in expected]
     for row, action in zip(stored, expected):
         assert float(row.cumulative_factor) == pytest.approx(action.cumulative_factor, rel=1e-12)
+
+
+def _inconsistent_copy(payload):
+    """MEASURED 2026-09-29: one CDN copy has کگل's 2021-12-15 close at 20,620
+    while the next session's reference is 20,610 in both copies, and the other
+    copy's close is 20,610. The copy disagrees with itself: its break in the
+    reference chain is the copies disagreeing, not an action. Here: فولاد's
+    first 2021 session whose next session chains to it, its close ten rials up."""
+    out = copy.deepcopy(payload)
+    rows = sorted(out["closingPriceDaily"], key=lambda r: r["dEven"])
+    i = next(i for i in range(len(rows) - 1)
+             if rows[i]["dEven"] > 20210101 and rows[i]["qTotTran5J"] > 0
+             and rows[i + 1]["qTotTran5J"] > 0
+             and rows[i + 1]["priceYesterday"] == rows[i]["pClosing"])
+    rows[i]["pClosing"] += 10
+    rows[i]["qTotTran5J"] += 200_000
+    day = parse_deven(rows[i + 1]["dEven"])
+    return out, day
+
+
+def _stored_actions(engine):
+    with engine.connect() as conn:
+        return [
+            (r.effective_date, pytest.approx(float(r.cumulative_factor), rel=1e-12))
+            for r in conn.execute(
+                select(corporate_actions.c.effective_date, corporate_actions.c.cumulative_factor)
+                .order_by(corporate_actions.c.effective_date)
+            )
+        ]
+
+
+def test_a_break_the_other_copy_chains_is_contested_not_an_action(seeded, payload):
+    """Detected over the stored bars, a copy's disagreement with itself was a
+    corporate action (x0.999515 on کگل, 0.05% on every adjusted price before
+    it) that existed after one order of the two copies and not after the
+    other, for good. The other copy's close is now kept beside the stored one,
+    and a break that some served copy chains is contested: not an action, and
+    named in the report — the same in either order."""
+    inconsistent, day = _inconsistent_copy(payload)
+    expected = [(a.effective_date, pytest.approx(a.cumulative_factor, rel=1e-12))
+                for a in adjust(parse_daily_list(payload, ins_code=FOOLAD)).actions]
+
+    first = ingest_payload(seeded, inconsistent, ins_code=FOOLAD)
+    assert first["actions_inserted"] == 32  # the 31 real ones and the break
+    second = ingest_payload(seeded, payload, ins_code=FOOLAD)
+    assert (second["bars_restated"], second["actions_retired"]) == (1, 1)
+    assert second["contested_breaks"] == 1
+    [contested] = second["contested_examples"]
+    assert contested["effective_date"] == day.isoformat()
+    assert _stored_actions(seeded) == expected
+    # The inconsistent copy answering again brings nothing back.
+    third = ingest_payload(seeded, inconsistent, ins_code=FOOLAD)
+    assert third["actions_inserted"] == 0 and third["contested_breaks"] == 1
+    assert _stored_actions(seeded) == expected
+
+
+def test_the_two_orders_of_two_copies_store_the_same_actions(engine, payload):
+    inconsistent, _ = _inconsistent_copy(payload)
+    stored = []
+    for order in ((inconsistent, payload), (payload, inconsistent)):
+        with engine.begin() as conn:
+            for table in (corporate_actions, equity_adjustments, equity_bar_alternatives,
+                          equity_bars, equity_instruments):
+                conn.execute(table.delete())
+            conn.execute(equity_instruments.insert().values(**FOOLAD_ROW))
+        for copy_ in order:
+            ingest_payload(engine, copy_, ins_code=FOOLAD)
+        stored.append(_stored_actions(engine))
+    assert stored[0] == stored[1]
 
 
 def test_a_session_stored_between_an_actions_bars_supersedes_its_evidence(seeded, payload):
@@ -883,3 +1005,27 @@ def _bars(closes, volumes=None, start=date(2020, 1, 1)):
 def _toy_series(closes):
     bars = _bars(closes)
     return bars, [bar.final_close for bar in bars]
+
+
+def test_a_copy_chaining_either_side_contests_the_break():
+    """A break is contested when a served close of the earlier bar, or a
+    served reference of the later one, chains the two — and only then: a
+    real restatement neither copy chains is still an action."""
+    import dataclasses
+
+    bars = list(_bars([100.0, 110.0, 120.0]))
+    # The stored copy's close of day 2 is 111; the next reference says 110.
+    bars[1] = dataclasses.replace(bars[1], final_close=111.0)
+    day2, day3 = bars[1].trade_date, bars[2].trade_date
+    assert [a.effective_date for a in detect_actions(bars)] == [day3]
+
+    contested = []
+    by_close = {day2: [(110.0, 100.0)]}
+    assert detect_actions(bars, by_close, contested) == []
+    assert [(c.effective_date, c.chained_by) for c in contested] == [(day3, 110.0)]
+    by_reference = {day3: [(120.0, 111.0)]}
+    assert detect_actions(bars, by_reference) == []
+    unrelated = {day2: [(112.0, 100.0)]}
+    assert [a.effective_date for a in detect_actions(bars, unrelated)] == [day3]
+    series = adjust(bars, alternatives=by_close)
+    assert series.actions == () and len(series.contested) == 1
