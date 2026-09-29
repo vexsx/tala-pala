@@ -72,7 +72,7 @@ All services log JSON to stdout. Configure the Docker daemon's log rotation in `
 then `sudo systemctl restart docker`.
 
 ## Scheduled jobs
-The Go service embeds the scheduler (UTC cron, configurable via `SCHEDULE_*_CRON` in `.env`); jobs use Redis locks so scaling `api` replicas won't duplicate work. Default cadence: collect every 10 min, predict/signals/evaluate hourly, train daily 02:30 UTC, alert evaluation every 5 min, cleanup daily 04:00 UTC.
+The Go service embeds the scheduler (UTC cron, configurable via `SCHEDULE_*_CRON` in `.env`); jobs use Redis locks so scaling `api` replicas won't duplicate work. Default cadence: collect every 10 min, predict/signals/evaluate hourly, train daily 02:30 UTC, alert evaluation every 5 min, cleanup daily 04:00 UTC, TGJU daily settled closes at 00:25 and 12:25 UTC (`SCHEDULE_TGJU_DAILY_CRON`; silver 999, the Azadi and gram coins, 24k and melted gold, and the Emami coin's empty days from 2026-04-27 — see `docs/data-sources.md`).
 
 ## Data refresh: two classes, and only one looks after itself
 
@@ -83,6 +83,7 @@ This is the operational fact most likely to bite a new operator, because nothing
 | Gold (IR_GOLD_18K), FX (USD_IRT), coins, XAUUSD and the other global series | **self-updating** | `collect` cron, on the server | every 10 min, automatic |
 | Predictions, signals, model training, retention | **self-updating** | `predict` / `signals` / `train` / `cleanup` crons, on the server | hourly to nightly, automatic |
 | World Bank + IMF WEO economic series | **self-updating** | `economic` job on the prediction service | daily 03:40 UTC, automatic |
+| TGJU daily settled closes (silver 999, Azadi and gram coins, 24k and melted gold; the Emami coin's hole) | **self-updating** | `tgju-daily` cron → `POST /internal/tgju/daily` | 00:25 and 12:25 UTC, automatic; skipped (not failed) while `data_providers.enabled` is FALSE for `tgju` |
 | **Tehran equity bars (TSETMC)** | **manual** | `make refresh-equities`, run **off** the server | **run it at least weekly** |
 | **SCI CPI (headline, housing, rent, vehicle)** | **manual** | `make refresh-cpi`, run **off** the server | **run it monthly**, a week or two after each Jalali month ends |
 
@@ -102,9 +103,12 @@ Both answer normally from outside that network. So `scripts/sci_fetch.py` and `s
 make refresh-offserver                       # both, equities first
 make refresh-equities                        # equities alone
 make refresh-cpi                             # CPI alone
-make refresh-equities ARGS="--dry-run"       # download and verify, change nothing
+make refresh-equities ARGS="--dry-run"       # read the server's state, download only the small payloads,
+                                             # print what the bulk loop would fetch; ship and ingest nothing
 make refresh-cpi ARGS="--host ubuntu@1.2.3.4"
 ```
+
+A TSETMC run ends with up to three lists. **RESTATED**: stored rows TSETMC's current copy states differently (its CDN serves two copies of the same history, minutes apart) — the stored row is kept, the new rows beside it are stored, and the run does not fail on them. **CONTRADICTIONS**: an item whose payload disagrees with most of what it overlaps, so nothing was written for it. **FAILED**: every other per-item error, from the downloads and from every ingest call (bars, market, sector names, universe, flows, sessions, funds). The exit code is 1 when either of the last two is non-empty. The run removes its copy from the prediction container (`/tmp/tsetmc-<run>`) once the ingest calls are done; the archive under `backups/tsetmc/<run>` on the host is kept, and nothing prunes it — about 415 MB for the first run and 65 MB a week after, so clear old runs by hand.
 
 ### How you find out when it has stopped
 

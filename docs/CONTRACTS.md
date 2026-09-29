@@ -800,8 +800,8 @@ mode).
 
 **Drawings** accept the same symbol set; a Tehran symbol only at `1d` (`problems.interval`).
 
-**The page.** The picker groups Gold & coins, Silver, Commodity funds, FX, Global (from
-`/instruments?enabled=true`), then Tehran · All-share, Tehran · Boards & segments, Bourse ·
+**The page.** The picker groups Gold & coins, Silver, Commodity funds, Currency, Global markets
+(from `/instruments?enabled=true`; the names are `lib/markets.ts`'s since Addendum 30), then Tehran · All-share, Tehran · Boards & segments, Bourse ·
 Sectors, Farabourse · Sectors (from `/bourse/indices`) and Tehran · Shares (from `/stocks`). The two
 gold symbols and the five headline indices render before any list answers. An entry that cannot be
 charted is shown DISABLED with its reason. Prices are written per kind: index points ignore the
@@ -823,3 +823,75 @@ only for the forecast symbols. The SuperTrend row under the 18k gold card read t
 direction; it is now 18k gold's or nothing. On a Tehran chart the gold signal card is not shown and
 not fetched, and gold/macro news markers are not placed (they would read as causes); the forecast
 card says no forecast is produced, and the gold-only cards that remain say "· 18k gold".
+
+## Addendum 30 — daily settled closes, derived series, and the market-wide ingest's honesty (2026-09-29)
+
+Found on a local rehearsal of migrations 0030/0031 with real TSETMC, TGJU and Yahoo data, and fixed
+before deploy.
+
+**Daily settled closes (extends Addendum 1).** The seven TGJU daily-history codes of 0031 and the
+commodity funds with no live quote (`IR_GOLD_FUND_KAHRABA`, `IR_SILVER_FUND_SILVER`,
+`IR_SILVER_FUND_SIMIN`) only ever receive one close per session, stamped 23:00 UTC on its own date
+(`markethours.DailyCloseOnly`, mirrored in `app/core/market_hours.py`). The minutes rule could only
+call yesterday's close — the newest that can exist — stale. For these, `stale` means the newest
+close is **more than 4 calendar days old** (Tehran date against the close's own date): the
+Thursday/Friday weekend plus a holiday; a long Nowruz closure reads as stale, which is true. Every
+other symbol keeps the Addendum 1 rule.
+- `GET /prices/current`: such a series carries `cadence: "daily_close"`; no row stamped after now is
+  ever the current price (the Yahoo backfill stored a forming bar at 23:00 UTC today until it was
+  fixed to skip any bar whose stamp is still ahead).
+- `GET /market/candles`: every response now carries `price_fields` and `cadence`. A daily-close
+  registry series is `price_fields: ["close"]`, `cadence: "daily_close"`; its range overlays
+  (`supertrend`, `supertrend_dir`, `psar`, `ichimoku_*`) are whole-field `null` and `pivots` is
+  `null`, as for an index. For any tick series, pivots are `null` when the newest finished bucket
+  holds one observation (seven levels at one price).
+- The chart draws such a series as a line, dates its status ("daily close of 1405/07/06") with the
+  server's `stale`, and shows no "1 obs" badge and no clock time on any bucket of a day or more.
+- A Tehran chart's notes no longer count sessions "on this page" (the status bar counts over every
+  page loaded). A refused share's 409 message says why in words (`raw_bars` in the details holds the
+  raw route); the chart offers no Retry on a 409.
+- An equity adjustment whose stored corporate actions the stored bars contradict (an action measured
+  across a session stored after it was detected) is served as `status: "out_of_date"`,
+  `adjusted_servable: false`, until the next ingest re-derives it.
+
+**Derived series (0031).** `instruments.derived_from` names the instrument a row's SOURCE publishes it
+as a fixed multiple of (`IR_GOLD_24K`, `IR_GOLD_MESGHAL` → `IR_GOLD_18K`); `GET /instruments` carries
+it. `/markets/performance` withholds a derived row's returns in the numéraire it derives from;
+`/relative-value` withholds `gap_pct`, `gap_percentile`, `ratio_drawdown_pct` and every point's
+`ratio` and `gap_pct` for a fixed pair, with a warning. The ratio is fixed at the source on the median
+day, not on every day (24k/18k is off 4/3 by more than 0.1% on 707 of 3,272 TGJU days), so no note
+calls it "constant by construction" or blames the live feed alone. Purchasing power ranks no derived
+row and counts none in its "N of M".
+
+**`POST /internal/tgju/daily`** (Python; Go scheduler job `tgju-daily`, `SCHEDULE_TGJU_DAILY_CRON`,
+default `25 0,12 * * *`). Body `{symbols?, dry_run?}`; answers the per-symbol report. The seven 0031
+series are kept current from TGJU's `summary-table-data/{slug}` (the whole table on a symbol's first
+pass, the 40 newest rows after); `IR_COIN_EMAMI`'s empty UTC days are filled from `sekee` **only from
+2026-04-27** (the production hole; empty days before it are Fridays and holidays of the backfilled
+era). Closes are CLOSE/10 toman, source `tgju_history`, stamped 23:00 UTC, days strictly before
+today's Tehran date; a close more than ×1.6 off the median of its 7+7 neighbours is held as
+`suspect` in `raw_observations`; a restated close is counted and left alone. `400` for a symbol it
+does not handle (`USD_IRT`, `IR_GOLD_18K` with reasons); `502` only when every symbol failed. With
+`data_providers.enabled = FALSE` for `tgju`, every symbol is `skipped` with that reason, nothing is
+requested, and the answer is `200` with `skipped` set.
+
+**The market-wide TSETMC ingest (0030).** TSETMC's CDN answers with two copies of the same histories
+minutes apart. A stored row is never overwritten; one the current copy states differently is kept and
+reported as restated (`restated`, `rows_restated`, `bars_restated`, …) and the new rows are stored.
+Only a payload unlike most of what it overlaps (≥ 4 rows compared, more than half differing) fails its
+item. Index values compare to within the two print formats (1e-5 relative or 0.1 point). Fund
+restatements are judged only where a run writes, and a pair that skips a TEDPIX session is a gap in
+the served copy; fund closes stop before the first day a live source observed the fund. Corporate
+actions are derived over the stored bars (`actions_retired`, `actions_superseded`). The market-watch
+delist guard applies per market too. `POST /internal/bourse/shares/ingest` and
+`/internal/bourse/funds/ingest` answer `200` with the full report (`all_failed: true`) when every item
+of a call failed, and record the failure on the provider's health row; `/internal/bourse/ingest` keeps
+its `502`. The fetch lists RESTATED (not a failure), CONTRADICTIONS and FAILED (every per-item error
+of every call), removes its container copy, and paces requests 0.5 s apart.
+
+**Money flow.** A market session is a date whose stored day file shows at least 200 shares trading
+and has flow for at least 90% of them by count and by value (was: 200 flow rows); every window states
+its coverage, `newest_partial` and its median are gone, and a date that is not a session says why.
+A share's listing session (its first stored session, close beyond ×1.25 of the reference) is left out
+of the price chain (measured from its first close, `listing_session`, `price_change_note`) and of
+buyer power (`listing_sessions`). docs/api.md has the fields.

@@ -26,7 +26,7 @@ All configuration is via environment variables (`.env` locally, Docker secrets i
 | `SCHEDULE_ALERTS_CRON` | `*/5 * * * *` | User alert evaluation |
 | `SCHEDULE_CLEANUP_CRON` | `0 4 * * *` | Retention cleanup |
 | `SCHEDULE_ECONOMIC_CRON` | `40 3 * * *` | Economic-series ingestion (World Bank, IMF WEO). Daily is deliberate for annual series: it costs two small requests and catches a revision the day it lands |
-| `SCHEDULE_TGJU_DAILY_CRON` | `25 0,12 * * *` | TGJU daily settled closes (`POST /internal/tgju/daily`): Iranian silver 999, the Azadi and gram coins, 24k and melted gold, and the Emami coin's empty days. TGJU's table only holds finished days, so 00:25 UTC stores yesterday's close and 12:25 is the retry |
+| `SCHEDULE_TGJU_DAILY_CRON` | `25 0,12 * * *` | TGJU daily settled closes (`POST /internal/tgju/daily`): Iranian silver 999, the Azadi and gram coins, 24k and melted gold, and the Emami coin's empty days from 2026-04-27. TGJU's table only holds finished days, so 00:25 UTC stores yesterday's close and 12:25 is the retry. Skipped, not failed, while `data_providers.enabled` is FALSE for `tgju` |
 | `PREDICTION_PORT` | `8500` | Python service port (internal) |
 | `MODELS_DIR` | `/app/models` | Model artifact volume mount |
 | `HTTP_TIMEOUT_SECONDS` | `15` | Outbound provider request timeout |
