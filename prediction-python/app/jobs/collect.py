@@ -623,7 +623,11 @@ def run_collect(
                     LAST_PRICE_TS.labels(symbol=obs.symbol).set(
                         obs.observed_at.timestamp()
                     )
-                if is_acceptably_fresh(obs.symbol, obs.observed_at, utcnow(), settings):
+                # A live quote: judged by its own source, so a fund on the
+                # daily-close list that is configured live (TSETMC_FUNDS)
+                # keeps the session rule.
+                if is_acceptably_fresh(obs.symbol, obs.observed_at, utcnow(), settings,
+                                       source=obs.provider_code):
                     symbols_needed.discard(obs.symbol)
                 else:
                     stale_only.add(obs.symbol)

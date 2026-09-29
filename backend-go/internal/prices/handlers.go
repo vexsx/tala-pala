@@ -185,15 +185,17 @@ func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {
 	httpserver.JSON(w, http.StatusOK, map[string]any{"prices": out, "as_of": now})
 }
 
-// cadenceDailyClose marks a series that only ever receives one settled close
-// per session (markethours.DailyCloseOnly), so a client can say "daily close
-// of <date>" rather than an age in hours that reads as an outage.
+// cadenceDailyClose marks a series whose newest row is one settled close per
+// session (markethours.DailyClose), so a client can say "daily close of
+// <date>" rather than an age in hours that reads as an outage.
 const cadenceDailyClose = "daily_close"
 
 // currentEntry is one symbol's /prices/current block. Pure (unit tested).
-// `stale` is markethours' verdict, which for a daily-close series is the
-// four-day daily-close rule rather than the minutes rule that could only ever
-// call yesterday's close stale.
+// `stale` is markethours' verdict for the newest row's SOURCE: for a daily
+// close, how old one from that source may be (four days from TGJU's daily
+// job, ten from the weekly TSETMC fetch) rather than the minutes rule that
+// could only ever call yesterday's close stale; for a live quote — a fund
+// configured live included — the session rule.
 func currentEntry(sym string, p latestPrice, prevValue float64, hasPrev bool, now time.Time,
 	staleMin int, open, close string) map[string]any {
 	entry := map[string]any{
@@ -202,10 +204,10 @@ func currentEntry(sym string, p latestPrice, prevValue float64, hasPrev bool, no
 		"unit":         p.Unit,
 		"source":       p.Source,
 		"observed_at":  p.ObservedAt.UTC(),
-		"stale":        !markethours.AcceptablyFresh(sym, p.ObservedAt, now, staleMin, open, close),
+		"stale":        !markethours.AcceptablyFreshFrom(sym, p.Source, p.ObservedAt, now, staleMin, open, close),
 		"market_state": MarketState(sym, now, open, close),
 	}
-	if markethours.DailyCloseOnly(sym) {
+	if _, daily := markethours.DailyClose(sym, p.Source); daily {
 		entry["cadence"] = cadenceDailyClose
 	}
 	if hasPrev {
@@ -423,9 +425,10 @@ func (h *Handler) MarketSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		e := map[string]any{
 			"value": p.Value, "currency": p.Currency, "unit": p.Unit,
-			"observed_at":  p.ObservedAt.UTC(),
-			"source":       p.Source,
-			"stale":        !markethours.AcceptablyFresh(sym, p.ObservedAt, now, staleMin, h.MarketOpen, h.MarketClose),
+			"observed_at": p.ObservedAt.UTC(),
+			"source":      p.Source,
+			"stale": !markethours.AcceptablyFreshFrom(sym, p.Source, p.ObservedAt, now, staleMin,
+				h.MarketOpen, h.MarketClose),
 			"market_state": MarketState(sym, now, h.MarketOpen, h.MarketClose),
 		}
 		if pv, ok := prev[sym]; ok {

@@ -49,3 +49,28 @@ func TestTheCurrentPriceIsNeverStampedAfterNow(t *testing.T) {
 		t.Fatalf("latestPricesSelect must exclude rows stamped after now:\n%s", latestPricesSelect)
 	}
 }
+
+// The newest row's source decides: a fund close from the weekly TSETMC fetch
+// is a daily close on the weekly run's ten-day bound (it read STALE five
+// days in seven), and a fund configured live keeps the session rule and no
+// cadence (on the symbol list it was labelled a daily close and judged by
+// its date).
+func TestCurrentEntryJudgesAFundByItsNewestRowsSource(t *testing.T) {
+	monday := time.Date(2026, 9, 28, 9, 30, 0, 0, time.UTC) // 13:00 Tehran, fund session open
+	weekly := latestPrice{Symbol: "IR_SILVER_FUND_SILVER", Value: 1357.8, Currency: "IRT", Unit: "unit",
+		Source: "tsetmc_cdn", ObservedAt: time.Date(2026, 9, 23, 23, 0, 0, 0, time.UTC)}
+	entry := currentEntry("IR_SILVER_FUND_SILVER", weekly, 0, false, monday, 30, "12:00", "20:00")
+	if entry["stale"] != false || entry["cadence"] != cadenceDailyClose {
+		t.Errorf("Wednesday's close from Friday's weekly run on Monday: stale %v, cadence %v",
+			entry["stale"], entry["cadence"])
+	}
+	live := latestPrice{Symbol: "IR_GOLD_FUND_KAHRABA", Value: 11396, Currency: "IRT", Unit: "unit",
+		Source: "tse_funds", ObservedAt: monday.Add(-72 * time.Hour)}
+	entry = currentEntry("IR_GOLD_FUND_KAHRABA", live, 0, false, monday, 30, "12:00", "20:00")
+	if entry["stale"] != true {
+		t.Error("a live fund quote three days old during the session is stale")
+	}
+	if _, ok := entry["cadence"]; ok {
+		t.Error("a live fund quote is not a daily close")
+	}
+}

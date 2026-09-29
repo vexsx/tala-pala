@@ -15,7 +15,7 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 |---|---|
 | `POST /auth/register` · `POST /auth/login` · `GET /auth/me` | Account & session |
 | `GET /health` · `GET /readiness` · `GET /metrics` | Liveness, readiness (DB+Redis), Prometheus |
-| `GET /prices/current` | Latest normalized price per symbol (never one stamped after now) + staleness + 24h change. A series that only receives one settled close per session (the TGJU daily codes, the funds with no live quote) carries `cadence: "daily_close"`, and its `stale` is the daily-close rule — more than 4 calendar days old — not the minutes rule |
+| `GET /prices/current` | Latest normalized price per symbol (never one stamped after now) + staleness + 24h change. A series whose newest row is one settled close per session (the TGJU daily codes; the funds with no live quote) carries `cadence: "daily_close"`, and its `stale` is the daily-close rule for that row's source — more than 4 calendar days old from TGJU's daily job, more than 10 from the weekly TSETMC fetch — not the minutes rule; a fund configured live keeps the minutes rule |
 | `GET /prices/history?symbol&from&to&interval&page` | Historical series (raw/hourly/daily buckets) |
 | `GET /market/summary` | Dashboard payload: 18k price, XAU, USD/IRT, theoretical vs observed, premium, provider health, latest signal |
 | `GET /market/premium?days` | Theoretical vs observed premium history |

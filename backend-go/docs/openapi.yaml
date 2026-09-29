@@ -905,7 +905,18 @@ components:
           type: boolean
           description: >
             Market-hours aware: while the market is open, true when older than
-            STALE_MINUTES; while closed, last-session data is not stale.
+            STALE_MINUTES; while closed, last-session data is not stale. For a
+            daily settled close (`cadence: daily_close`) the rule is the close's
+            source's instead: true when the close is more than 4 calendar days
+            old from TGJU's daily job (`tgju_history`), more than 10 from the
+            weekly TSETMC fetch (`tsetmc_cdn`).
+        cadence:
+          type: string
+          enum: [daily_close]
+          description: >
+            Present when the newest row is one settled close per session,
+            stamped 23:00 UTC on its own date (the TGJU daily codes; the
+            commodity funds with no live quote). Absent for a live quote.
         market_state: { $ref: "#/components/schemas/MarketState" }
         change_24h_pct: { type: number, nullable: true }
     SummaryPrice:
@@ -921,7 +932,8 @@ components:
           type: boolean
           description: >
             Market-hours aware: while the market is open, true when older than
-            STALE_MINUTES; while closed, last-session data is not stale.
+            STALE_MINUTES; while closed, last-session data is not stale. A daily
+            settled close follows its source's rule, as in CurrentPrice.
         market_state: { $ref: "#/components/schemas/MarketState" }
         change_24h_pct: { type: number, nullable: true }
     MarketState:

@@ -21,8 +21,9 @@
 // Series that only ever receive ONE settled close per session (DailyCloseOnly)
 // have their own rule instead, because the minutes rule can only ever call
 // them stale: their newest row is yesterday's close, and today's does not
-// exist until the session has settled. They are stale when that close is more
-// than DailyCloseStaleDays calendar days old.
+// exist until the session has settled. How old that close may be depends on
+// what brings it (DailyClose): TGJU's daily job, DailyCloseStaleDays; the
+// weekly off-server TSETMC fetch, WeeklyFetchStaleDays.
 package markethours
 
 import (
@@ -79,37 +80,93 @@ var iranian = map[string]bool{
 	"IR_GOLD_MESGHAL": true,
 }
 
-// dailyCloseOnly are the series that only ever receive one settled close per
-// session, stamped 23:00 UTC on its own date: the seven TGJU daily-history
-// instruments of migration 0031, and the commodity funds with no live source,
-// whose only rows are the settled closes the weekly off-server TSETMC fetch
-// stores (migration 0030). The gold funds with BrsApi's intraday mirror (AYAR,
-// TALA) are live-quote series and keep the session rule.
-var dailyCloseOnly = map[string]bool{
-	"IR_SILVER_999":         true,
-	"IR_COIN_BAHAR":         true,
-	"IR_COIN_HALF":          true,
-	"IR_COIN_QUARTER":       true,
-	"IR_COIN_GERAMI":        true,
-	"IR_GOLD_24K":           true,
-	"IR_GOLD_MESGHAL":       true,
-	"IR_SILVER_FUND_SILVER": true,
-	"IR_SILVER_FUND_SIMIN":  true,
-	"IR_GOLD_FUND_KAHRABA":  true,
-}
+// The sources that write one settled close per session, stamped 23:00 UTC on
+// its own date. They are what a daily close's staleness is judged by, not the
+// symbol: a symbol on these lists can be given a live source by configuration
+// (TSETMC_FUNDS names کهربا in .env.example, and BrsApi then quotes it every
+// session), and its live quotes must keep the session rule.
+const (
+	// SourceTGJUHistory: TGJU's daily history table, read twice a day by the
+	// tgju-daily job (migration 0031).
+	SourceTGJUHistory = "tgju_history"
+	// SourceTSETMCCloses: the commodity funds' settled closes, stored by the
+	// weekly off-server TSETMC fetch (migration 0030).
+	SourceTSETMCCloses = "tsetmc_cdn"
+)
 
-// DailyCloseStaleDays is how many calendar days old a daily close may be and
-// still be the newest one that can exist. The bazaar and the exchange shut
-// Thursday and Friday, so on a Saturday the newest settled close is
-// Wednesday's, three days back; one public holiday against that weekend makes
-// it four. A fifth day means a close is missing. A long closure (Nowruz runs
-// to about thirteen days) does read as stale — and during it the series IS
-// that old.
+// tgjuDailyCloses are migration 0031's seven TGJU daily-history instruments,
+// and weeklyFetchCloses the commodity funds with no live source by default,
+// whose only rows are the weekly TSETMC fetch's settled closes. AYAR and TALA
+// have BrsApi's intraday mirror by default and keep the session rule.
+var (
+	tgjuDailyCloses = map[string]bool{
+		"IR_SILVER_999":   true,
+		"IR_COIN_BAHAR":   true,
+		"IR_COIN_HALF":    true,
+		"IR_COIN_QUARTER": true,
+		"IR_COIN_GERAMI":  true,
+		"IR_GOLD_24K":     true,
+		"IR_GOLD_MESGHAL": true,
+	}
+	weeklyFetchCloses = map[string]bool{
+		"IR_SILVER_FUND_SILVER": true,
+		"IR_SILVER_FUND_SIMIN":  true,
+		"IR_GOLD_FUND_KAHRABA":  true,
+	}
+)
+
+// DailyCloseStaleDays bounds a TGJU daily close. TGJU publishes a close for
+// Saturday to Wednesday and for most Thursdays (20 to 23 of the last 26 for
+// the Bahar coin, 24k and silver; silver also on 13 Fridays), and the job
+// stores a day's close at 00:25 UTC the next morning (03:55 Tehran), with a
+// retry at 12:25 UTC. So the newest close is normally one or two days old,
+// and the most it reaches in an ordinary week is four: early on a Sunday,
+// before that morning's run stores Saturday's close, when TGJU published no
+// Thursday close. That is the bound — which also means a stalled job reads
+// fresh for up to four days, and a holiday against the weekend can flag a
+// few early-morning hours. A long closure (Nowruz runs to about thirteen
+// days) reads as stale, and during it the series IS that old.
 const DailyCloseStaleDays = 4
 
+// WeeklyFetchStaleDays bounds a close the weekly off-server TSETMC fetch
+// stores: the SAME boundary as bourse.StaleAfterDays and the equity bars'
+// (a test pins them together). The funds' closes arrive in the same run as
+// the indices and the shares, whose pages call that run stopped after ten
+// days, and the Trade chart must not call a fund STALE — it did, five days
+// in seven — beside an index chart of the same run reading fresh.
+const WeeklyFetchStaleDays = 10
+
 // DailyCloseOnly reports whether symbol only ever receives one settled close
-// per session (see dailyCloseOnly).
-func DailyCloseOnly(symbol string) bool { return dailyCloseOnly[symbol] }
+// per session by default: no live source is configured for it out of the box.
+func DailyCloseOnly(symbol string) bool {
+	return tgjuDailyCloses[symbol] || weeklyFetchCloses[symbol]
+}
+
+// DailyClose reports whether symbol's newest row, from source, is a settled
+// daily close, and how many calendar days old it may be and still be the
+// newest one that can exist. The source decides (a live quote of a symbol on
+// these lists keeps the session rule); an empty source — a caller that does
+// not know it — falls back on the symbol's default. A symbol off these lists
+// is never judged as a daily close, whatever wrote its newest row: TGJU's
+// gap-fill writes the Emami coin's missing days as closes, and those must not
+// relax the live collector's own freshness rule.
+func DailyClose(symbol, source string) (maxAgeDays int, ok bool) {
+	if !DailyCloseOnly(symbol) {
+		return 0, false
+	}
+	switch source {
+	case SourceTGJUHistory:
+		return DailyCloseStaleDays, true
+	case SourceTSETMCCloses:
+		return WeeklyFetchStaleDays, true
+	case "":
+		if weeklyFetchCloses[symbol] {
+			return WeeklyFetchStaleDays, true
+		}
+		return DailyCloseStaleDays, true
+	}
+	return 0, false
+}
 
 // dailyCloseAgeDays is the calendar-day age of a daily close stamped at
 // observedAt, measured at `at`: the Tehran date now against the close's own
@@ -240,11 +297,19 @@ func ClosureStartedAt(symbol string, at time.Time, open, close string) time.Time
 //	market closed: observedAt >= closure start - staleMinutes
 //	               (i.e. last-session data never goes stale overnight)
 //
-// and, for a DailyCloseOnly series, under the daily-close rule instead: the
-// close is at most DailyCloseStaleDays calendar days old.
+// and, for a daily close (DailyClose, by the symbol's default source), under
+// the daily-close rule instead: the close is no older than its source allows.
 func AcceptablyFresh(symbol string, observedAt, at time.Time, staleMinutes int, open, close string) bool {
-	if dailyCloseOnly[symbol] {
-		return dailyCloseAgeDays(observedAt, at) <= DailyCloseStaleDays
+	return AcceptablyFreshFrom(symbol, "", observedAt, at, staleMinutes, open, close)
+}
+
+// AcceptablyFreshFrom is AcceptablyFresh for an observation whose source is
+// known: the source, not the symbol's default, decides whether it is a daily
+// close and how old one may be.
+func AcceptablyFreshFrom(symbol, source string, observedAt, at time.Time, staleMinutes int,
+	open, close string) bool {
+	if maxAge, ok := DailyClose(symbol, source); ok {
+		return dailyCloseAgeDays(observedAt, at) <= maxAge
 	}
 	stale := time.Duration(staleMinutes) * time.Minute
 	if IsOpen(symbol, at, open, close) {

@@ -6,13 +6,22 @@ Asia/Tehran is a fixed UTC+03:30 (no DST since 2022), so 09:00 Tehran =
 16 Thu, 17 Fri, 18 Sat, 19 Sun, 20 Mon."""
 from __future__ import annotations
 
+import os
+import re
 from datetime import datetime, timezone
 
 import pytest
 
 from app.config import Settings
 from app.core.market_hours import (
+    DAILY_CLOSE_STALE_DAYS,
+    SOURCE_TGJU_HISTORY,
+    SOURCE_TSETMC_CLOSES,
+    TGJU_DAILY_CLOSES,
+    WEEKLY_FETCH_CLOSES,
+    WEEKLY_FETCH_STALE_DAYS,
     closure_started_at,
+    daily_close_max_age,
     is_acceptably_fresh,
     is_market_open,
 )
@@ -257,9 +266,7 @@ def test_naive_datetimes_are_treated_as_utc(mh_settings):
 # --- one settled close per session: stale after four calendar days -----------
 
 
-@pytest.mark.parametrize("symbol", [
-    "IR_SILVER_999", "IR_GOLD_MESGHAL", "IR_GOLD_FUND_KAHRABA", "IR_SILVER_FUND_SIMIN",
-])
+@pytest.mark.parametrize("symbol", ["IR_SILVER_999", "IR_GOLD_MESGHAL", "IR_COIN_BAHAR"])
 def test_a_daily_close_is_fresh_until_it_is_more_than_four_days_old(mh_settings, symbol):
     """Mirrors backend-go markethours: yesterday's 23:00 UTC close is the
     newest that can exist during today's session, so the minutes rule can only
@@ -276,3 +283,50 @@ def test_live_quote_series_keep_the_session_rule(mh_settings):
     for symbol in ("IR_GOLD_FUND_AYAR", "IR_COIN_EMAMI"):
         assert not is_acceptably_fresh(symbol, utc(2026, 7, 19, 23, 0), utc(2026, 7, 20, 9, 30),
                                        mh_settings)
+
+
+@pytest.mark.parametrize("symbol", [
+    "IR_SILVER_FUND_SILVER", "IR_SILVER_FUND_SIMIN", "IR_GOLD_FUND_KAHRABA",
+])
+@pytest.mark.parametrize("source", [None, "tsetmc_cdn"])
+def test_a_weekly_fetched_fund_close_keeps_the_weekly_runs_bound(mh_settings, symbol, source):
+    """Mirrors backend-go: Wednesday's close stored by a Friday run read stale
+    from Monday to Thursday on the four-day rule, beside index charts of the
+    same weekly run reading fresh; its bound is that run's, ten days."""
+    wednesday_close = utc(2026, 7, 15, 23, 0)
+    for day in range(18, 26):
+        assert is_acceptably_fresh(symbol, wednesday_close, utc(2026, 7, day, 9, 30), mh_settings,
+                                   source=source)
+    assert not is_acceptably_fresh(symbol, wednesday_close, utc(2026, 7, 26, 9, 30), mh_settings,
+                                   source=source)
+
+
+def test_the_newest_rows_source_decides_the_daily_close_rule(mh_settings):
+    """A fund configured live (TSETMC_FUNDS naming کهربا) keeps the session rule
+    for its live quotes; a symbol with a live source by default is never
+    judged as a daily close, whatever wrote its newest row."""
+    monday = utc(2026, 7, 20, 9, 30)
+    assert not is_acceptably_fresh("IR_GOLD_FUND_KAHRABA", utc(2026, 7, 18, 9, 0), monday,
+                                   mh_settings, source="tse_funds")
+    assert daily_close_max_age("IR_GOLD_FUND_KAHRABA", "tse_funds") is None
+    assert daily_close_max_age("IR_GOLD_FUND_KAHRABA", "tsetmc_cdn") == WEEKLY_FETCH_STALE_DAYS
+    assert daily_close_max_age("IR_SILVER_999", "tgju_history") == DAILY_CLOSE_STALE_DAYS
+    for symbol in ("IR_COIN_EMAMI", "IR_GOLD_18K", "IR_GOLD_FUND_AYAR"):
+        assert daily_close_max_age(symbol, "tgju_history") is None
+        assert daily_close_max_age(symbol, "tsetmc_cdn") is None
+
+
+def test_the_rule_matches_backend_go():
+    """The Go package is the other half of this mirror: same lists, same bounds."""
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "backend-go", "internal", "markethours", "markethours.go"),
+        encoding="utf-8").read()
+    def block(name):
+        body = source.split(name + " = map[string]bool{", 1)[1].split("}", 1)[0]
+        return frozenset(re.findall(r'"([A-Z0-9_]+)"', body))
+    assert block("tgjuDailyCloses") == TGJU_DAILY_CLOSES
+    assert block("weeklyFetchCloses") == WEEKLY_FETCH_CLOSES
+    assert f"const DailyCloseStaleDays = {DAILY_CLOSE_STALE_DAYS}" in source
+    assert f"const WeeklyFetchStaleDays = {WEEKLY_FETCH_STALE_DAYS}" in source
+    assert f'SourceTGJUHistory = "{SOURCE_TGJU_HISTORY}"' in source
+    assert f'SourceTSETMCCloses = "{SOURCE_TSETMC_CLOSES}"' in source

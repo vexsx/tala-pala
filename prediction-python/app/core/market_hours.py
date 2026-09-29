@@ -23,9 +23,12 @@ acceptably fresh; anything older is truly stale.  While OPEN the plain
 
 Series that only ever receive ONE settled close per session
 (:data:`DAILY_CLOSE_ONLY`) have their own rule instead, mirrored from
-backend-go/internal/markethours: they are stale only when that close is more
-than :data:`DAILY_CLOSE_STALE_DAYS` calendar days old, because under the
-minutes rule yesterday's close — the newest that can exist — is always stale.
+backend-go/internal/markethours: they are stale only when that close is older
+than its source allows (:func:`daily_close_max_age`) — four days from TGJU's
+daily job, ten from the weekly TSETMC fetch — because under the minutes rule
+yesterday's close, the newest that can exist, is always stale.  The newest
+row's SOURCE decides when the caller knows it: a fund configured live
+(``TSETMC_FUNDS``) keeps the session rule for its live quotes.
 
 Symbols with no known calendar are treated as always open (plain age rule).
 """
@@ -59,11 +62,15 @@ IRANIAN_SYMBOLS = frozenset({
 })
 GLOBAL_SYMBOLS = frozenset({"XAUUSD", "XAGUSD", "BRENT_OIL", "DXY", "US10Y"})
 
-# One settled close per session, stamped 23:00 UTC on its own date: the seven
-# TGJU daily-history series of migration 0031 and the commodity funds with no
-# live source (their only rows are migration 0030's settled closes).  AYAR and
-# TALA have BrsApi's intraday mirror and keep the session rule.
-DAILY_CLOSE_ONLY = frozenset({
+# One settled close per session, stamped 23:00 UTC on its own date, written by
+# two sources (the rule is theirs, not the symbol's — see daily_close_max_age):
+SOURCE_TGJU_HISTORY = "tgju_history"   # TGJU's daily table, the tgju-daily job (0031)
+SOURCE_TSETMC_CLOSES = "tsetmc_cdn"    # the weekly off-server TSETMC fetch (0030)
+# The seven TGJU daily-history series of migration 0031, and the commodity
+# funds with no live source by default (their only rows are migration 0030's
+# settled closes).  AYAR and TALA have BrsApi's intraday mirror and keep the
+# session rule.
+TGJU_DAILY_CLOSES = frozenset({
     "IR_SILVER_999",
     "IR_COIN_BAHAR",
     "IR_COIN_HALF",
@@ -71,15 +78,24 @@ DAILY_CLOSE_ONLY = frozenset({
     "IR_COIN_GERAMI",
     "IR_GOLD_24K",
     "IR_GOLD_MESGHAL",
+})
+WEEKLY_FETCH_CLOSES = frozenset({
     "IR_SILVER_FUND_SILVER",
     "IR_SILVER_FUND_SIMIN",
     "IR_GOLD_FUND_KAHRABA",
 })
-# Thursday and Friday shut the bazaar and the exchange, so Saturday's newest
-# close is Wednesday's, three days back; a holiday against the weekend makes
-# four.  A fifth day means a close is missing (a long Nowruz closure does read
-# as stale — and the series is that old).
+DAILY_CLOSE_ONLY = TGJU_DAILY_CLOSES | WEEKLY_FETCH_CLOSES
+# TGJU publishes Saturday to Wednesday and most Thursdays (silver some
+# Fridays too), and the job stores a day's close at 00:25 UTC the next morning
+# with a 12:25 retry: the newest close is normally one or two days old, and at
+# most four in an ordinary week — early on a Sunday, before that morning's run,
+# when TGJU published no Thursday close.  So a stalled job reads fresh for up
+# to four days, and a long Nowruz closure reads stale (the series is that old).
 DAILY_CLOSE_STALE_DAYS = 4
+# The weekly TSETMC fetch: the same bound as the indices and the shares of the
+# same run (backend-go bourse.StaleAfterDays).  On four days, Wednesday's close
+# stored by a Friday run read stale from Monday to Thursday.
+WEEKLY_FETCH_STALE_DAYS = 10
 
 GLOBAL_CLOSE_UTC = time(21, 0)  # Friday
 GLOBAL_OPEN_UTC = time(22, 0)   # Sunday
@@ -194,11 +210,32 @@ def closure_started_at(
     return None
 
 
+def daily_close_max_age(symbol: str, source: Optional[str] = None) -> Optional[int]:
+    """How many calendar days old ``symbol``'s newest row, from ``source``,
+    may be as a settled daily close — or None when it is not one.  Pure.
+
+    Mirrors backend-go markethours.DailyClose: the source decides (a live quote
+    of a fund on these lists keeps the session rule); no source falls back on
+    the symbol's default; a symbol off the lists is never a daily close,
+    whatever wrote its newest row (TGJU's gap-fill writes Emami coin closes).
+    """
+    if symbol not in DAILY_CLOSE_ONLY:
+        return None
+    if source == SOURCE_TGJU_HISTORY:
+        return DAILY_CLOSE_STALE_DAYS
+    if source == SOURCE_TSETMC_CLOSES:
+        return WEEKLY_FETCH_STALE_DAYS
+    if not source:
+        return WEEKLY_FETCH_STALE_DAYS if symbol in WEEKLY_FETCH_CLOSES else DAILY_CLOSE_STALE_DAYS
+    return None
+
+
 def is_acceptably_fresh(
     symbol: str,
     observed_at: Optional[datetime],
     at_utc: datetime,
     settings: Settings,
+    source: Optional[str] = None,
 ) -> bool:
     """Market-hours-aware staleness check (Addendum 1).
 
@@ -206,17 +243,19 @@ def is_acceptably_fresh(
     * market CLOSED -> ``observed_at`` must be no older than
       ``closure start - STALE_MINUTES``, i.e. data from the last session
       keeps counting as fresh for the whole closure;
-    * a :data:`DAILY_CLOSE_ONLY` series -> the close's own date is at most
-      :data:`DAILY_CLOSE_STALE_DAYS` days before today's Tehran date.
+    * a daily close (:func:`daily_close_max_age`, by ``source`` when given)
+      -> the close's own date is no more days before today's Tehran date than
+      its source allows.
     """
     if observed_at is None:
         return False
     observed_at = _ensure_utc(observed_at)
     at_utc = _ensure_utc(at_utc)
-    if symbol in DAILY_CLOSE_ONLY:
+    max_age = daily_close_max_age(symbol, source)
+    if max_age is not None:
         # A close is stamped 23:00 UTC on its trade date: its UTC date is it.
         age_days = (at_utc.astimezone(TEHRAN).date() - observed_at.date()).days
-        return age_days <= DAILY_CLOSE_STALE_DAYS
+        return age_days <= max_age
     tolerance = timedelta(minutes=settings.stale_minutes)
     closure_start = closure_started_at(symbol, at_utc, settings)
     if closure_start is None:  # market open: plain age rule

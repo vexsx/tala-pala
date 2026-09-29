@@ -60,6 +60,7 @@ package prices
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -69,6 +70,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/httpserver"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/indicators"
@@ -1202,7 +1205,33 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 		}
 		page.HasMore = older
 	}
-	payload := buildCandlePayload(bars, page.Start, iv, now, q.Overlays,
-		markethours.DailyCloseOnly(q.Symbol))
+	// Close-only when the series' newest row is a daily close — decided by its
+	// source, as /prices/current decides it, so a fund configured live
+	// (TSETMC_FUNDS naming کهربا) keeps its ranges.
+	dailyClose := false
+	if markethours.DailyCloseOnly(q.Symbol) {
+		source, srcErr := h.newestSource(ctx, q.Symbol, now)
+		if srcErr != nil {
+			h.Log.Error("candles_newest_source", "error", srcErr, "symbol", q.Symbol)
+			httpserver.Internal(w, "database error")
+			return
+		}
+		_, dailyClose = markethours.DailyClose(q.Symbol, source)
+	}
+	payload := buildCandlePayload(bars, page.Start, iv, now, q.Overlays, dailyClose)
 	httpserver.JSON(w, http.StatusOK, candleResponse(q, iv, cov, win, page, payload, now))
+}
+
+// newestSource is the source of symbol's newest usable row at `now` — the row
+// /prices/current serves — or "" when there is none. One index lookup.
+func (h *Handler) newestSource(ctx context.Context, symbol string, now time.Time) (string, error) {
+	var source string
+	err := h.Pool.QueryRow(ctx, `
+		SELECT source FROM prices
+		WHERE symbol=$1 AND quality='ok' AND observed_at <= $2
+		ORDER BY observed_at DESC LIMIT 1`, symbol, now).Scan(&source)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return source, err
 }

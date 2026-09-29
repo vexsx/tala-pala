@@ -590,6 +590,25 @@ describe('ChartStatusBar', () => {
     expect(screen.getByText('1 daily close')).toBeInTheDocument()
   })
 
+  it('calls a longer bucket of daily closes a candle, and counts the closes in it', () => {
+    // The API serves a daily-close series at 1d, 2d, 3d and 1w: three weekly
+    // candles hold 21 closes, and the bar used to read "1W · 3 daily closes".
+    render(
+      <SettingsProvider>
+        <ChartStatusBar
+          asOf="2026-09-28T23:00:00Z"
+          interval="1w"
+          candles={[bar(0, 505_000, 7), bar(7, 506_000, 7), bar(14, 507_000, 7)]}
+          coverage={null}
+          stale={false}
+          dailyClose
+        />
+      </SettingsProvider>
+    )
+    expect(screen.getByText('3 candles · 21 daily closes')).toBeInTheDocument()
+    expect(screen.queryByText('3 daily closes')).not.toBeInTheDocument()
+  })
+
   it('counts the single-observation buckets out loud', () => {
     render(
       <ChartStatusBar

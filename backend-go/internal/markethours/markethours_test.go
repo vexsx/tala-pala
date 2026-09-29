@@ -3,6 +3,8 @@ package markethours
 import (
 	"testing"
 	"time"
+
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/bourse"
 )
 
 // Fixed reference week (all instants constructed in UTC; Asia/Tehran is
@@ -304,14 +306,17 @@ func TestADailyCloseIsFreshUntilItIsMoreThanFourDaysOld(t *testing.T) {
 		{"four days until Tehran midnight", closeOf(15), utc(19, 20, 29), true},
 		{"five days after it", closeOf(15), utc(19, 20, 31), false},
 	}
-	for _, code := range []string{"IR_SILVER_999", "IR_GOLD_24K", "IR_GOLD_FUND_KAHRABA",
-		"IR_SILVER_FUND_SILVER", "IR_SILVER_FUND_SIMIN"} {
+	for _, code := range []string{"IR_SILVER_999", "IR_GOLD_24K", "IR_COIN_BAHAR", "IR_GOLD_MESGHAL"} {
 		if !DailyCloseOnly(code) {
 			t.Fatalf("%s only receives daily closes", code)
 		}
 		for _, tc := range cases {
 			if got := AcceptablyFresh(code, tc.observed, tc.at, 30, DefaultOpen, DefaultClose); got != tc.want {
 				t.Errorf("%s %s: AcceptablyFresh = %v, want %v", code, tc.name, got, tc.want)
+			}
+			if got := AcceptablyFreshFrom(code, SourceTGJUHistory, tc.observed, tc.at, 30,
+				DefaultOpen, DefaultClose); got != tc.want {
+				t.Errorf("%s %s from TGJU: AcceptablyFresh = %v, want %v", code, tc.name, got, tc.want)
 			}
 		}
 	}
@@ -325,5 +330,61 @@ func TestADailyCloseIsFreshUntilItIsMoreThanFourDaysOld(t *testing.T) {
 	}
 	if AcceptablyFresh("IR_COIN_EMAMI", closeOf(19), utc(20, 9, 30), 30, DefaultOpen, DefaultClose) {
 		t.Error("a live-quote series a session old is stale, as before")
+	}
+}
+
+// The funds with no live quote get their closes from the weekly off-server
+// TSETMC fetch, in the same run as the indices and the shares, whose pages
+// call that run stopped after ten days. On the four-day rule a Friday run
+// that stored Wednesday's close read STALE from Monday to Thursday — five
+// days in seven on an on-time weekly refresh — beside index charts of the
+// same run reading fresh.
+func TestAWeeklyFetchedFundCloseKeepsTheWeeklyRunsBound(t *testing.T) {
+	wed := utc(15, 23, 0) // Wednesday's settled close, stored by Friday the 17th's run
+	for _, code := range []string{"IR_SILVER_FUND_SILVER", "IR_SILVER_FUND_SIMIN", "IR_GOLD_FUND_KAHRABA"} {
+		for _, source := range []string{"", SourceTSETMCCloses} {
+			for day := 18; day <= 25; day++ { // Saturday to the next Saturday
+				if !AcceptablyFreshFrom(code, source, wed, utc(day, 9, 30), 30, DefaultOpen, DefaultClose) {
+					t.Errorf("%s (source %q): Wednesday's close stored by Friday's run is stale on "+
+						"July %d", code, source, day)
+				}
+			}
+			// Eleven days: the next Friday's run has not stored anything either.
+			if AcceptablyFreshFrom(code, source, wed, utc(26, 9, 30), 30, DefaultOpen, DefaultClose) {
+				t.Errorf("%s: eleven days old is a weekly run that has stopped", code)
+			}
+		}
+	}
+	if WeeklyFetchStaleDays != bourse.StaleAfterDays {
+		t.Fatalf("WeeklyFetchStaleDays = %d, bourse.StaleAfterDays = %d: one run, one boundary",
+			WeeklyFetchStaleDays, bourse.StaleAfterDays)
+	}
+}
+
+// The source decides, not the symbol: کهربا configured live (TSETMC_FUNDS)
+// has BrsApi's intraday quotes, which keep the session rule — on the
+// symbol's list an intraday quote three days old during the session read
+// fresh, and was labelled a daily close. And a symbol with a live source by default is never judged as
+// a daily close, whatever wrote its newest row (TGJU's gap-fill writes the
+// Emami coin's missing days as closes).
+func TestTheNewestRowsSourceDecidesTheDailyCloseRule(t *testing.T) {
+	session := utc(20, 9, 30) // Monday 13:00 Tehran, the fund session open
+	quote := utc(18, 9, 0)    // Saturday's live quote, two days old
+	if AcceptablyFreshFrom("IR_GOLD_FUND_KAHRABA", "tse_funds", quote, session, 30, DefaultOpen, DefaultClose) {
+		t.Error("a live fund quote two days old during the session is stale")
+	}
+	if _, daily := DailyClose("IR_GOLD_FUND_KAHRABA", "tse_funds"); daily {
+		t.Error("a live quote is not a daily close")
+	}
+	if maxAge, daily := DailyClose("IR_GOLD_FUND_KAHRABA", SourceTSETMCCloses); !daily || maxAge != WeeklyFetchStaleDays {
+		t.Errorf("the weekly fetch's close: %d %v", maxAge, daily)
+	}
+	for _, code := range []string{"IR_COIN_EMAMI", "IR_GOLD_18K", "USD_IRT", "IR_GOLD_FUND_AYAR"} {
+		if _, daily := DailyClose(code, SourceTGJUHistory); daily {
+			t.Errorf("%s keeps its live rule whatever wrote its newest row", code)
+		}
+		if _, daily := DailyClose(code, SourceTSETMCCloses); daily {
+			t.Errorf("%s keeps its live rule whatever wrote its newest row", code)
+		}
 	}
 }

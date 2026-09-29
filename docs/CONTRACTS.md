@@ -830,18 +830,30 @@ Found on a local rehearsal of migrations 0030/0031 with real TSETMC, TGJU and Ya
 before deploy.
 
 **Daily settled closes (extends Addendum 1).** The seven TGJU daily-history codes of 0031 and the
-commodity funds with no live quote (`IR_GOLD_FUND_KAHRABA`, `IR_SILVER_FUND_SILVER`,
+commodity funds with no live quote by default (`IR_GOLD_FUND_KAHRABA`, `IR_SILVER_FUND_SILVER`,
 `IR_SILVER_FUND_SIMIN`) only ever receive one close per session, stamped 23:00 UTC on its own date
 (`markethours.DailyCloseOnly`, mirrored in `app/core/market_hours.py`). The minutes rule could only
-call yesterday's close — the newest that can exist — stale. For these, `stale` means the newest
-close is **more than 4 calendar days old** (Tehran date against the close's own date): the
-Thursday/Friday weekend plus a holiday; a long Nowruz closure reads as stale, which is true. Every
-other symbol keeps the Addendum 1 rule.
+call yesterday's close — the newest that can exist — stale. For these the newest row's SOURCE decides
+(`markethours.DailyClose`), counted in calendar days, Tehran date against the close's own date; every
+other symbol keeps the Addendum 1 rule:
+- `tgju_history` (the tgju-daily job): stale when **more than 4 days old**. TGJU publishes Saturday
+  to Wednesday and most Thursdays, and the job stores a day's close at 00:25 UTC the next morning, so
+  the newest close is normally one or two days old and at most four in an ordinary week (early on a
+  Sunday, when TGJU published no Thursday close). A stalled job therefore reads fresh for up to four
+  days; a long Nowruz closure reads stale, which is true.
+- `tsetmc_cdn` (the weekly off-server TSETMC fetch): stale when **more than 10 days old** — the bound
+  of the indices and shares of the same run (`bourse.StaleAfterDays`). On four days, Wednesday's close
+  stored by a Friday run read STALE from Monday to Thursday.
+- any other source — a fund configured live through `TSETMC_FUNDS` — keeps the Addendum 1 session
+  rule and carries no `cadence`. A symbol off these lists is never judged as a daily close, whatever
+  wrote its newest row (TGJU's gap-fill writes the Emami coin's missing days as closes).
+
 - `GET /prices/current`: such a series carries `cadence: "daily_close"`; no row stamped after now is
   ever the current price (the Yahoo backfill stored a forming bar at 23:00 UTC today until it was
   fixed to skip any bar whose stamp is still ahead).
 - `GET /market/candles`: every response now carries `price_fields` and `cadence`. A daily-close
-  registry series is `price_fields: ["close"]`, `cadence: "daily_close"`; its range overlays
+  registry series (its newest row from a daily-close source) is `price_fields: ["close"]`,
+  `cadence: "daily_close"`; its range overlays
   (`supertrend`, `supertrend_dir`, `psar`, `ichimoku_*`) are whole-field `null` and `pivots` is
   `null`, as for an index. For any tick series, pivots are `null` when the newest finished bucket
   holds one observation (seven levels at one price).

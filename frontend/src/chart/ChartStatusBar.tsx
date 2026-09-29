@@ -37,8 +37,9 @@ export interface ChartStatusBarProps {
    * A registry series of one settled close per session (the API's cadence
    * 'daily_close'). Its age is the DATE of its newest close — "13h ago" read
    * as an outage beside a close as fresh as one can be — its staleness is the
-   * server's four-day daily-close rule, and its bars are closes, not
-   * single-observation buckets.
+   * server's daily-close rule for the close's source (four days from TGJU's
+   * daily job, ten from the weekly TSETMC fetch), and its bars are closes,
+   * not single-observation buckets.
    */
   dailyClose?: boolean
 }
@@ -94,14 +95,29 @@ export function ChartStatusBar({
       {dataAge !== undefined ? (
         <SessionCounts candles={candles} />
       ) : dailyClose ? (
-        <span className="muted small">
-          {candles.length} daily close{candles.length === 1 ? '' : 's'}
-        </span>
+        <DailyCloseCounts candles={candles} interval={interval} />
       ) : (
         <BucketCounts candles={candles} coverage={coverage} />
       )}
       {source && <span className="muted small mono">{source}</span>}
     </div>
+  )
+}
+
+/**
+ * At 1d each candle IS a daily close. A longer bucket (2d, 3d, 1w) holds
+ * several, so it is a candle, and the closes it holds are counted from its
+ * `ticks` — "3 daily closes" beside three weekly candles holding 21 said the
+ * series had three.
+ */
+function DailyCloseCounts({ candles, interval }: { candles: ChartCandle[]; interval: IntervalId }) {
+  const closes = (n: number) => `${n} daily close${n === 1 ? '' : 's'}`
+  if (interval === '1d') return <span className="muted small">{closes(candles.length)}</span>
+  const held = candles.reduce((sum, c) => sum + (c.ticks ?? 1), 0)
+  return (
+    <span className="muted small">
+      {candles.length} candle{candles.length === 1 ? '' : 's'} · {closes(held)}
+    </span>
   )
 }
 
@@ -118,8 +134,9 @@ function TickAge({ asOf, stale }: { asOf: string | null; stale: boolean }) {
 /**
  * A daily settled close is dated, not aged: it is stamped 23:00 UTC on its own
  * trade date, so that UTC date IS the session it closed, and "13h ago" beside
- * it read as an outage. STALE is the server's verdict (more than four days
- * old: a close is missing), never an hours heuristic.
+ * it read as an outage. STALE is the server's verdict (older than its source
+ * allows: a close is missing, or the weekly fetch has stopped), never an hours
+ * heuristic.
  */
 function DailyCloseAge({ asOf, stale }: { asOf: string; stale: boolean }) {
   const { calendar } = useSettings()
