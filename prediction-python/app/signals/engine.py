@@ -800,10 +800,17 @@ def _load_daily_closes(engine, symbols: tuple[str, ...]):
 
     from ..db import prices as prices_t
     from ..features.engineering import daily_close
+    from .universe import SIGNAL_EXCLUDED_SOURCES
 
     stmt = (
         select(prices_t.c.symbol, prices_t.c.observed_at, prices_t.c.value)
-        .where(prices_t.c.symbol.in_(symbols), prices_t.c.quality == "ok")
+        .where(
+            prices_t.c.symbol.in_(symbols),
+            prices_t.c.quality == "ok",
+            # The funds' settled-close history (migration 0030) is not read:
+            # see universe.SIGNAL_EXCLUDED_SOURCES.
+            prices_t.c.source.not_in(SIGNAL_EXCLUDED_SOURCES),
+        )
         .order_by(prices_t.c.observed_at)
     )
     with engine.connect() as conn:

@@ -806,19 +806,35 @@ describe('Advisory board — what this platform does not cover', () => {
   })
 
   it('reads the label case-insensitively, whichever spelling the API sends', async () => {
-    // overview.go spells local silver `ir_silver`; universe.py spells the same
-    // gap `IR_SILVER`. The reader must not see a raw token either way.
+    // A class token is never shown raw, whatever its case on the wire.
     const payload = clone(OVERVIEW)
     payload.unavailable = [
       {
-        symbol_or_class: 'IR_SILVER',
-        category: 'not_collected',
-        reason: 'No local Iranian silver series exists.'
+        symbol_or_class: 'TEHRAN_EQUITIES',
+        category: 'not_scored',
+        reason: 'No buy/sell reading for any Tehran-listed share.'
       }
     ]
     renderBoard(payload)
     await row(ITEMS[0].symbol)
-    expect(screen.getByText('Iranian silver, local price')).toBeInTheDocument()
+    expect(screen.getByText('Tehran-listed equities')).toBeInTheDocument()
+  })
+
+  it('no longer names local silver as a class: it is a registered symbol', async () => {
+    // Since migration 0031 neither service sends `ir_silver`; IR_SILVER_999 is
+    // refused as a symbol and shown under its own code.
+    const payload = clone(OVERVIEW)
+    payload.unavailable = [
+      {
+        symbol_or_class: 'IR_SILVER_999',
+        category: 'not_scored',
+        reason: 'Collected as one TGJU close a day; not modelled or scored.'
+      }
+    ]
+    renderBoard(payload)
+    await row(ITEMS[0].symbol)
+    expect(screen.getByText('IR_SILVER_999')).toBeInTheDocument()
+    expect(screen.queryByText('Iranian silver, local price')).toBeNull()
   })
 
   it('leaves an instrument code spelled the way the registry spells it', async () => {

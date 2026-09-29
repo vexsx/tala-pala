@@ -58,6 +58,15 @@ from typing import Optional
 # has real observations behind it. The list is not widened by hope: an asset
 # joins it when rows exist, not when a page would look better with it.
 #
+# Those two fund counts are still what a reading is computed from after
+# migration 0030 stored eight years of the funds' settled closes (source
+# ``tsetmc_cdn``): the signal loader leaves that source out
+# (:data:`SIGNAL_EXCLUDED_SOURCES`). Scored on it, both funds would clear
+# every bar gate at once and publish buy/hold/sell readings on a series that
+# mixes TSETMC's official close with BrsApi's last trade — measured on the
+# local rehearsal, both came back ``published`` (1,950 and 2,179 bars). That
+# is a decision to make on its own, not a side effect of an ingest.
+#
 # ELIGIBLE IS NOT THE SAME AS SCOREABLE, and for the two funds it currently is
 # not. At ~50 daily bars neither fund clears FACTOR_TREND_SMA's 100, and the
 # SMA20/50 trend is the only directional factor either of them could carry —
@@ -78,6 +87,10 @@ SIGNAL_SYMBOLS: tuple[str, ...] = (
     "IR_GOLD_FUND_AYAR",
     "IR_GOLD_FUND_TALA",
 )
+
+# Sources the signal loader does not read (see the fund note above); the same
+# source app.models.training.MODEL_EXCLUDED_SOURCES keeps out of the models.
+SIGNAL_EXCLUDED_SOURCES: tuple[str, ...] = ("tsetmc_cdn",)
 
 # The two symbols a model is trained for; mirrors
 # app.models.training.FORECAST_SYMBOLS, which is imported lazily below rather
@@ -105,6 +118,17 @@ def _tgju_daily_reason(symbol: str, what: str, derived: str = "") -> str:
         f"source to check it against. {derived}It is not modelled and not "
         f"scored; it is compared under Relative value and Purchasing power "
         f"instead."
+    )
+
+
+def _tse_fund_reason(symbol: str, what: str) -> str:
+    """The refusal of a commodity fund with no live quote (migration 0030)."""
+    return (
+        f"{symbol} ({what}) is collected only as its settled exchange closing "
+        f"price per session, from the weekly off-server TSETMC fetch (migration "
+        f"0030) — no live quote. The signal engine does not read that source, so "
+        f"it is not modelled or scored; compare it under Relative value and "
+        f"Purchasing power."
     )
 
 
@@ -159,12 +183,22 @@ EXCLUDED_SYMBOLS: dict[str, str] = {
         "IR_GOLD_MESGHAL", "melted gold, toman per mesghal",
         "TGJU publishes it as a fixed multiple of its 18k gram price "
         "(x 4.3318), so it carries no movement of its own beyond 18k gold's. "),
+    # The commodity funds with no live quote: migration 0030 stores their
+    # settled exchange closes, which the loader leaves out
+    # (SIGNAL_EXCLUDED_SOURCES) — the same sentence the Go board carries.
+    "IR_GOLD_FUND_KAHRABA": _tse_fund_reason(
+        "IR_GOLD_FUND_KAHRABA", "the Kahraba gold commodity fund"),
+    "IR_SILVER_FUND_SILVER": _tse_fund_reason(
+        "IR_SILVER_FUND_SILVER", "the Nova (Silver) silver commodity fund"),
+    "IR_SILVER_FUND_SIMIN": _tse_fund_reason(
+        "IR_SILVER_FUND_SIMIN", "the Simin silver commodity fund"),
 }
 
-# Whole asset classes a reader will look for and not find. Naming them is the
-# point: an overview page that lists seven symbols and stops implies that is
-# the investable universe, and it is not — it is the part of it this system
-# has measurements for.
+# Whole asset classes a reader will look for and not find a reading for —
+# Tehran shares collected and deliberately unscored, the rest never priced.
+# Naming them is the point: an overview page that lists seven symbols and
+# stops implies that is the investable universe, and it is not — it is the
+# part of it this system has measurements for.
 NOT_COLLECTED: tuple[dict[str, str], ...] = (
     {
         "symbol_or_class": "cars",
@@ -177,10 +211,17 @@ NOT_COLLECTED: tuple[dict[str, str], ...] = (
                   "series. No price series exists to score.",
     },
     {
+        # Collected, not scored. This entry used to say `prices` held zero
+        # rows for any Tehran-listed share, which stopped being the point once
+        # migration 0028 stored the roster's bars in their own table.
         "symbol_or_class": "tehran_equities",
-        "reason": "Not collected: `prices` holds zero rows for any "
-                  "Tehran-listed share. The two gold ETFs below are the only "
-                  "exchange-traded instruments collected.",
+        "reason": "No buy/sell reading for any Tehran-listed share. They are "
+                  "collected: the roster's adjusted daily bars (since migration "
+                  "0028) and every listed share's individual/institutional money "
+                  "flow and session prices (since migration 0030), shown on the "
+                  "Tehran market, Money flow and Trade pages. None of it is "
+                  "modelled or scored, and a reading on a share would be advice "
+                  "this board does not give.",
     },
     {
         "symbol_or_class": "economic_series",

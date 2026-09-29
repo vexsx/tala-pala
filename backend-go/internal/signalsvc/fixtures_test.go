@@ -916,9 +916,11 @@ func TestSignalsOverviewFixtureMatchesTheWireShape(t *testing.T) {
 		"DXY": unavailableNotScored, "US10Y": unavailableNotScored,
 		"BRENT_OIL": unavailableNotScored, "IR_GOLD_FUND_FLOW": unavailableNotScored,
 		"IR_GOLD_FUND_KAHRABA": unavailableNotScored,
-		// Never collected at all.
+		"IR_SILVER_FUND_SILVER": unavailableNotScored, "IR_SILVER_FUND_SIMIN": unavailableNotScored,
+		// Collected since migrations 0028 and 0030, and not scored.
+		"tehran_equities": unavailableNotScored,
+		// Never priced at all.
 		"cars": unavailableNotCollected, "housing": unavailableNotCollected,
-		"tehran_equities": unavailableNotCollected,
 		// Collected since migration 0031, as one TGJU close a day; not scored.
 		"IR_SILVER_999": unavailableNotScored,
 	} {

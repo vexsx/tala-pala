@@ -8,7 +8,7 @@ downstream as evidence that was weighed.
 """
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -722,6 +722,54 @@ def test_the_job_publishes_the_universe_it_could_not_score(engine, settings):
     # The two funds have no rows in this fixture, so they report why.
     withheld = {e["symbol"]: e["reason"] for e in contract["withheld"]}
     assert "IR_GOLD_FUND_AYAR" in withheld and withheld["IR_GOLD_FUND_AYAR"]
+
+
+def test_tehran_shares_are_stated_as_collected_and_not_scored():
+    """The entry said `prices` held zero rows for any Tehran share — true of
+    that table and false of the system since migration 0028 stored the
+    roster's bars, and since 0030 every share's money flow."""
+    entry = next(e for e in universe.unavailable() if e["symbol_or_class"] == "tehran_equities")
+    assert "No buy/sell reading" in entry["reason"]
+    assert "0028" in entry["reason"] and "0030" in entry["reason"]
+    assert "Not collected" not in entry["reason"]
+
+
+def test_the_funds_without_a_live_quote_are_accounted_for():
+    """Migration 0030's silver funds and KAHRABA hold settled closes only;
+    each is refused by name, and none claims it was never collected."""
+    for symbol in ("IR_GOLD_FUND_KAHRABA", "IR_SILVER_FUND_SILVER", "IR_SILVER_FUND_SIMIN"):
+        reason = universe.EXCLUDED_SYMBOLS[symbol]
+        assert symbol not in universe.SIGNAL_SYMBOLS
+        assert "settled exchange closing price" in reason and "not modelled or scored" in reason
+        assert "never" not in reason
+
+
+def test_the_fund_close_history_is_read_by_no_model_or_signal(engine, settings):
+    """Migration 0030's settled fund closes (source tsetmc_cdn) gave AYAR 1,950
+    bars on the local rehearsal, and its reading came back `published`: a
+    decision nobody made. The signal loader and the models leave the source
+    out, so both see what they saw before the ingest."""
+    from app.bourse.funds import SOURCE
+    from app.models.training import MODEL_EXCLUDED_SOURCES, load_series
+    from app.signals.engine import _load_daily_closes
+
+    assert universe.SIGNAL_EXCLUDED_SOURCES == MODEL_EXCLUDED_SOURCES == (SOURCE,)
+    with engine.begin() as conn:
+        conn.execute(prices.insert(), [
+            {"symbol": "IR_GOLD_FUND_AYAR", "value": 30_000.0 + i, "currency": "IRT",
+             "unit": "unit", "source": SOURCE, "quality": "ok",
+             "observed_at": datetime(2025, 1, 1, 23, tzinfo=timezone.utc) + timedelta(days=i),
+             "collected_at": datetime(2026, 9, 29, tzinfo=timezone.utc)}
+            for i in range(300)
+        ] + [
+            {"symbol": "IR_GOLD_FUND_AYAR", "value": 40_000.0, "currency": "IRT",
+             "unit": "unit", "source": "tse_funds", "quality": "ok",
+             "observed_at": datetime(2026, 9, 28, 10, tzinfo=timezone.utc),
+             "collected_at": datetime(2026, 9, 28, 10, tzinfo=timezone.utc)},
+        ])
+    assert len(load_series(engine, "IR_GOLD_FUND_AYAR", "daily")) == 1
+    _, closes = _load_daily_closes(engine, ("IR_GOLD_FUND_AYAR",))
+    assert len(closes["IR_GOLD_FUND_AYAR"]) == 1
 
 
 def test_every_tgju_daily_series_is_accounted_for_with_its_reason(engine, settings):

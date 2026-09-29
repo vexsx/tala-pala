@@ -141,6 +141,21 @@ CANDIDATES = (
     "lorentzian_knn", "kalman_llt", "extra_trees", "huber", "hist_gb_tuned",
 )
 
+# Sources no model reads, until someone decides it should.
+#
+# ``tsetmc_cdn`` is migration 0030's settled closes of the commodity funds
+# (app/bourse/funds.py). It gives IR_GOLD_FUND_AYAR eight years of history
+# where the model had ~50 days, and because the feature frame drops every row
+# with a missing input (models/ml.py, ``train.dropna()``), evaluation cutoffs
+# between 2018-06 and 2026-07 would start carrying fund features and lose every
+# 18k row before 2018-07 — measured on the local rehearsal: 1,560 -> 362
+# training rows at a 2020-01-01 cutoff, 2,684 -> 1,486 at 2024-01-01 — so the
+# models evaluated during selection, and the winner, would change as a side
+# effect of a data ingest. Training and prediction therefore read what they
+# read before 0030 (BrsApi's live fund prices from 2026-07-21); widening that
+# is a decision to make on its own, with its own evaluation.
+MODEL_EXCLUDED_SOURCES: tuple[str, ...] = ("tsetmc_cdn",)
+
 # auxiliary symbols made available to exog-aware models via set_context
 CONTEXT_SYMBOLS: dict[str, str] = {
     "usd_irt": "USD_IRT",
@@ -163,10 +178,15 @@ class Fold:
 
 
 def load_series(engine: Engine, symbol: str, freq: str) -> pd.Series:
-    """Good-quality price series for one symbol at daily or hourly resolution."""
+    """Good-quality price series for one symbol at daily or hourly resolution,
+    without the sources :data:`MODEL_EXCLUDED_SOURCES` names."""
     stmt = (
         select(prices.c.observed_at, prices.c.value)
-        .where(prices.c.symbol == symbol, prices.c.quality == "ok")
+        .where(
+            prices.c.symbol == symbol,
+            prices.c.quality == "ok",
+            prices.c.source.not_in(MODEL_EXCLUDED_SOURCES),
+        )
         .order_by(prices.c.observed_at)
     )
     with engine.connect() as conn:

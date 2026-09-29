@@ -136,17 +136,16 @@ const COST_BASIS_BADGE_CLASS: Record<string, string> = {
 }
 
 /**
- * Readable names for the asset classes the API reports as uncollected. Looked
- * up case-insensitively: the Go handler spells local silver `ir_silver` and
- * prediction-python/app/signals/universe.py spells the same gap `IR_SILVER`,
- * and whichever of the two ends up on the wire, the reader should not be shown
- * a raw token.
+ * Readable names for the asset classes the API reports without a reading.
+ * Looked up case-insensitively, so a class token is never shown raw whichever
+ * case a service spells it in. (Local silver used to be one of these classes;
+ * since migration 0031 it is a registered symbol, IR_SILVER_999, shown as its
+ * code like every other.)
  */
 const UNAVAILABLE_LABELS: Record<string, string> = {
   cars: 'Cars',
   housing: 'Housing',
-  tehran_equities: 'Tehran-listed equities',
-  ir_silver: 'Iranian silver, local price'
+  tehran_equities: 'Tehran-listed equities'
 }
 
 function humanize(token: string): string {

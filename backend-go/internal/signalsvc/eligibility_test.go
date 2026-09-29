@@ -80,7 +80,9 @@ func TestIneligibleReasons_NameTheSymbolAndTheCause(t *testing.T) {
 		{"IR_GOLD_FUND_FLOW", "RATIO"},
 		{"DXY", "index"},
 		{"BRENT_OIL", "macro context"},
-		{"IR_GOLD_FUND_KAHRABA", "never collected"},
+		{"IR_GOLD_FUND_KAHRABA", "no live quote"},
+		{"IR_SILVER_FUND_SILVER", "settled exchange closing price"},
+		{"IR_SILVER_FUND_SIMIN", "not modelled or scored"},
 	} {
 		if !strings.Contains(ineligibleSignalSymbols[want.code], want.fragment) {
 			t.Errorf("%s: reason should mention %q, got %q",
@@ -120,10 +122,15 @@ func TestUncollectedAssetClasses_NameCarsHousingAndEquities(t *testing.T) {
 		}
 		got[e.SymbolOrClass] = e.Reason
 	}
-	for _, class := range []string{"cars", "housing", "tehran_equities"} {
+	for _, class := range []string{"cars", "housing"} {
 		if _, ok := got[class]; !ok {
 			t.Errorf("coverage gaps do not mention %q", class)
 		}
+	}
+	// Tehran shares ARE collected -- daily bars since 0028, every share's
+	// money flow since 0030 -- so they are not among the classes never priced.
+	if _, ok := got["tehran_equities"]; ok {
+		t.Error("tehran_equities is collected; it must not be listed as never collected")
 	}
 	// Local silver is collected since migration 0031, so it must no longer be
 	// named as a class this platform does not collect.
@@ -324,9 +331,39 @@ func TestSignalCoverageGaps_AccountForEveryRefusedSymbol(t *testing.T) {
 			t.Errorf("the coverage block dropped %q", class)
 		}
 	}
-	if len(signalCoverageGaps) != len(refusedSignalSymbols)+len(uncollectedAssetClasses) {
-		t.Errorf("coverage block has %d entries, want %d refusals plus %d structural gaps",
-			len(signalCoverageGaps), len(refusedSignalSymbols), len(uncollectedAssetClasses))
+	want := len(refusedSignalSymbols) + len(collectedUnscoredClasses) + len(uncollectedAssetClasses)
+	if len(signalCoverageGaps) != want {
+		t.Errorf("coverage block has %d entries, want %d refusals, %d collected classes and %d "+
+			"structural gaps", len(signalCoverageGaps), len(refusedSignalSymbols),
+			len(collectedUnscoredClasses), len(uncollectedAssetClasses))
+	}
+}
+
+// Tehran shares have been collected since migration 0028 (the roster's bars)
+// and 0030 (every share's money flow). The entry used to say "no share price
+// for any TSE-listed company is ingested"; it must now say what is true.
+func TestTehranEquitiesAreStatedAsCollectedAndNotScored(t *testing.T) {
+	var entry *UnavailableEntry
+	for i := range signalCoverageGaps {
+		if signalCoverageGaps[i].SymbolOrClass == "tehran_equities" {
+			entry = &signalCoverageGaps[i]
+		}
+	}
+	if entry == nil {
+		t.Fatal("the coverage block must still account for Tehran shares")
+	}
+	if entry.Category != unavailableNotScored {
+		t.Errorf("category = %q, want %q", entry.Category, unavailableNotScored)
+	}
+	for _, fragment := range []string{"No buy/sell reading", "0028", "0030", "modelled or scored"} {
+		if !strings.Contains(entry.Reason, fragment) {
+			t.Errorf("reason must say %q: %q", fragment, entry.Reason)
+		}
+	}
+	for _, stale := range []string{"Not collected", "no share price", "is ingested, so no equity"} {
+		if strings.Contains(entry.Reason, stale) {
+			t.Errorf("reason still claims %q, which migration 0028 made false: %q", stale, entry.Reason)
+		}
 	}
 }
 
@@ -359,10 +396,10 @@ func TestSignalCoverageGaps_DistinguishNotCollectedFromNotScored(t *testing.T) {
 			t.Errorf("%s: category = %q, want %q", e.SymbolOrClass, e.Category, unavailableNotCollected)
 		}
 	}
-	// The one refused symbol that genuinely has no observations says so in its
-	// own sentence rather than borrowing the structural category.
-	if !strings.Contains(ineligibleSignalSymbols["IR_GOLD_FUND_KAHRABA"], "never collected") {
-		t.Error("KAHRABA's reason must state that it has no observations")
+	// KAHRABA used to be "never collected"; since migration 0030 it holds its
+	// settled closes, and the reason must not claim otherwise.
+	if strings.Contains(ineligibleSignalSymbols["IR_GOLD_FUND_KAHRABA"], "never collected") {
+		t.Error("KAHRABA holds settled closes since migration 0030; its reason must not deny it")
 	}
 	// Ordering is part of the contract: the block must not reshuffle between
 	// polls, which is why the refusals are a slice and not a map iteration.
@@ -390,6 +427,38 @@ func TestEveryRegisteredSignalSymbolIsAccountedForOnce(t *testing.T) {
 	if len(seen) != len(eligibleSignalSymbols)+len(refusedSignalSymbols) {
 		t.Errorf("the two tables overlap: %d distinct codes from %d entries",
 			len(seen), len(eligibleSignalSymbols)+len(refusedSignalSymbols))
+	}
+}
+
+// Every commodity fund migration 0030 registers or ingests is held -- as its
+// settled exchange close -- so the board accounts for each: scored (the two
+// gold funds with a live quote) or refused with a reason that says it is
+// collected. Read from the migration itself, so a fund added there cannot fall
+// off the board, as the two silver funds did.
+func TestEveryMigration0030FundIsAccountedFor(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "database", "migrations", "0030_market_flows.up.sql")
+	sql, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	text := string(sql)
+	funds := text[strings.Index(text, "INSERT INTO commodity_funds"):]
+	codes := regexp.MustCompile(`'[0-9]+','(IR_[A-Z0-9_]+)'`).FindAllStringSubmatch(funds, -1)
+	if len(codes) != 5 {
+		t.Fatalf("found %d commodity funds in %s, want 5", len(codes), path)
+	}
+	for _, m := range codes {
+		code := m[1]
+		symbol, verdict, reason := ParseSignalSymbol(code)
+		switch {
+		case verdict == verdictEligible:
+			continue
+		case symbol != code || verdict != verdictIneligible:
+			t.Errorf("%s is ingested by 0030 but the board does not account for it (verdict %v)",
+				code, verdict)
+		case !strings.Contains(reason, "not modelled or scored") || !strings.Contains(reason, code):
+			t.Errorf("%s's reason must name it and say it is not scored: %q", code, reason)
+		}
 	}
 }
 

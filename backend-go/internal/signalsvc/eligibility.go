@@ -14,9 +14,10 @@ package signalsvc
 // such as "kind IN (market_price, fx) AND quote_currency NOT IN (PCT, INDEX)"
 // would admit BRENT_OIL and IR_GOLD_FUND_KAHRABA, which are excluded for
 // reasons the registry does not encode: one is macro context for the models,
-// the other has never collected an observation. Display metadata still comes
-// from the registry (see overview.go) -- this file carries the policy, not the
-// vocabulary.
+// the other has no live quote -- only the settled closes the weekly TSETMC
+// fetch stores, which the signal engine does not read. Display metadata still
+// comes from the registry (see overview.go) -- this file carries the policy,
+// not the vocabulary.
 
 import "fmt"
 
@@ -31,7 +32,11 @@ const defaultSignalSymbol = "IR_GOLD_18K"
 //
 // Every entry is an asset a reader can actually hold and pay a round trip on,
 // and every entry has price history in `prices` (measured on production
-// 2026-09-09; row counts in the comments are that census).
+// 2026-09-09; row counts in the comments are that census). The two funds'
+// counts are still what their readings are computed from after migration
+// 0030 stored eight years of their settled closes: the Python signal loader
+// leaves that source (tsetmc_cdn) out until scoring on it is decided
+// (app/signals/universe.py SIGNAL_EXCLUDED_SOURCES).
 var eligibleSignalSymbols = []string{
 	"IR_GOLD_18K",       // 18,593 rows from 2013-07-22; 7 active models
 	"USD_IRT",           // 17,850 rows from 2011-11-26; no model, technical-only
@@ -55,8 +60,8 @@ var eligibleSignalSymbolSet = func() map[string]bool {
 // each with the reason it is refused, in report order.
 //
 // IT IS A LIST, NOT JUST A MAP, AND IT IS ON THE WIRE. Every symbol here is
-// registered (all but IR_GOLD_FUND_KAHRABA hold observations) and a reader can
-// see it elsewhere in the app, so a board that simply omitted it left the
+// registered and a reader can see it elsewhere in the app -- migration 0030's
+// two silver funds included -- so a board that simply omitted it left the
 // page's account of its own coverage incomplete:
 // the reader could not tell "we score this and it is pending" from "we
 // deliberately do not score this" from "we never heard of it". They therefore
@@ -92,12 +97,15 @@ var refusedSignalSymbols = []UnavailableEntry{
 			"not a fund price, so a buy or sell call on it would be meaningless. It is scored " +
 			"as one caution-only factor inside the two gold-fund readings instead.",
 	},
-	{
-		SymbolOrClass: "IR_GOLD_FUND_KAHRABA",
-		Category:      unavailableNotScored,
-		Reason: "IR_GOLD_FUND_KAHRABA is registered from TSETMC_FUNDS but has " +
-			"never collected an observation, so there is no history any factor could be read from.",
-	},
+	// The commodity funds with no live quote. Migration 0030 stores their
+	// settled exchange closes from the weekly off-server TSETMC fetch, which
+	// the signal engine does not read (app/signals/universe.py
+	// SIGNAL_EXCLUDED_SOURCES), so none of them has a series a factor could
+	// be read from -- the same position the two gold funds WITH a live quote
+	// were in before their ~100 bars.
+	tseFundRefusal("IR_GOLD_FUND_KAHRABA", "the Kahraba gold commodity fund"),
+	tseFundRefusal("IR_SILVER_FUND_SILVER", "the Nova (Silver) silver commodity fund"),
+	tseFundRefusal("IR_SILVER_FUND_SIMIN", "the Simin silver commodity fund"),
 	// Local silver used to be a structural gap ("ir_silver": no local Iranian
 	// silver series). Migration 0031 made that false -- TGJU's silver_999 close
 	// is now stored every day -- so the entry moved here, under the category
@@ -125,6 +133,20 @@ var refusedSignalSymbols = []UnavailableEntry{
 	tgjuDailyRefusal("IR_GOLD_MESGHAL", "melted gold, toman per mesghal",
 		"TGJU publishes it as a fixed multiple of its 18k gram price (x 4.3318), so it "+
 			"carries no movement of its own beyond 18k gold's. "),
+}
+
+// tseFundRefusal is the refusal of a commodity fund with no live quote:
+// collected only as TSETMC's settled closing price per session, through the
+// weekly off-server fetch, and not scored.
+func tseFundRefusal(code, what string) UnavailableEntry {
+	return UnavailableEntry{
+		SymbolOrClass: code,
+		Category:      unavailableNotScored,
+		Reason: fmt.Sprintf("%s (%s) is collected only as its settled exchange closing price per "+
+			"session, from the weekly off-server TSETMC fetch (migration 0030) -- no live quote. "+
+			"The signal engine does not read that source, so it is not modelled or scored; "+
+			"compare it under Relative value and Purchasing power.", code, what),
+	}
 }
 
 // tgjuDailyRefusal is the refusal of a migration 0031 instrument: collected,
@@ -162,8 +184,8 @@ var ineligibleSignalSymbols = func() map[string]string {
 // 2026-09-09: `prices` has no row for any of them. When collection starts for
 // one of these, its entry is deleted here in the same change that adds it to
 // eligibleSignalSymbols -- or, when it is collected but not scored, to
-// refusedSignalSymbols, which is what happened to local silver in migration
-// 0031.
+// refusedSignalSymbols (what happened to local silver in migration 0031) or
+// collectedUnscoredClasses (what happened to Tehran shares).
 var uncollectedAssetClasses = []UnavailableEntry{
 	{
 		SymbolOrClass: "cars",
@@ -205,11 +227,22 @@ var uncollectedAssetClasses = []UnavailableEntry{
 			"1381) and can be compared against inflation under Relative value; they measure " +
 			"the cost of occupying housing, not the price of buying it.",
 	},
+}
+
+// collectedUnscoredClasses are whole asset classes this platform DOES collect
+// and deliberately does not score. Tehran shares used to be listed as never
+// collected, which has been false since migration 0028 stored the roster's
+// daily bars, and more so since 0030 stored every listed share's money flow
+// and session rows.
+var collectedUnscoredClasses = []UnavailableEntry{
 	{
 		SymbolOrClass: "tehran_equities",
-		Category:      unavailableNotCollected,
-		Reason: "Not collected. The only Tehran-listed instruments here are the gold ETFs; no " +
-			"share price for any TSE-listed company is ingested, so no equity can be read.",
+		Category:      unavailableNotScored,
+		Reason: "No buy/sell reading for any Tehran-listed share. They are collected: the " +
+			"roster's adjusted daily bars (since migration 0028) and every listed share's " +
+			"individual/institutional money flow and session prices (since migration 0030), " +
+			"shown on the Tehran market, Money flow and Trade pages. None of it is modelled or " +
+			"scored, and a reading on a share would be advice this board does not give.",
 	},
 }
 
@@ -226,12 +259,15 @@ var uncollectedAssetClasses = []UnavailableEntry{
 // entry now states its own `category`, so a client renders the right sentence
 // per group instead of one blanket claim over all of them.
 //
-// Refusals first, then the structural gaps: the refusals are about symbols this
-// system holds and the reader can see elsewhere in the app, and the gaps are
-// about whole asset classes it has never touched.
+// Refusals first, then the classes collected and not scored (Tehran shares),
+// then the structural gaps: the refusals are about symbols this system holds
+// and the reader can see elsewhere in the app, and the gaps are about whole
+// asset classes it has never priced.
 var signalCoverageGaps = func() []UnavailableEntry {
-	out := make([]UnavailableEntry, 0, len(refusedSignalSymbols)+len(uncollectedAssetClasses))
+	out := make([]UnavailableEntry, 0,
+		len(refusedSignalSymbols)+len(collectedUnscoredClasses)+len(uncollectedAssetClasses))
 	out = append(out, refusedSignalSymbols...)
+	out = append(out, collectedUnscoredClasses...)
 	out = append(out, uncollectedAssetClasses...)
 	return out
 }()
