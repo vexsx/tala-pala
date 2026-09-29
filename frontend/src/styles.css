@@ -3809,3 +3809,13 @@ input[type='checkbox'] {
 .tchart-card-link {
   margin-top: 6px;
 }
+
+/* Money flow: the API's notes under the explainer, one item each. */
+.mf-notes {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.mf-notes li {
+  margin-bottom: 4px;
+}

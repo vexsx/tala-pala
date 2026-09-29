@@ -8,8 +8,9 @@ import bourseSource from '../pages/Bourse.tsx?raw'
 import type { SectorFlowSharesResponse, SectorFlowsResponse } from '../api/types'
 
 // HAND-BUILT, pending a production capture — see fixtures/README.md. The
-// inputs (a 291-share market over 125 Tehran sessions with the 2026 closure
-// left out, one whole-market day file missing, a capital increase on ذوب, a
+// inputs (a 295-share market over 125 Tehran sessions with the 2026 closure
+// left out, one whole-market day file missing, three traded shares with no
+// flow stored, a capital increase on ذوب, a share listed three sessions ago, a
 // halted share, a delisted one, فولاد's block and second boards) are invented;
 // every field of the payloads was emitted by the Go code that serves the route
 // (buildSectorFlows / buildSectorShares), so the shape is the server's own.
@@ -110,43 +111,71 @@ describe('the market over a window', () => {
   it('opens on five sessions and states the market with its unit', async () => {
     await renderPage()
     expect(screen.getByRole('button', { name: '5 sessions' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('mf-tile-value').textContent).toContain('35.2T toman')
+    const value = screen.getByTestId('mf-tile-value').textContent ?? ''
+    expect(value).toContain('33.5T toman')
+    // What part of the market the figure rests on, against the day files.
+    expect(value).toContain(
+      "Flow is stored for 98.8% of the 1,287 share-sessions TSETMC's day files show trading (99.0% of their traded value)"
+    )
     const net = screen.getByTestId('mf-tile-net').textContent ?? ''
-    expect(net).toContain('-926B toman')
-    expect(net).toContain('-2.6% of traded value')
+    expect(net).toContain('-636B toman')
+    expect(net).toContain('-1.9% of traded value')
     // The other side of the same trades, stated beside it.
-    expect(net).toContain('+926B toman')
+    expect(net).toContain('+636B toman')
     expect(screen.getByTestId('mf-window-span').textContent).toContain('2026-09-22 → 2026-09-28')
     expect(screen.getByTestId('mf-window-span').textContent).toContain('2026-09-15 → 2026-09-21')
+  })
+
+  it('states the newest session against the shares its day file shows trading', async () => {
+    // The rehearsal of 2026-09-29 called 207 shares "every listed share" while
+    // the day file listed 973 trading. The page now says what it covers.
+    await renderPage()
+    expect(screen.getByTestId('mf-coverage').textContent).toContain(
+      "Newest session, 2026-09-28: flow for 255 of the 258 shares TSETMC's day file shows trading (98.8%, and 99.0% of their traded value)."
+    )
+    expect(screen.getByText(/over the shares whose flow is stored/)).toBeInTheDocument()
+    expect(screen.queryByText(/every listed share/)).toBeNull()
+  })
+
+  it('says buyer power leaves out a listing session, and labels the listed company', async () => {
+    await renderPage()
+    expect(screen.getByTestId('mf-tile-power').textContent).toContain('Leaves out 1 listing session')
+    const listed = FLOWS.top['5'].inflow.find((c) => c.listing_session)!
+    const row = within(screen.getByTestId('mf-top-inflow')).getByTestId(`mf-company-${listed.ins_code}`)
+    expect(within(row).getByTestId('mf-listing').textContent).toBe('listed 2026-09-26')
+    // Its change is measured from its first close, and says so on hover.
+    expect(within(row).getByTitle(listed.price_change_note!)).toBeInTheDocument()
   })
 
   it('switches every figure with the window chips', async () => {
     await renderPage()
     fireEvent.click(screen.getByRole('button', { name: '20 sessions' }))
     expect(screen.getByRole('button', { name: '20 sessions' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByTestId('mf-tile-value').textContent).toContain('151T toman')
-    expect(screen.getByTestId('mf-tile-net').textContent).toContain('+716B toman')
-    expect(screen.getByTestId('mf-window-span').textContent).toContain('2026-09-01 → 2026-09-28')
+    expect(screen.getByTestId('mf-tile-value').textContent).toContain('152T toman')
+    expect(screen.getByTestId('mf-tile-net').textContent).toContain('+350B toman')
+    expect(screen.getByTestId('mf-window-span').textContent).toContain('2026-08-31 → 2026-09-28')
+    expect(screen.getByTestId('mf-top-inflow').textContent).toContain('20 sessions')
+    // فولاد's three boards are one company in the sixty-session list.
+    fireEvent.click(screen.getByRole('button', { name: '60 sessions' }))
     const inflow = screen.getByTestId('mf-top-inflow')
-    expect(inflow.textContent).toContain('20 sessions')
-    // فولاد's three boards are one company in the twenty-session list.
+    expect(inflow.textContent).toContain('60 sessions')
     expect(within(inflow).getByText('main + block + secondary')).toBeInTheDocument()
   })
 
   it('shows the check tiers behind the figures', async () => {
     await renderPage()
     const tiers = screen.getByTestId('mf-tile-tiers').textContent ?? ''
-    expect(tiers).toContain('1,280 of 1,284')
-    expect(tiers).toContain('1,280 checked against a session value')
-    expect(tiers).toContain('0 identities only')
-    expect(tiers).toContain('3 excluded')
+    expect(tiers).toContain('1,268 of 1,277')
+    expect(tiers).toContain('1,264 checked against a session value')
+    expect(tiers).toContain('4 identities only')
+    expect(tiers).toContain('8 excluded')
     expect(tiers).toContain('1 no trade')
     fireEvent.click(screen.getByRole('button', { name: '20 sessions' }))
     const t20 = screen.getByTestId('mf-tile-tiers').textContent ?? ''
-    // The missing day file inside twenty sessions: rows checked on the
+    // فولاد3's day-file rows were never stored: its rows are checked on the
     // identities only, and said so.
-    expect(t20).toContain('5,115 of 5,129')
-    expect(t20).toContain('246 identities only')
+    expect(t20).toContain('5,105 of 5,126')
+    expect(t20).toContain('18 identities only')
     // Per sector too.
     const metals = FLOWS.sectors.find((s) => s.sector_code === '27')!.windows['20']
     const row = screen.getByTestId('mf-sector-27')
@@ -173,25 +202,31 @@ describe('the market over a window', () => {
     expect(screen.queryByTestId('mf-thin-after')).toBeNull()
   })
 
-  it('says when newer stored dates are too thin to be in any figure', async () => {
+  it('says when newer stored dates are not market sessions, and why', async () => {
+    const reason =
+      'flow is stored for 19 of the 973 shares its day file shows trading (2.0%, and 5.1% of their traded value); a market session needs 90% of both'
     const thin: SectorFlowsResponse = {
       ...FLOWS,
-      coverage: { ...FLOWS.coverage, thin_dates_after_newest: 1, newest_stored_date: '2026-09-29', newest_stored_traded_shares: 19 }
+      coverage: {
+        ...FLOWS.coverage,
+        thin_dates_after_newest: 1,
+        newest_thin: {
+          date: '2026-09-29',
+          traded_shares: 19,
+          day_file: true,
+          day_file_traded_shares: 973,
+          with_flow: 19,
+          share_pct: 1.95,
+          value_pct: 5.1,
+          reason
+        }
+      }
     }
     await renderPage(thin)
     const text = screen.getByTestId('mf-thin-after').textContent ?? ''
-    expect(text).toContain('1 stored date(s) after 2026-09-28, up to 2026-09-29,')
-    expect(text).toContain('fewer than 200 traded shares')
+    expect(text).toContain('1 stored date(s) after 2026-09-28 are not market sessions')
+    expect(text).toContain(`the newest, 2026-09-29: ${reason}`)
     expect(text).toContain('Every figure ends at 2026-09-28')
-  })
-
-  it('flags a newest session that looks partly ingested', async () => {
-    const partial: SectorFlowsResponse = {
-      ...FLOWS,
-      coverage: { ...FLOWS.coverage, newest_partial: true, newest_traded_shares: 150, median_traded_prev20: 257 }
-    }
-    await renderPage(partial)
-    expect(screen.getByTestId('mf-partial').textContent).toContain('partly ingested')
   })
 
   it("repeats the API's data-age warning", async () => {
@@ -274,6 +309,44 @@ describe('the sector table', () => {
     const block = within(shares).getByTestId('mf-share-9000000000000002')
     expect(within(block).queryByRole('link')).toBeNull()
     expect(block.textContent).toContain('block')
+    // A share the day files show trading, with no flow stored, is not "did
+    // not trade": the rehearsal's آلومینا (657 trades, 141B toman) read so.
+    const unflowed = METALS_5.items.filter((it) => it.flow_not_stored_sessions > 0 && it.summary.rows === 0)
+    expect(unflowed.length).toBe(3)
+    for (const it of unflowed) {
+      const cell = within(shares).getByTestId(`mf-flow-not-stored-${it.ins_code}`)
+      expect(cell.textContent).toBe('flow not stored')
+      expect(cell).toHaveAttribute('title', expect.stringContaining('5 sessions of this window'))
+    }
+    expect(within(shares).getByText('flow not stored', { selector: 'em' })).toBeInTheDocument()
+  })
+
+  it('counts the shares with flow against the shares in the sector list', async () => {
+    await renderPage()
+    const metals = FLOWS.sectors.find((s) => s.sector_code === '27')!
+    const row = screen.getByTestId('mf-sector-27')
+    expect(row.textContent).toContain(`${metals.instruments} of ${metals.shares} shares with flow`)
+    expect(metals.shares).toBeGreaterThan(metals.instruments)
+  })
+
+  it('shows no share of the market for a sector with nothing summed', async () => {
+    // "0.0%" and "0.00 pp" beside a sector index that moved read as a fact.
+    const sectors = FLOWS.sectors.map((s) =>
+      s.sector_code === '46'
+        ? {
+            ...s,
+            windows: {
+              ...s.windows,
+              '5': { ...s.windows['5'], value_share_pct: null, previous_value_share_pct: null, value_share_change_pp: null }
+            }
+          }
+        : s
+    )
+    await renderPage({ ...FLOWS, sectors })
+    const cells = within(screen.getByTestId('mf-sector-46')).getAllByRole('cell')
+    expect(cells.map((c) => c.textContent)).toContain('—')
+    expect(cells.map((c) => c.textContent)).not.toContain('0.0%')
+    expect(cells.map((c) => c.textContent)).not.toContain('0.00 pp')
   })
 })
 
@@ -326,7 +399,7 @@ describe('the heatmap', () => {
     expect(last.className).toContain(heatClass(newest.net_individual_pct_of_value))
     expect(last.textContent).toBe(newest.net_individual_pct_of_value!.toFixed(1))
     expect(last.getAttribute('title')).toContain('Whole market, 2026-09-22 → 2026-09-28')
-    expect(last.getAttribute('title')).toContain(`of ${'35.2T toman'} traded`)
+    expect(last.getAttribute('title')).toContain(`of ${'33.5T toman'} traded`)
     // A sector's cell also states its share of the market; the market's does not.
     expect(last.getAttribute('title')).not.toContain("of the market's traded value")
     const metals = FLOWS.sectors.find((s) => s.sector_code === '27')!
@@ -336,8 +409,30 @@ describe('the heatmap', () => {
     expect(metalsCells[metalsCells.length - 1].getAttribute('title')).toContain(
       `${metals.blocks[metals.blocks.length - 1].value_share_pct!.toFixed(1)}% of the market's traded value`
     )
-    // Readable as a table: the sectors are its rows, the blocks its columns.
+    // Readable as a table: the blocks are its column headers and each
+    // sector's name is its row's header, so a screen reader names both.
     expect(within(heat).getAllByRole('columnheader')).toHaveLength(FLOWS.blocks.length + 1)
+    const rowHeaders = within(heat).getAllByRole('rowheader')
+    expect(rowHeaders).toHaveLength(FLOWS.sectors.length + 1)
+    expect(rowHeaders[0].textContent).toBe('Whole market')
+    for (const th of rowHeaders) expect(th).toHaveAttribute('scope', 'row')
+  })
+
+  it('says why there is no heatmap before five market sessions exist', async () => {
+    const early: SectorFlowsResponse = {
+      ...FLOWS,
+      blocks: [],
+      market_blocks: [],
+      sectors: FLOWS.sectors.map((s) => ({ ...s, blocks: [] })),
+      coverage: { ...FLOWS.coverage, sessions_available: 3 }
+    }
+    await renderPage(early)
+    expect(screen.queryByTestId('mf-heatmap')).toBeNull()
+    expect(screen.getByTestId('mf-heatmap-empty').textContent).toContain(
+      'The heatmap needs five market sessions; 3 are stored.'
+    )
+    // The table's own description does not promise the trend line either.
+    expect(screen.getByTestId('mf-sectors').textContent).toContain('the trend line needs five market sessions')
   })
 
   it('orders its rows by the longest window stored, even before sixty sessions exist', async () => {
@@ -355,7 +450,7 @@ describe('the heatmap', () => {
     await renderPage(short)
     const heat = screen.getByTestId('mf-heatmap')
     // The English label is each name cell's first text node; the Persian follows.
-    const names = Array.from(heat.querySelectorAll('tbody tr td.mf-heat-name')).map((td) => td.firstChild?.textContent)
+    const names = Array.from(heat.querySelectorAll('tbody tr th.mf-heat-name')).map((th) => th.firstChild?.textContent)
     const byShare20 = [...FLOWS.sectors]
       .sort((a, b) => (b.windows['20'].value_share_pct ?? 0) - (a.windows['20'].value_share_pct ?? 0))
       .map((s) => s.name_en || `Sector ${s.sector_code}`)
@@ -366,14 +461,18 @@ describe('the heatmap', () => {
 describe('what the page says the flow is', () => {
   it('explains net individual flow in plain words', async () => {
     await renderPage()
-    const text = screen.getByTestId('mf-explainer').textContent ?? ''
-    expect(text).toContain('It is not new money entering the market.')
-    expect(text).toContain('institutions are net sellers of it by the same amount')
-    expect(text).toContain('It is not a forecast.')
-    expect(text).toContain('to within 0.1%')
-    expect(text).toContain('to within 1%')
-    // The API's own notes travel with it.
-    expect(text).toContain(FLOWS.notes[0])
+    const explainer = screen.getByTestId('mf-explainer')
+    const text = explainer.textContent ?? ''
+    expect(text).toContain('It is not new money entering the market, and it is not a forecast.')
+    expect(text).toContain('institutions sold them exactly that much')
+    expect(text).toContain('identities to 0.1%, session values to 1%')
+    // The API's own notes travel with it, each once, as a list.
+    const items = within(explainer).getAllByRole('listitem').map((li) => li.textContent)
+    expect(items).toEqual(FLOWS.notes)
+    // …and the card no longer says again in its own words what a note says
+    // (the zero-sum note, the check note, "not a forecast").
+    expect(text.split('Every trade has a buyer and a seller').length - 1).toBe(1)
+    expect(text.split('None of them is a forecast').length - 1).toBe(1)
   })
 
   it('uses no signal or advice language', () => {
@@ -397,17 +496,21 @@ describe('before the market-wide flows exist', () => {
   it('says so and sums nothing, rather than passing the roster off as the market', async () => {
     await renderPage(ROSTER_ONLY, 'mf-not-ingested')
     const card = screen.getByTestId('mf-not-ingested')
-    expect(card.textContent).toContain('Market-wide flows have not been ingested yet')
-    // It does not claim to know WHICH shares those are: a first market-wide
-    // ingest that stopped part-way looks the same as the roster alone.
-    expect(card.textContent).toContain('The newest stored date, 2026-09-28, carries 19 — the roster alone, or a market-wide ingest still under way')
+    expect(card.textContent).toContain('Market-wide flows are not stored for any session yet')
+    expect(card.textContent).toContain('flow is stored for at least 90% of them, by count and by traded value')
+    // It says which part of the rule the newest date fails, and does not
+    // claim to know WHICH shares those are: a sample of the market, the
+    // roster, and an ingest under way all look alike.
+    expect(card.textContent).toContain(
+      'The newest stored date, 2026-09-28, is not one: no whole-market day file is stored for it'
+    )
     expect(card.textContent).toContain('not the market, so nothing is summed here')
     expect(card.textContent).not.toContain('That is the roster')
     expect(within(card).getByRole('link', { name: 'Tehran market' })).toHaveAttribute('href', '/bourse')
     expect(screen.queryByTestId('mf-sector-table')).toBeNull()
     expect(screen.queryByTestId('mf-tiles')).toBeNull()
     expect(screen.queryByTestId('mf-heatmap')).toBeNull()
-    expect(screen.getByTestId('mf-explainer').textContent).toContain('Market-wide flows not ingested yet')
+    expect(screen.getByTestId('mf-explainer').textContent).toContain('Market-wide flows are not stored for any session yet')
     await waitFor(() => expect(apiMock).toHaveBeenCalledTimes(1))
   })
 })

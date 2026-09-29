@@ -52,17 +52,51 @@ const sectorFlowsKeySelect = `
 	       || '|' || coalesce((SELECT max(updated_at)::text || '/' || count(*) FILTER (WHERE enabled)
 	                           FROM equity_instruments), '')`
 
-// sectorFlowsCalendarSelect counts, per stored date since the floor, the
-// shares carrying a row and those whose row shows a trade.
+// sectorFlowsCalendarSelect is, per stored date since the floor, its flow
+// rows (carrying any flow, showing a trade) and what TSETMC's day file for it
+// says: whether one is stored, the shares it shows trading and their value,
+// and how many of those — and how much of that value — carry a traded flow
+// row. Values are RIALS. A date with flow and no day file, or a day file and
+// no flow, is listed either way (the FULL JOIN), so the calendar can say why
+// it is not a market session.
 const sectorFlowsCalendarSelect = `
-	SELECT trade_date,
-	       count(*),
-	       count(*) FILTER (WHERE buy_i_value + buy_n_value + sell_i_value + sell_n_value > 0)
-	FROM equity_client_flows
-	WHERE trade_date >= greatest($1::date,
-	                             (SELECT max(trade_date) FROM equity_client_flows) - $2::int)
-	GROUP BY trade_date
-	ORDER BY trade_date DESC`
+	WITH lo AS (
+	    SELECT greatest($1::date,
+	                    coalesce(greatest((SELECT max(trade_date) FROM equity_client_flows),
+	                                      (SELECT max(trade_date) FROM market_session_files)),
+	                             $1::date) - $2::int) AS d
+	), flows AS (
+	    SELECT f.trade_date, count(*) AS rows,
+	           count(*) FILTER (WHERE f.buy_i_value + f.buy_n_value + f.sell_i_value
+	                                  + f.sell_n_value > 0) AS traded
+	    FROM equity_client_flows f, lo
+	    WHERE f.trade_date >= lo.d
+	    GROUP BY f.trade_date
+	), files AS (
+	    SELECT m.trade_date FROM market_session_files m, lo WHERE m.trade_date >= lo.d
+	), days AS (
+	    SELECT s.trade_date,
+	           count(*) AS day_traded,
+	           sum(s.value)::float8 AS day_value,
+	           count(f.ins_code) AS covered,
+	           coalesce(sum(s.value) FILTER (WHERE f.ins_code IS NOT NULL), 0)::float8 AS covered_value
+	    FROM market_share_sessions s
+	    JOIN files ON files.trade_date = s.trade_date
+	    LEFT JOIN equity_client_flows f
+	           ON f.ins_code = s.ins_code AND f.trade_date = s.trade_date
+	          AND f.buy_i_value + f.buy_n_value + f.sell_i_value + f.sell_n_value > 0
+	    WHERE s.trades > 0 OR s.volume > 0
+	    GROUP BY s.trade_date
+	)
+	SELECT coalesce(flows.trade_date, files.trade_date),
+	       coalesce(flows.rows, 0), coalesce(flows.traded, 0),
+	       files.trade_date IS NOT NULL,
+	       coalesce(days.day_traded, 0), coalesce(days.day_value, 0),
+	       coalesce(days.covered, 0), coalesce(days.covered_value, 0)
+	FROM flows
+	FULL JOIN files ON files.trade_date = flows.trade_date
+	LEFT JOIN days ON days.trade_date = coalesce(flows.trade_date, files.trade_date)
+	ORDER BY 1 DESC`
 
 // sectorFlowsRowsSelect is every flow row between two sessions, with the two
 // independent statements of each session's traded value beside it. RIALS.
@@ -100,7 +134,8 @@ const sectorFlowsPricesSelect = `
 // the curated roster, whose symbol is the one /stocks/{symbol} resolves.
 const sectorFlowsSharesSelect = `
 	SELECT m.ins_code, m.symbol_fa, m.name_fa, m.market, m.board, m.company_code,
-	       m.sector_code, m.listed, coalesce(e.symbol_fa, ''), coalesce(e.enabled, FALSE)
+	       m.sector_code, m.listed, coalesce(e.symbol_fa, ''), coalesce(e.enabled, FALSE),
+	       m.flow_first_date
 	FROM market_shares m
 	LEFT JOIN equity_instruments e ON e.ins_code = m.ins_code`
 
@@ -121,10 +156,13 @@ func readSectorFlowInput(ctx context.Context, pool *pgxpool.Pool, store *indexSt
 	var counts []sessionCount
 	for rows.Next() {
 		var c sessionCount
-		if err := rows.Scan(&c.Day, &c.Rows, &c.Traded); err != nil {
+		if err := rows.Scan(&c.Day, &c.Rows, &c.Traded, &c.DayFile, &c.DayTraded, &c.DayValue,
+			&c.Covered, &c.CoveredValue); err != nil {
 			rows.Close()
 			return in, fmt.Errorf("calendar scan: %w", err)
 		}
+		c.DayValue /= rialsPerToman
+		c.CoveredValue /= rialsPerToman
 		counts = append(counts, c)
 	}
 	rows.Close()
@@ -184,7 +222,7 @@ func readShareMeta(ctx context.Context, pool *pgxpool.Pool) ([]shareMeta, error)
 	for rows.Next() {
 		var m shareMeta
 		if err := rows.Scan(&m.InsCode, &m.Symbol, &m.NameFA, &m.Market, &m.Board, &m.CompanyCode,
-			&m.SectorCode, &m.Listed, &m.RosterSymbol, &m.InRoster); err != nil {
+			&m.SectorCode, &m.Listed, &m.RosterSymbol, &m.InRoster, &m.FlowFirstDate); err != nil {
 			return nil, fmt.Errorf("share scan: %w", err)
 		}
 		out = append(out, m)
@@ -340,9 +378,10 @@ type sectorSharesResponse struct {
 }
 
 const shareListNote = "Every share TSETMC classifies in this sector, each board its own row. A " +
-	"share's value_share_pct is its part of the SECTOR's traded value over the window; a listed " +
-	"share with no traded row in the window is listed with empty figures. Only shares on this " +
-	"deployment's roster link to a share page."
+	"share's value_share_pct is its part of the SECTOR's traded value over the window. A share " +
+	"TSETMC's day files show trading with no flow stored for those sessions says so " +
+	"(flow_not_stored_sessions); a listed share that did not trade in the window is listed with " +
+	"empty figures. Only shares on this deployment's roster link to a share page."
 
 // SectorFlowShares implements GET /api/v1/bourse/sector-flows/{sector}?window=.
 func (h *Handler) SectorFlowShares(w http.ResponseWriter, r *http.Request) {

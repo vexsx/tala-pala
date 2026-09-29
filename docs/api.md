@@ -33,7 +33,7 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `GET /bourse/breadth?basis&period` | Equal-weighted against cap-weighted (`basis=total`: TEDPIX vs شاخص کل هم‌وزن; `price`: the price indices), rebased, with their ratio |
 | `GET /bourse/market-value?period` | Total value of the bourse and the Farabourse per session, in toman and dollars. Size, not a return |
 | `GET /bourse/flows` | The roster's money flow over the newest 1/5/20/60 sessions, and the same summed across the roster (not the market) |
-| `GET /bourse/sector-flows` | Every listed share's حقیقی/حقوقی flow summed by TSETMC sector over the newest 1/5/20/60 **market** sessions: value share and its change, net individual flow, buyer power, sector index return, check tiers, a 12×5-session heatmap, top 15 companies by inflow and outflow. See below |
+| `GET /bourse/sector-flows` | The حقیقی/حقوقی flow of every share with stored flow, summed by TSETMC sector over the newest 1/5/20/60 **market** sessions — sessions whose flow covers at least 90% of the shares TSETMC's day file shows trading: value share and its change, net individual flow, buyer power, sector index return, check tiers, coverage per window, a 12×5-session heatmap, top 15 companies by inflow and outflow. See below |
 | `GET /bourse/sector-flows/{sector}?window` | Every share in one sector over one window (`1`, `5` default, `20`, `60`), each board its own row |
 | `GET /market/funds` | TSE gold-fund stats: prices, volume, retail buy/sell % (latest + today's averages), buyer power, retail net-flow history |
 | `GET /predictions?symbol` · `GET /predictions/{horizon}?symbol` | Latest per horizon · history incl. actuals (symbol: IR_GOLD_18K default, XAUUSD) |
@@ -267,24 +267,31 @@ signal or advice.
 
 ### Market sessions, not each share's rows
 
-A date is a **market session** only when at least **200 shares** carry a
-traded flow row on it (`coverage.min_traded_shares`): the roster's full history
-lives in the same table, and a date on which only the roster traded is the
-roster, not the market. Window *n* is the *n* newest market sessions — the same
-dates for every share — so a share halted through a window contributes nothing
-to it (the roster table's windows are each share's own newest rows instead).
-Windows end at the newest market session, not today. A window longer than the
-stored calendar is `available: false` with a `reason`, never shortened.
+A date is a **market session** only when TSETMC's whole-market day file for it
+is stored, shows at least **200 shares** trading
+(`coverage.min_traded_shares`), and flow is stored for at least **90%** of
+those shares **and** of their traded value (`coverage.min_coverage_pct`). The
+day file is the exchange's own list of who traded, so coverage is measured
+against it, per session. (The rule used to be 200 shares with a flow row; on
+the local rehearsal of 2026-09-29 a sample of 214 shares passed it and was
+served as `market_wide: true` while the day files listed ~970 trading — 21% of
+the shares, 73.6% of the value.) Window *n* is the *n* newest market sessions
+— the same dates for every share — so a share halted through a window
+contributes nothing to it (the roster table's windows are each share's own
+newest rows instead). Windows end at the newest market session, not today. A
+window longer than the stored calendar is `available: false` with a `reason`,
+never shortened.
 
-The newest session is flagged `coverage.newest_partial` when its traded-share
-count is under **80%** of the median of the 20 sessions before it — the
-signature of an ingest that stopped halfway. Stored dates with fewer than 200
-traded shares newer than the newest session, or between sessions, are counted
-(`thin_dates_after_newest`, `thin_dates_skipped`) and left out.
+Every available window states its coverage (`sessions[n].coverage`): the
+share-sessions the day files show trading, those with flow, the same as a
+share and a value percentage, and the weakest single session. Stored dates
+that are not market sessions — newer than the newest one, or between sessions
+— are counted (`thin_dates_after_newest`, `thin_dates_skipped`), the newest of
+the former described with its reason (`newest_thin`), and left out.
 
 Until any date qualifies, `coverage.market_wide` is `false`, every figure is
-empty, and the first note reads "Market-wide flows not ingested yet" — the
-roster is never passed off as the market.
+empty, and the first note says which part of the rule the newest stored date
+fails — a sample of the market is never passed off as the market.
 
 ### Check tiers
 
@@ -321,7 +328,8 @@ toman; percentages in percent.
 | `net_individual_pct_of_value` | net individual flow ÷ traded value × 100 |
 | `total_value_toman` | Σ(buy_I + buy_N): traded value |
 | `individual_buy_share_pct`, `individual_sell_share_pct` | individuals' part of the buying and of the selling |
-| `buyer_power` | (Σbuy_I_value ÷ Σbuy_I_count) ÷ (Σsell_I_value ÷ Σsell_I_count): aggregate tickets, per trader-session — a ratio of ticket sizes, not a forecast |
+| `buyer_power` | (Σbuy_I_value ÷ Σbuy_I_count) ÷ (Σsell_I_value ÷ Σsell_I_count): aggregate tickets, per trader-session — a ratio of ticket sizes, not a forecast. **Listing sessions are left out**: on one, individuals receive an offering's allocation (فنقره: 1,721,005 buy tickets, none sold), which swamped every other session's tickets (0.59 against 1.55 without them on the rehearsal) |
+| `listing_sessions` | consistent share-sessions that were a share's listing: in every other figure (their value and net flow are real transfers), left out of `buyer_power` |
 | `inflow_sessions`, `outflow_sessions` | consistent share-sessions with net individual flow above / below zero |
 | `instruments_traded`, `inflow_instruments`, `outflow_instruments` | shares with a consistent row, and those whose window net is positive / negative |
 | `value_share_pct` | part of the **enclosing** total's traded value: a sector's of the market's; in `/sector-flows/{sector}` a share's of its sector's; in `top`, a company's of the market's |
@@ -331,13 +339,13 @@ toman; percentages in percent.
 
 | field | meaning |
 |---|---|
-| `sessions` | per window key `"1" "5" "20" "60"`: `available`, `from`, `to`, `previous_from`, `previous_to`, `reason` when unavailable |
+| `sessions` | per window key `"1" "5" "20" "60"`: `available`, `from`, `to`, `previous_from`, `previous_to`, `coverage` (`day_file_share_sessions`, `with_flow`, `share_pct`, `value_pct`, `min_session_share_pct`) when available, `reason` when unavailable |
 | `market` | per available window, the whole market's `TieredFlowSummary` (its `value_share_pct` is 100) |
-| `sectors[]` | `sector_code`, `name_fa`, `name_en` (from `market_sectors`; both empty for a code TSETMC names nowhere), `index_ins_code` (the sector's bourse index, when one exists), `instruments` (shares with a stored row in the loaded sessions), `listed` (in the newest market watch), `windows` (per window, a `TieredFlowSummary` plus `index_return_pct` / `index_return_reason`), `blocks` |
+| `sectors[]` | `sector_code`, `name_fa`, `name_en` (from `market_sectors`; both empty for a code TSETMC names nowhere), `index_ins_code` (the sector's bourse index, when one exists), `instruments` (shares with a stored flow row in the loaded sessions), `listed` (in the newest market watch), `shares` (rows of its share list), `windows` (per window, a `TieredFlowSummary` plus `index_return_pct` / `index_return_reason`; `value_share_pct` is `null`, not 0, when nothing of the sector was summed), `blocks` |
 | `index_return_pct` | the sector's bourse index from its value in force at the market session **before** the window's first to its value at the window's last; `null` with a reason where the sector has no index, the index has no validated series, or the session before the window is not stored |
 | `blocks`, `market_blocks`, `sectors[].blocks` | the newest 60 market sessions in 12 blocks of 5, oldest first (only whole blocks): `from`, `to`, `rows`, `consistent`, `excluded`, `net_individual_toman`, `net_individual_pct_of_value`, `total_value_toman`, `value_share_pct` — the heatmap and the value-share sparklines |
 | `top` | per window, `inflow` and `outflow`: the 15 companies with the largest net individual inflow / outflow |
-| `coverage` | `market_wide`, `floor`, `min_traded_shares`, `newest_session`, `newest_traded_shares`, `instruments_with_rows_newest`, `median_traded_prev20`, `partial_threshold_pct`, `newest_partial`, `sessions_available`, `instruments_known`, `instruments_listed`, `roster_instruments`, `newest_stored_date`, `newest_stored_traded_shares`, `thin_dates_after_newest`, `thin_dates_skipped` |
+| `coverage` | `market_wide`, `floor`, `min_traded_shares`, `min_coverage_pct`, `newest_session`, `newest` and `newest_stored` (each a date's coverage: `date`, `traded_shares` with flow, `day_file`, `day_file_traded_shares`, `with_flow`, `share_pct`, `value_pct`, and `reason` when it is not a market session), `instruments_with_rows_newest`, `sessions_available`, `instruments_known`, `instruments_listed`, `roster_instruments`, `thin_dates_after_newest`, `newest_thin`, `thin_dates_skipped` |
 | `checks`, `notes`, `data_age` | the tolerances; what the figures are and are not; the age of the newest market session (the bourse `data_age` block, 10-day bound) |
 
 **Companies.** `top` sums every board of a company (`company_code`, TSETMC's
@@ -362,12 +370,24 @@ a market session, or a stored date too thin to be one that lies between two —
 has no stored close, the change is `null` with `price_change_reason` rather
 than a product that silently skipped a session.
 
+On a share's **listing session** the reference is not a price: TSETMC opens a
+listing on the 1,000-rial par value or a placeholder (420, 255). A share's
+first stored session whose close is more than ×1.25 from its reference (no
+price-limited session moves a quarter) is its listing, named in
+`listing_session`; inside a window its move contributes nothing, the change is
+measured from its first close and `price_change_note` says so, and a window
+whose only session is the listing has a `null` change with its reason. (Chained
+through the placeholder, فنقره's first five sessions read +4,133%; its closes
+moved +12.40%.) A reopening after a halt that began before the flow floor, and
+moved more than ×1.25, is indistinguishable here and is measured the same way.
+
 **Notes carried.** Zero-sum (above); the check tiers; the calendar rule;
 sector membership is TSETMC's classification at the last fetch applied to every
 session (look-ahead); only shares in the market watch when a fetch ran are
 stored (survivorship: a share delisted before the first fetch is missing);
-boards; price change; descriptive, not predictive; and, when they apply, the
-partial newest session and thin dates.
+boards; price change and listings; buyer power without listing sessions;
+descriptive, not predictive; and, when they apply, the dates after the newest
+session that are not market sessions, and those skipped between.
 
 ### `GET /bourse/sector-flows/{sector}?window=`
 
@@ -379,9 +399,13 @@ partial newest session and thin dates.
 Each item is one instrument — every board its own row — with `ins_code`,
 `symbol`, `name_fa`, `market`, `board`, `company_code`, `sector_code`,
 `listed`, `in_roster`, `roster_symbol`, `summary` (`TieredFlowSummary`, its
-`value_share_pct` of the **sector**), `price_change_pct`, `price_change_reason`.
-Every listed share of the sector is present; one with no traded row in the
-window has empty figures and `rows: 0`. Items are ordered by traded value.
+`value_share_pct` of the **sector**), `price_change_pct`, `price_change_reason`,
+`price_change_note`, `listing_session`, `traded_sessions` (the window's market
+sessions on which TSETMC shows it trading) and `flow_not_stored_sessions` (of
+those, the ones with no traded flow row). Every listed share of the sector is
+present; one with no traded row in the window has empty figures and `rows: 0`
+— "flow not stored" when `flow_not_stored_sessions > 0`, "did not trade" only
+when `traded_sessions` is 0. Items are ordered by traded value.
 
 | status | when |
 |---|---|
@@ -393,14 +417,20 @@ window has empty figures and `rows: 0`. Items are ordered by traded value.
 ```json
 {
   "sessions": {"5": {"sessions": 5, "available": true, "from": "2026-09-22", "to": "2026-09-28",
-                     "previous_from": "2026-09-15", "previous_to": "2026-09-21"}},
-  "market": {"5": {"rows": 1284, "consistent": 1280, "bar_checked": 1280, "identity_only": 0,
-                   "excluded": 3, "no_trade": 1, "net_individual_toman": -925813839159.13,
-                   "net_institutional_toman": 925813839159.13, "value_share_pct": 100, "…": "…"}},
+                     "previous_from": "2026-09-15", "previous_to": "2026-09-21",
+                     "coverage": {"day_file_share_sessions": 1287, "with_flow": 1272,
+                                  "share_pct": 98.834499, "value_pct": 98.984895,
+                                  "min_session_share_pct": 98.8}}},
+  "market": {"5": {"rows": 1277, "consistent": 1268, "bar_checked": 1264, "identity_only": 4,
+                   "excluded": 8, "no_trade": 1, "net_individual_toman": -636139965911.73,
+                   "net_institutional_toman": 636139965911.73, "listing_sessions": 1,
+                   "value_share_pct": 100, "…": "…"}},
   "sectors": [{"sector_code": "27", "name_en": "Basic metals", "index_ins_code": "32453344048876642",
-               "windows": {"5": {"value_share_pct": 16.928036, "value_share_change_pp": 4.81076,
-                                 "index_return_pct": -4.756814, "…": "…"}}, "blocks": ["…12…"]}],
-  "coverage": {"market_wide": true, "min_traded_shares": 200, "newest_partial": false, "…": "…"},
+               "windows": {"5": {"value_share_pct": 14.088306, "value_share_change_pp": 0.812415,
+                                 "index_return_pct": 4.871171, "…": "…"}}, "blocks": ["…12…"]}],
+  "coverage": {"market_wide": true, "min_traded_shares": 200, "min_coverage_pct": 90,
+               "newest": {"date": "2026-09-28", "day_file_traded_shares": 258, "with_flow": 255, "…": "…"},
+               "…": "…"},
   "checks": {"identity_tolerance_pct": 0.1, "session_value_tolerance_pct": 1}
 }
 ```

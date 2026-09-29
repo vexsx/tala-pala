@@ -50,6 +50,10 @@ type testMarket struct {
 	prices      []priceRow
 	sectorIndex map[string]string
 	series      map[string][]IndexPoint
+	// noFile names dates with no stored day file; dayOnly are day-file rows
+	// (a share the exchange shows trading) with no flow stored for them.
+	noFile  map[time.Time]bool
+	dayOnly []priceRow
 }
 
 const fillerSector = "01"
@@ -84,22 +88,41 @@ func (m *testMarket) flow(code string, f FlowSession) {
 	m.rows = append(m.rows, marketRow{InsCode: code, Flow: f})
 }
 
-// countsOf is what sectorFlowsCalendarSelect computes.
-func countsOf(rows []marketRow) []sessionCount {
+// counts is what sectorFlowsCalendarSelect computes for the test market:
+// every date has a day file listing exactly the shares whose flow shows a
+// trade, each worth its flow's buy total — unless noFile names the date — and
+// the dayOnly rows add shares the day file shows trading with no flow stored.
+func (m *testMarket) counts() []sessionCount {
 	idx := map[time.Time]int{}
 	var out []sessionCount
-	for _, r := range rows {
-		d := dayFloor(r.Flow.Day)
+	at := func(d time.Time) *sessionCount {
+		d = dayFloor(d)
 		i, ok := idx[d]
 		if !ok {
 			i = len(out)
 			idx[d] = i
-			out = append(out, sessionCount{Day: d})
+			out = append(out, sessionCount{Day: d, DayFile: !m.noFile[d]})
 		}
-		out[i].Rows++
+		return &out[i]
+	}
+	for _, r := range m.rows {
+		c := at(r.Flow.Day)
+		c.Rows++
 		f := r.Flow
 		if f.BuyIValue+f.BuyNValue+f.SellIValue+f.SellNValue > 0 {
-			out[i].Traded++
+			c.Traded++
+			if c.DayFile {
+				c.DayTraded++
+				c.Covered++
+				c.DayValue += f.BuyIValue + f.BuyNValue
+				c.CoveredValue += f.BuyIValue + f.BuyNValue
+			}
+		}
+	}
+	for _, p := range m.dayOnly {
+		if c := at(p.Day); c.DayFile {
+			c.DayTraded++
+			c.DayValue += p.Close // the row's traded value, in this harness
 		}
 	}
 	return out
@@ -107,7 +130,7 @@ func countsOf(rows []marketRow) []sessionCount {
 
 func (m *testMarket) build() sectorFlowsBuilt {
 	return buildSectorFlows(sectorFlowInput{
-		Calendar:    buildMarketCalendar(countsOf(m.rows), calendarSessions),
+		Calendar:    buildMarketCalendar(m.counts(), calendarSessions),
 		Rows:        m.rows,
 		Prices:      m.prices,
 		Shares:      m.shares,
@@ -205,61 +228,106 @@ func TestEverySessionValueThatExistsIsCompared(t *testing.T) {
 
 // --- the calendar ---------------------------------------------------------------------
 
-func TestADateIsAMarketSessionOnlyWithTwoHundredTradedShares(t *testing.T) {
+func TestADateIsAMarketSessionOnlyWhenItsDayFileIsCovered(t *testing.T) {
+	file := func(d string, traded, dayTraded, covered int, valuePct float64) sessionCount {
+		return sessionCount{Day: day(d), Rows: traded, Traded: traded, DayFile: true,
+			DayTraded: dayTraded, Covered: covered, DayValue: 1000, CoveredValue: 10 * valuePct}
+	}
 	counts := []sessionCount{
-		{Day: day("2026-09-29"), Rows: 19, Traded: 19}, // the roster alone
-		{Day: day("2026-09-28"), Rows: 1100, Traded: 1000},
-		{Day: day("2026-09-27"), Rows: 199, Traded: 199}, // an ingest that stopped
-		{Day: day("2026-09-24"), Rows: 1100, Traded: 1000},
-		{Day: day("2026-09-23"), Rows: 1100, Traded: 200},
+		file("2026-09-29", 19, 973, 19, 2),     // the roster alone
+		file("2026-09-28", 950, 1000, 950, 95), // a market session
+		// The rehearsal of 2026-09-29: 214 shares' flow, 207 of them traded
+		// on the 28th, against 973 in the day file. 200 flow rows passed the
+		// old absolute rule; 21% of the traded shares does not pass this one.
+		file("2026-09-27", 207, 973, 207, 73.6),
+		{Day: day("2026-09-24"), Rows: 1000, Traded: 1000}, // no day file: unmeasured
+		file("2026-09-23", 900, 1000, 900, 90),             // exactly 90%, both ways
+		file("2026-09-22", 950, 1000, 950, 85),             // the value is not covered
 	}
 	c := buildMarketCalendar(counts, calendarSessions)
-	if len(c.Sessions) != 3 || dayString(c.Sessions[0]) != "2026-09-28" || dayString(c.Sessions[2]) != "2026-09-23" {
+	if len(c.Sessions) != 2 || dayString(c.Sessions[0]) != "2026-09-28" || dayString(c.Sessions[1]) != "2026-09-23" {
 		t.Fatalf("sessions %v", c.Sessions)
 	}
-	if c.ThinAfterNewest != 1 || c.ThinSkipped != 1 {
+	if c.ThinAfterNewest != 1 || c.ThinSkipped != 2 {
 		t.Fatalf("thin after %d, skipped %d", c.ThinAfterNewest, c.ThinSkipped)
 	}
-	if dayString(*c.NewestStored) != "2026-09-29" || c.NewestStoredTraded != 19 {
+	if dayString(c.NewestStored.Day) != "2026-09-29" || c.NewestStored.Traded != 19 {
 		t.Fatal("the newest stored date is kept, and said to be thin")
+	}
+	for _, tc := range []struct {
+		i    int
+		want string
+	}{
+		{0, "flow is stored for 19 of the 973 shares"},
+		{2, "(21.3%, and 73.6% of their traded value)"},
+		{3, "no whole-market day file"},
+		{5, "85.0% of their traded value"},
+	} {
+		if why := counts[tc.i].whyNot(); !contains(why, tc.want) {
+			t.Errorf("%s: %q does not say %q", dayString(counts[tc.i].Day), why, tc.want)
+		}
+	}
+	thin := sessionCount{Day: day("2026-09-21"), DayFile: true, DayTraded: 150, Covered: 150,
+		DayValue: 1, CoveredValue: 1}
+	if thin.marketSession() || !contains(thin.whyNot(), "150 traded share(s)") {
+		t.Fatal("a day file with 150 traded shares is not a market session")
 	}
 	if got := buildMarketCalendar(counts[:1], calendarSessions); got.marketWide() {
 		t.Fatal("nineteen shares are the roster, not the market")
 	}
-	// The roster's own dates before the market-wide history began are older
-	// than every session, not gaps between them.
-	older := append(append([]sessionCount(nil), counts...),
-		sessionCount{Day: day("2026-09-22"), Rows: 19, Traded: 19},
-		sessionCount{Day: day("2026-09-21"), Rows: 19, Traded: 19})
-	if c := buildMarketCalendar(older, calendarSessions); c.ThinSkipped != 1 || len(c.Sessions) != 3 {
-		t.Fatalf("skipped %d sessions %d", c.ThinSkipped, len(c.Sessions))
+}
+
+// The local rehearsal of 2026-09-29 stored 214 shares' flow beside day files
+// listing ~970 traded shares; the endpoint answered market_wide: true with a
+// calendar of 4 sessions and the page called it "every listed share".
+func TestASampleOfTheMarketIsNotTheMarket(t *testing.T) {
+	m := newTestMarket(10)
+	for _, d := range m.days {
+		for i := 0; i < 760; i++ { // the day file's other shares, flow not stored
+			m.dayOnly = append(m.dayOnly, priceRow{InsCode: fmt.Sprintf("8%04d", i), Day: d, Close: 30})
+		}
+	}
+	b := m.build()
+	cov := b.resp.Coverage
+	if cov.MarketWide || cov.SessionsAvailable != 0 || len(b.resp.Sectors) != 0 {
+		t.Fatalf("a 21%% sample was summed as the market: %+v", cov)
+	}
+	if cov.NewestStored == nil || cov.NewestStored.DayFileTradedShares != 960 ||
+		cov.NewestStored.WithFlow != 200 || cov.NewestStored.Reason == "" {
+		t.Fatalf("the newest date must say what it covers: %+v", cov.NewestStored)
+	}
+	if !contains(b.resp.Notes[0], "flow is stored for 200 of the 960 shares") ||
+		!contains(b.resp.Notes[0], "not the market") {
+		t.Fatalf("note: %s", b.resp.Notes[0])
 	}
 }
 
-func TestTheNewestSessionIsFlaggedPartialAgainstTheTwentyBefore(t *testing.T) {
-	mk := func(newest int) marketCalendar {
-		counts := []sessionCount{{Day: day("2026-09-28"), Traded: newest, Rows: newest}}
-		for i := 1; i <= 20; i++ {
-			counts = append(counts, sessionCount{Day: day("2026-09-28").AddDate(0, 0, -i), Traded: 1000, Rows: 1000})
+// Every window states what it rests on against the day files, so "the
+// market" never has to be taken on trust.
+func TestEveryWindowStatesItsCoverage(t *testing.T) {
+	m := newTestMarket(10)
+	for _, d := range m.days[:5] {
+		for i := 0; i < 10; i++ { // ten traded shares with no flow stored
+			m.dayOnly = append(m.dayOnly, priceRow{InsCode: fmt.Sprintf("8%04d", i), Day: d, Close: 100})
 		}
-		// Older sessions are thin-but-valid; they must not move the median.
-		for i := 21; i <= 40; i++ {
-			counts = append(counts, sessionCount{Day: day("2026-09-28").AddDate(0, 0, -i), Traded: 300, Rows: 300})
-		}
-		return buildMarketCalendar(counts, calendarSessions)
 	}
-	c := mk(700)
-	if c.MedianPrev == nil || *c.MedianPrev != 1000 || !c.NewestPartial {
-		t.Fatalf("700 of a median 1000: partial %v median %v", c.NewestPartial, c.MedianPrev)
+	b := m.build()
+	if !b.resp.Coverage.MarketWide || b.resp.Coverage.SessionsAvailable != 10 {
+		t.Fatalf("95%% covered sessions are market sessions: %+v", b.resp.Coverage)
 	}
-	if mk(800).NewestPartial {
-		t.Fatal("exactly 80% is not below 80%")
+	w5 := b.resp.Sessions["5"].Coverage
+	if w5 == nil || w5.DayFileShareSessions != 5*210 || w5.WithFlow != 5*200 {
+		t.Fatalf("window 5 coverage %+v", w5)
 	}
-	if mk(1000).NewestPartial {
-		t.Fatal("a normal session is not partial")
+	approx(t, "share", w5.SharePct, 200.0/210*100, 1e-6)
+	approx(t, "value", w5.ValuePct, 200.0*100/(200*100+10*100)*100, 1e-6)
+	approx(t, "weakest", w5.MinSessionSharePct, 200.0/210*100, 1e-6)
+	if w10 := b.resp.Sessions["20"]; w10.Available || w10.Coverage != nil {
+		t.Fatal("an unavailable window states no coverage")
 	}
-	if !contains(strings.Join(marketWideNotes(c), " "), "partly ingested") {
-		t.Fatal("a partial newest session must be said")
+	newest := b.resp.Coverage.Newest
+	if newest == nil || newest.DayFileTradedShares != 210 || newest.WithFlow != 200 || newest.Reason != "" {
+		t.Fatalf("newest %+v", newest)
 	}
 }
 
@@ -293,18 +361,25 @@ func TestWithoutMarketWideFlowsNothingIsSummed(t *testing.T) {
 			m.flow(code, traded(d, 70, 30, 40, 60))
 		}
 	}
+	// Before the first market-wide ingest no day file is stored at all.
+	m.noFile = map[time.Time]bool{}
+	for _, d := range m.days {
+		m.noFile[d] = true
+	}
 	b := m.build()
 	cov := b.resp.Coverage
 	if cov.MarketWide || cov.NewestSession != nil || cov.SessionsAvailable != 0 {
 		t.Fatalf("coverage %+v", cov)
 	}
-	if cov.NewestStoredDate == nil || *cov.NewestStoredDate != "2026-09-28" || cov.NewestStoredTradedShares != 19 {
-		t.Fatalf("the stored date and its 19 shares must be stated: %+v", cov)
+	if cov.NewestStored == nil || *cov.NewestStored.Date != "2026-09-28" || cov.NewestStored.TradedShares != 19 ||
+		cov.NewestStored.DayFile {
+		t.Fatalf("the stored date and its 19 shares must be stated: %+v", cov.NewestStored)
 	}
 	if len(b.resp.Sectors) != 0 || len(b.resp.Market) != 0 || len(b.resp.Top) != 0 || len(b.resp.Blocks) != 0 {
 		t.Fatal("the roster must not be summed as the market")
 	}
-	if !contains(b.resp.Notes[0], "Market-wide flows not ingested yet") || !contains(b.resp.Notes[0], "not the market") {
+	if !contains(b.resp.Notes[0], "not stored for any session yet") || !contains(b.resp.Notes[0], "not the market") ||
+		!contains(b.resp.Notes[0], "no whole-market day file") {
 		t.Fatalf("note: %s", b.resp.Notes[0])
 	}
 	if b.newest == nil || dayString(*b.newest) != "2026-09-28" {
@@ -645,32 +720,165 @@ func TestPriceChangeIsChainedThroughACorporateAction(t *testing.T) {
 		{Day: d2, Close: 520, PriceYesterday: 500},
 		{Day: d3, Close: 530, PriceYesterday: 520},
 	}
-	got, why := chainLinkedChange(prices, []time.Time{d1, d2, d3}, d1, d3)
-	if why != "" {
-		t.Fatal(why)
+	pc := chainLinkedChange(prices, []time.Time{d1, d2, d3}, d1, d3, nil)
+	if pc.Reason != "" || pc.Note != "" || pc.Listing != nil {
+		t.Fatal(pc.Reason)
 	}
 	want := (1000.0/980*520/500*530/520 - 1) * 100
-	approx(t, "chained", got, want, 1e-6)
+	approx(t, "chained", pc.Pct, want, 1e-6)
 	// First close to last would have called it a 47% fall.
-	if naive := (530.0/1000 - 1) * 100; *got < 0 || naive > -40 {
-		t.Fatalf("chained %v against naive %v", *got, naive)
+	if naive := (530.0/1000 - 1) * 100; *pc.Pct < 0 || naive > -40 {
+		t.Fatalf("chained %v against naive %v", *pc.Pct, naive)
 	}
 	// Outside the window is outside the product.
-	got, _ = chainLinkedChange(prices, []time.Time{d3}, d3, d3)
-	approx(t, "one session", got, (530.0/520-1)*100, 1e-6)
+	pc = chainLinkedChange(prices, []time.Time{d3}, d3, d3, nil)
+	approx(t, "one session", pc.Pct, (530.0/520-1)*100, 1e-6)
 }
 
 func TestPriceChangeIsEmptyRatherThanPartial(t *testing.T) {
 	d1, d2 := day("2026-09-27"), day("2026-09-28")
 	prices := []priceRow{{Day: d2, Close: 530, PriceYesterday: 520}}
-	if got, why := chainLinkedChange(prices, []time.Time{d1, d2}, d1, d2); got != nil || !contains(why, "1 of the 2") {
-		t.Fatalf("a traded session with no close: %v %q", got, why)
+	if pc := chainLinkedChange(prices, []time.Time{d1, d2}, d1, d2, nil); pc.Pct != nil || !contains(pc.Reason, "1 of the 2") {
+		t.Fatalf("a traded session with no close: %v %q", pc.Pct, pc.Reason)
 	}
-	if got, why := chainLinkedChange(nil, nil, d1, d2); got != nil || !contains(why, "did not trade") {
-		t.Fatalf("no trade: %v %q", got, why)
+	if pc := chainLinkedChange(nil, nil, d1, d2, nil); pc.Pct != nil || !contains(pc.Reason, "did not trade") {
+		t.Fatalf("no trade: %v %q", pc.Pct, pc.Reason)
 	}
-	if got, why := chainLinkedChange(nil, []time.Time{d2}, d1, d2); got != nil || why == "" {
-		t.Fatalf("no price at all: %v %q", got, why)
+	if pc := chainLinkedChange(nil, []time.Time{d2}, d1, d2, nil); pc.Pct != nil || pc.Reason == "" {
+		t.Fatalf("no price at all: %v %q", pc.Pct, pc.Reason)
+	}
+}
+
+// فنقره, listed 2026-09-22: its first session closed at 15,818 rials against a
+// reference of 420, a placeholder, not a price. Chained through it, its first
+// five sessions were published as +4,133%; its closes moved +12.40%.
+func TestAListingSessionIsMeasuredFromItsFirstClose(t *testing.T) {
+	d := []time.Time{day("2026-09-22"), day("2026-09-23"), day("2026-09-24"), day("2026-09-27"), day("2026-09-28")}
+	prices := []priceRow{
+		{Day: d[0], Close: 15818, PriceYesterday: 420},
+		{Day: d[1], Close: 16290, PriceYesterday: 15818},
+		{Day: d[2], Close: 16770, PriceYesterday: 16290},
+		{Day: d[3], Close: 17270, PriceYesterday: 16770},
+		{Day: d[4], Close: 17780, PriceYesterday: 17270},
+	}
+	m := shareMeta{InsCode: "35026822153186010", FlowFirstDate: &d[0]}
+	listing := listingSession(m, prices, day("2026-08-17"))
+	if listing == nil || !listing.Equal(d[0]) {
+		t.Fatalf("listing = %v, want %s", listing, dayString(d[0]))
+	}
+	pc := chainLinkedChange(prices, d, d[0], d[4], listing)
+	approx(t, "from the first close", pc.Pct, (17780.0/15818-1)*100, 1e-6)
+	if pc.Listing == nil || !contains(pc.Note, "15,818 rials on 2026-09-22") || !contains(pc.Note, "420 rials") {
+		t.Fatalf("the change must say what it is measured from: %+v", pc)
+	}
+	// A window whose only session is the listing has no move to state.
+	only := chainLinkedChange(prices[:1], d[:1], d[0], d[0], listing)
+	if only.Pct != nil || !contains(only.Reason, "listed on 2026-09-22") {
+		t.Fatalf("listing day alone: %+v", only)
+	}
+	// Outside the window the listing changes nothing.
+	after := chainLinkedChange(prices, d[3:], d[3], d[4], listing)
+	approx(t, "after the listing", after.Pct, (17780.0/16770-1)*100, 1e-6)
+	if after.Note != "" || after.Listing != nil {
+		t.Fatalf("a window after the listing is chained as usual: %+v", after)
+	}
+}
+
+// A share's first stored session is a listing only when its close is beyond
+// the bound of a price-limited session from the reference.
+func TestAListingNeedsAReferenceThatIsNotAPrice(t *testing.T) {
+	d0, d1 := day("2026-09-20"), day("2026-09-21")
+	oldest := day("2026-08-01")
+	first := &d0
+	ordinary := []priceRow{{Day: d0, Close: 1030, PriceYesterday: 1000}, {Day: d1, Close: 1040, PriceYesterday: 1030}}
+	if listingSession(shareMeta{FlowFirstDate: first}, ordinary, oldest) != nil {
+		t.Fatal("a 3% first session is a session, not a listing")
+	}
+	par := []priceRow{{Day: d0, Close: 3715, PriceYesterday: 1000}} // خگلپا, the smallest measured
+	if listingSession(shareMeta{FlowFirstDate: first}, par, oldest) == nil {
+		t.Fatal("3.7x the par value is a listing")
+	}
+	// No stored flow: the first priced session counts, but only after the
+	// first market session loaded — before it nothing is known.
+	if listingSession(shareMeta{}, par, oldest) == nil {
+		t.Fatal("a share with no flow stored is judged on its first priced session")
+	}
+	if listingSession(shareMeta{}, par, d0) != nil {
+		t.Fatal("a first priced session on the oldest loaded date may have sessions before it")
+	}
+	// A roster share's first flow row is years before anything loaded.
+	old := day("2008-11-26")
+	if listingSession(shareMeta{FlowFirstDate: &old}, par, oldest) != nil {
+		t.Fatal("a listing outside the loaded prices is not found in them")
+	}
+}
+
+// On a listing session individuals receive an offering's allocation — فنقره:
+// 1,721,005 individual buy tickets, none sold. Summed into the tickets it
+// swamped every other session: the rehearsal's market buyer power read 0.59
+// with it and 1.55 without. It stays in value and net flow.
+func TestAListingSessionIsLeftOutOfBuyerPowerOnly(t *testing.T) {
+	m := newTestMarket(5)
+	listed := m.days[1]
+	m.share(shareMeta{InsCode: "35026822153186010", Symbol: "فنقره", SectorCode: "27", FlowFirstDate: &listed})
+	offering := traded(listed, 4742, 0, 0, 4742)
+	offering.BuyICount, offering.SellICount = 1721005, 0
+	m.flow("35026822153186010", offering)
+	m.prices = append(m.prices,
+		priceRow{InsCode: "35026822153186010", Day: listed, Close: 15818, PriceYesterday: 420},
+		priceRow{InsCode: "35026822153186010", Day: m.days[0], Close: 16290, PriceYesterday: 15818})
+	m.flow("35026822153186010", traded(m.days[0], 600, 400, 500, 500))
+	b := m.build()
+
+	market := b.resp.Market["5"]
+	if market.ListingSessions != 1 {
+		t.Fatalf("listing sessions %d", market.ListingSessions)
+	}
+	// The filler: 1,000 sessions of 50 toman from 10 buyers against 50 from
+	// 20 sellers; فنقره's second session 600/10 against 500/20.
+	want := ((50.0*1000 + 600) / (10*1000 + 10)) / ((50.0*1000 + 500) / (20*1000 + 20))
+	approx(t, "buyer power", market.BuyerPower, want, 1e-6)
+	// Value and net flow keep the allocation: it is a real transfer.
+	approx(t, "value", market.TotalValueToman, 100*1000+4742+1000, 1e-6)
+	approx(t, "net", market.NetIndividualToman, 4742+100, 1e-6)
+
+	it := shareIn(t, b, "27", 5, "35026822153186010")
+	if it.ListingSession == nil || *it.ListingSession != dayString(listed) || it.Summary.ListingSessions != 1 {
+		t.Fatalf("the share's listing must be named: %+v", it)
+	}
+	approx(t, "price", it.PriceChangePct, (16290.0/15818-1)*100, 1e-6)
+	top := b.resp.Top["5"].Inflow[0]
+	if top.InsCode != "35026822153186010" || top.ListingSession == nil || top.PriceChangeNote == "" {
+		t.Fatalf("the top list must label an offering: %+v", top)
+	}
+}
+
+// A share the day file shows trading with no flow row is "flow not stored",
+// not "did not trade".
+func TestAShareTradedWithoutStoredFlowSaysSo(t *testing.T) {
+	m := newTestMarket(5)
+	m.share(shareMeta{InsCode: "7", Symbol: "آلومینا", SectorCode: "27"})
+	for _, d := range m.days {
+		p := priceRow{InsCode: "7", Day: d, Close: 1010, PriceYesterday: 1000}
+		m.prices = append(m.prices, p)
+		m.dayOnly = append(m.dayOnly, priceRow{InsCode: "7", Day: d, Close: 1})
+	}
+	b := m.build()
+	it := shareIn(t, b, "27", 5, "7")
+	if it.TradedSessions != 5 || it.FlowNotStored != 5 || it.Summary.Rows != 0 {
+		t.Fatalf("traded %d, flow not stored %d, rows %d", it.TradedSessions, it.FlowNotStored, it.Summary.Rows)
+	}
+	sec := sectorOf(t, b, "27")
+	if sec.Shares != 1 || sec.Instruments != 0 {
+		t.Fatalf("shares %d, with flow %d", sec.Shares, sec.Instruments)
+	}
+	// Nothing of the sector was summed: its share of the market is not 0%.
+	if w := sec.Windows["5"]; w.ValueSharePct != nil || w.ValueShareChangePP != nil {
+		t.Fatalf("a sector with no summed row has no measured share: %+v", w)
+	}
+	filler := shareIn(t, b, fillerSector, 5, "90000")
+	if filler.TradedSessions != 0 || filler.FlowNotStored != 0 {
+		t.Fatalf("no price row, nothing claimed: %+v", filler)
 	}
 }
 
@@ -905,12 +1113,43 @@ func TestTheResponseSerialisesAsDocumented(t *testing.T) {
 		t.Fatalf("checks %v", checks)
 	}
 	cov := raw["coverage"].(map[string]any)
-	if cov["market_wide"] != true || cov["min_traded_shares"] != 200.0 || cov["floor"] != "2025-03-21" {
+	if cov["market_wide"] != true || cov["min_traded_shares"] != 200.0 || cov["floor"] != "2025-03-21" ||
+		cov["min_coverage_pct"] != 90.0 {
 		t.Fatalf("coverage %v", cov)
+	}
+	for _, key := range []string{"newest", "newest_stored"} {
+		date, ok := cov[key].(map[string]any)
+		if !ok {
+			t.Fatalf("coverage.%s missing: %v", key, cov)
+		}
+		for _, k := range []string{"date", "traded_shares", "day_file", "day_file_traded_shares",
+			"with_flow", "share_pct", "value_pct"} {
+			if _, ok := date[k]; !ok {
+				t.Fatalf("coverage.%s.%s missing", key, k)
+			}
+		}
+	}
+	for _, gone := range []string{"newest_partial", "median_traded_prev20", "partial_threshold_pct"} {
+		if _, ok := cov[gone]; ok {
+			t.Fatalf("coverage.%s is replaced by the day-file coverage", gone)
+		}
+	}
+	window := raw["sessions"].(map[string]any)["5"].(map[string]any)["coverage"].(map[string]any)
+	for _, k := range []string{"day_file_share_sessions", "with_flow", "share_pct", "value_pct",
+		"min_session_share_pct"} {
+		if _, ok := window[k]; !ok {
+			t.Fatalf("sessions.5.coverage.%s missing", k)
+		}
+	}
+	if _, ok := metals["shares"]; !ok {
+		t.Fatal("a sector states how many shares its list holds")
+	}
+	if _, ok := w5["listing_sessions"]; !ok {
+		t.Fatal("every summary counts its listing sessions")
 	}
 	notes := strings.Join(b.resp.Notes, " ")
 	for _, want := range []string{"not new money", "None of them is a forecast",
-		"classification at the last fetch", "delisted"} {
+		"classification at the last fetch", "delisted", "listing session", "day file"} {
 		if !contains(notes, want) {
 			t.Fatalf("notes must say %q", want)
 		}

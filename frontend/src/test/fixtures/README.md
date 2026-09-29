@@ -223,24 +223,35 @@ server's own. Only the INPUTS below are invented, deterministically (seed 1405):
 * flows whose identities hold exactly, except ~0.2% of rows failing the volume
   identity, ~0.1% failing the value identity and ~0.1% disagreeing with the
   session statement — the `excluded` tier; one zero row — `no_trade`;
-* session statements (`market_share_sessions`) for the newest 100 sessions
-  except session 12, a whole-market day file that was "never ingested": its rows
-  are `identity_only`, and non-roster shares have no close there, so their 20-
-  and 60-session price change is `null` with the reason; roster rows carry a
-  daily bar and so reach `bar_checked` everywhere;
+* a whole-market day file (`market_share_sessions`, `market_session_files`)
+  for every session except session 12, whose file was "never ingested": that
+  date is therefore not a market session (its flow cannot be measured against
+  the shares that traded) and enters no figure, but the shares that traded on it
+  moved their price inside the 20- and 60-session windows, and with no close
+  stored there their price change is `null` with the reason; roster rows also
+  carry a daily bar;
+* three shares in sector 27 that the day files show trading on every session
+  with NO flow stored for them — "flow not stored" in the share list, and the
+  reason every window's coverage is under 100% while above the 90% a session
+  needs;
 * فولاد with a block board (فولاد2, trading on ~15% of sessions) and a second
-  board (فولاد3, listed 36 sessions ago), so the company rollup shows
+  board (فولاد3, listed 36 sessions ago, whose day-file rows were never stored,
+  so its rows are `identity_only`), so the company rollup shows
   `main + block + secondary`; a 100% capital increase on ذوب at session 8 (the
   reference price halves), which the chained price change reads through; one
-  share halted for the newest 30 sessions; one delisted share with history only;
+  share listed three sessions ago on a 1,000-rial par reference with an
+  offering's allocation on its listing session (1.2 million individual buy
+  tickets, none sold) — its price change measured from its first close, its
+  listing left out of buyer power; one share halted for the newest 30
+  sessions; one delisted share with history only;
 * persistent per-sector drifts in net flow and in activity, so the heatmap and
   the value-share lines have something to show.
 
 | file | request | what it exercises |
 | --- | --- | --- |
-| `bourse-sector-flows.json` | `GET /bourse/sector-flows`, clock 2026-09-29 | every window available, 12 blocks, the four tiers, index returns (and one sector with none), top lists with roster and non-roster companies, a three-board company, `null` price changes with reasons |
-| `bourse-sector-flows-27-w5.json` | `GET /bourse/sector-flows/27?window=5` | one sector's shares, each board its own row; the untraded block board with empty figures |
-| `bourse-sector-flows-roster-only.json` | `GET /bourse/sector-flows` before the first market-wide ingest: the 19 seeded roster rows (`listed=false`) and ten sessions of their flow only | `coverage.market_wide: false`, nothing summed, the "not ingested yet" note — the roster is not passed off as the market |
+| `bourse-sector-flows.json` | `GET /bourse/sector-flows`, clock 2026-09-29 | every window available with its day-file coverage (~98.8% of the traded share-sessions), 12 blocks, the four tiers, index returns (and one sector with none), top lists with roster and non-roster companies, a three-board company, a company listed inside the 5-session window, `null` price changes with reasons |
+| `bourse-sector-flows-27-w5.json` | `GET /bourse/sector-flows/27?window=5` | one sector's shares, each board its own row; the untraded block board with empty figures; three shares with "flow not stored" |
+| `bourse-sector-flows-roster-only.json` | `GET /bourse/sector-flows` before the first market-wide ingest: the 19 seeded roster rows (`listed=false`), ten sessions of their flow only, and no day file | `coverage.market_wide: false`, nothing summed, the "not stored for any session yet" note — the roster is not passed off as the market |
 
 ### Regenerating
 
@@ -377,6 +388,20 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 	for i := 50; i < len(shares); i += 9 {
 		shares[i].trade = 0.55 // illiquid
 	}
+	// A share listed three sessions ago, on the par-value reference, with an
+	// offering's allocation on its listing session.
+	add(shareMeta{InsCode: "9000000000000004", Symbol: "نمادعرضه", NameFA: "شرکت نمونه عرضه اولیه",
+		CompanyCode: "IRO1S999", SectorCode: "44"}, 30e9)
+	listed := len(shares) - 1
+	shares[listed].to, shares[listed].trade = 2, 1
+	// Three shares the day files show trading with no flow stored for them.
+	var unflowed []shareMeta
+	for j := 0; j < 3; j++ {
+		m := shareMeta{InsCode: fmt.Sprintf("900000000000001%d", j), Symbol: fmt.Sprintf("بی‌جریان%d", j),
+			NameFA: fmt.Sprintf("شرکت نمونه بدون جریان %d", j), Market: "bourse", Board: "main",
+			CompanyCode: fmt.Sprintf("IRO1U%03d", j), SectorCode: "27", Listed: true}
+		unflowed = append(unflowed, m)
+	}
 
 	// Persistent sector tilts: net flow and activity drift, oldest to newest.
 	tilt, activity := map[string][]float64{}, map[string][]float64{}
@@ -392,7 +417,15 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 	missingFile := 12 // one whole-market day file never ingested
 	var rows []marketRow
 	var prices []priceRow
-	for _, sh := range shares {
+	// dayFile holds what each session's day file lists: the value of every
+	// share it shows trading, and whether that share's flow is stored.
+	type dayEntry struct {
+		value   float64
+		hasFlow bool
+	}
+	dayFile := map[time.Time][]dayEntry{}
+	firstFlow := map[string]time.Time{}
+	for idx, sh := range shares {
 		close := 1000 + rng.Float64()*20000
 		for i := len(days) - 1; i >= 0; i-- {
 			d := days[i]
@@ -411,6 +444,9 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 				py = close / 2 // a 100% capital increase: the reference halves
 			}
 			close = py * (1 + math.Min(0.05, math.Max(-0.05, 0.001+rng.NormFloat64()*0.02)))
+			if idx == listed && i == sh.to {
+				py, close = 1000, 15000 // the listing session, on the par value
+			}
 			f := FlowSession{Day: d, BuyIValue: a * v, BuyNValue: (1 - a) * v,
 				SellIValue: (a - x) * v, SellNValue: (1 - a + x) * v}
 			f.BuyIVolume, f.BuyNVolume = f.BuyIValue/close, f.BuyNValue/close
@@ -418,6 +454,16 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 			f.BuyICount = int64(math.Max(1, math.Round(f.BuyIValue/(80e6*math.Exp(rng.NormFloat64()*0.3)))))
 			f.SellICount = int64(math.Max(1, math.Round(f.SellIValue/(80e6*math.Exp(rng.NormFloat64()*0.3)))))
 			f.BuyNCount, f.SellNCount = 1+rng.Int63n(4), 1+rng.Int63n(4)
+			if idx == listed && i == sh.to {
+				// The offering: individuals receive the allocation from the
+				// underwriter; nobody individual sells.
+				f.SellIValue, f.SellNValue = 0, v
+				f.SellIVolume, f.SellNVolume = 0, v/close
+				f.BuyICount, f.SellICount = 1_200_000, 0
+			}
+			if _, ok := firstFlow[sh.meta.InsCode]; !ok {
+				firstFlow[sh.meta.InsCode] = d
+			}
 			r := marketRow{InsCode: sh.meta.InsCode, Flow: f}
 			switch u := rng.Float64(); {
 			case u < 0.002:
@@ -430,12 +476,13 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 				r.Flow.BarValue = &bar
 				prices = append(prices, priceRow{InsCode: sh.meta.InsCode, Day: d, Close: close, PriceYesterday: py})
 			}
-			if i < 100 && i != missingFile {
+			if i != missingFile && sh.meta.Board != "secondary" {
 				sv := v * (1 + rng.NormFloat64()*0.0003)
 				if rng.Float64() < 0.001 {
 					sv *= 1.03 // disagrees with the session statement
 				}
 				r.SessionValue = &sv
+				dayFile[d] = append(dayFile[d], dayEntry{value: sv, hasFlow: true})
 				if !sh.meta.InRoster {
 					prices = append(prices, priceRow{InsCode: sh.meta.InsCode, Day: d, Close: close, PriceYesterday: py})
 				}
@@ -443,19 +490,51 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 			rows = append(rows, r)
 		}
 	}
+	for _, m := range unflowed {
+		close := 5000 + rng.Float64()*5000
+		for i := len(days) - 1; i >= 0; i-- {
+			if i == missingFile {
+				continue
+			}
+			py := close
+			close = py * (1 + math.Min(0.05, math.Max(-0.05, rng.NormFloat64()*0.02)))
+			dayFile[days[i]] = append(dayFile[days[i]], dayEntry{value: 20e9 * math.Exp(rng.NormFloat64()*0.5)})
+			prices = append(prices, priceRow{InsCode: m.InsCode, Day: days[i], Close: close, PriceYesterday: py})
+		}
+	}
 
-	counts := func(rows []marketRow) []sessionCount {
+	// What sectorFlowsCalendarSelect computes: each date's flow rows, and its
+	// day file (when one is stored) with how much of it the flow covers.
+	counts := func(rows []marketRow, withFiles bool) []sessionCount {
 		idx := map[time.Time]int{}
 		var out []sessionCount
-		for _, r := range rows {
-			i, ok := idx[r.Flow.Day]
+		at := func(d time.Time) *sessionCount {
+			i, ok := idx[d]
 			if !ok {
-				i, idx[r.Flow.Day] = len(out), len(out)
-				out = append(out, sessionCount{Day: r.Flow.Day})
+				_, has := dayFile[d]
+				i, idx[d] = len(out), len(out)
+				out = append(out, sessionCount{Day: d, DayFile: withFiles && has})
 			}
-			out[i].Rows++
+			return &out[i]
+		}
+		for _, r := range rows {
+			c := at(r.Flow.Day)
+			c.Rows++
 			if f := r.Flow; f.BuyIValue+f.BuyNValue+f.SellIValue+f.SellNValue > 0 {
-				out[i].Traded++
+				c.Traded++
+			}
+		}
+		if withFiles {
+			for d, entries := range dayFile {
+				c := at(d)
+				for _, e := range entries {
+					c.DayTraded++
+					c.DayValue += e.value
+					if e.hasFlow {
+						c.Covered++
+						c.CoveredValue += e.value
+					}
+				}
 			}
 		}
 		return out
@@ -476,10 +555,14 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 	}
 	var metas []shareMeta
 	for _, sh := range shares {
+		if d, ok := firstFlow[sh.meta.InsCode]; ok {
+			sh.meta.FlowFirstDate = &d
+		}
 		metas = append(metas, sh.meta)
 	}
+	metas = append(metas, unflowed...)
 	build := func(rows []marketRow) sectorFlowsBuilt {
-		return buildSectorFlows(sectorFlowInput{Calendar: buildMarketCalendar(counts(rows), calendarSessions),
+		return buildSectorFlows(sectorFlowInput{Calendar: buildMarketCalendar(counts(rows, true), calendarSessions),
 			Rows: rows, Prices: prices, Shares: metas, Sectors: names, SectorIndex: index, IndexSeries: series})
 	}
 	write := func(name string, v any) {
@@ -513,8 +596,9 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 			seeded = append(seeded, m)
 		}
 	}
+	// ...and no whole-market day file is stored yet.
 	rosterOnly := buildSectorFlows(sectorFlowInput{Rows: rosterRows, Shares: seeded, Sectors: names,
-		Calendar: buildMarketCalendar(counts(rosterRows), calendarSessions)})
+		Calendar: buildMarketCalendar(counts(rosterRows, false), calendarSessions)})
 	write("bourse-sector-flows-roster-only.json", rosterOnly.response(clock))
 }
 ```

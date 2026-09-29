@@ -14,6 +14,7 @@ import type {
   SectorFlowShare,
   SectorFlowSharesResponse,
   SectorFlowsResponse,
+  SectorFlowWindowCoverage,
   TieredFlowSummary
 } from '../api/types'
 
@@ -29,9 +30,13 @@ import type {
  *     states the institutional side beside every market figure and says in
  *     words that nothing here is money arriving from outside the market. The
  *     rotation between sectors is their SHARE of traded value and its change.
- *  2. THE ROSTER FOR THE MARKET. Until the market-wide flows are ingested the
- *     page says so and sums nothing; the nineteen-share roster table lives on
- *     the Tehran market page, labelled as the roster.
+ *  2. A SAMPLE FOR THE MARKET. A session counts only when flow is stored for
+ *     at least 90% of the shares TSETMC's day file shows trading, by count
+ *     and by value; until then the page says so and sums nothing (the roster
+ *     table lives on the Tehran market page, labelled as the roster), and
+ *     once it does, every window states the part of the market it rests on.
+ *     A traded share with no flow stored is "flow not stored", never "did
+ *     not trade".
  *  3. AN UNCHECKED FIGURE FOR A CHECKED ONE. Every figure rests on share-
  *     sessions in four tiers (checked against a session value, identities
  *     only, excluded, no trade) and the counts are on screen wherever a sum is.
@@ -83,6 +88,28 @@ export function sectorLabel(s: { sector_code: string; name_en: string }): string
 
 function windowLabel(w: string): string {
   return w === '1' ? '1 session' : `${w} sessions`
+}
+
+/** "1 share", "24 shares". */
+export function countOf(n: number, noun: string): string {
+  return `${formatGrouped(n)} ${noun}${n === 1 ? '' : 's'}`
+}
+
+/** A percentage the API measured, or a dash. */
+function pctText(v: number | null | undefined, digits = 1): string {
+  return v === null || v === undefined ? '—' : `${v.toFixed(digits)}%`
+}
+
+/**
+ * What part of the market a window's figures rest on, against TSETMC's own day
+ * files: "flow for 96.0% of the traded share-sessions (98.1% of their value)".
+ */
+export function coverageLine(c: SectorFlowWindowCoverage | undefined): string | null {
+  if (!c) return null
+  return (
+    `Flow is stored for ${pctText(c.share_pct)} of the ${formatGrouped(c.day_file_share_sessions)} ` +
+    `share-sessions TSETMC's day files show trading (${pctText(c.value_pct)} of their traded value)`
+  )
 }
 
 // --- the heatmap's diverging scale ----------------------------------------------------------
@@ -269,6 +296,26 @@ function ShareSymbol({
   )
 }
 
+/**
+ * A share listed inside the window: its listing session was an offering, whose
+ * individual buying is an allocation, and its price change is measured from
+ * its first close. Said beside the name so an inflow list is not read as
+ * individuals piling into an existing share.
+ */
+function ListingBadge({ date }: { date?: string }) {
+  const { calendar } = useSettings()
+  if (!date) return null
+  return (
+    <span
+      className="badge badge-warn bx-badge"
+      data-testid="mf-listing"
+      title="Listed inside this window: its listing session was an offering, whose individual buying is an allocation. Its price change is measured from its first close."
+    >
+      listed {formatDate(date, calendar)}
+    </span>
+  )
+}
+
 function Tile({ label, value, hint, testId }: { label: string; value: string; hint?: ReactNode; testId?: string }) {
   return (
     <div className="card bx-tile" data-testid={testId}>
@@ -281,14 +328,25 @@ function Tile({ label, value, hint, testId }: { label: string; value: string; hi
 
 // --- the market ------------------------------------------------------------------------------
 
-function MarketTiles({ m, window: w }: { m: TieredFlowSummary; window: string }) {
+function MarketTiles({
+  m,
+  window: w,
+  coverage
+}: {
+  m: TieredFlowSummary
+  window: string
+  coverage?: SectorFlowWindowCoverage
+}) {
+  const cov = coverageLine(coverage)
   return (
     <div className="bx-tiles" data-testid="mf-tiles">
       <Tile
         testId="mf-tile-value"
         label="Traded value"
         value={formatTomanScaled(m.total_value_toman)}
-        hint={`${formatGrouped(m.instruments_traded)} shares traded over ${windowLabel(w)}; every board counted.`}
+        hint={`${countOf(m.instruments_traded, 'share')} with stored flow traded over ${windowLabel(
+          w
+        )}; every board counted.${cov ? ` ${cov}.` : ''}`}
       />
       <Tile
         testId="mf-tile-net"
@@ -311,7 +369,12 @@ function MarketTiles({ m, window: w }: { m: TieredFlowSummary; window: string })
         testId="mf-tile-power"
         label="Individual buyer power"
         value={m.buyer_power === null ? '—' : m.buyer_power.toFixed(2)}
-        hint="Average individual buy ticket ÷ average sell ticket, per trader-session. Ticket sizes, not a forecast."
+        hint={
+          `Average individual buy ticket ÷ average sell ticket, per trader-session. Ticket sizes, not a forecast.` +
+          (m.listing_sessions > 0
+            ? ` Leaves out ${countOf(m.listing_sessions, 'listing session')}: an offering's allocation — over a million buy tickets against almost none sold — would swamp every other session's tickets.`
+            : '')
+        }
       />
       <Tile
         testId="mf-tile-tiers"
@@ -383,9 +446,16 @@ function SectorTable({
       <div className="card-title">Sectors — where individuals bought and sold</div>
       <p className="muted small bx-unit">
         Every TSETMC sector with stored flow, over {windowLabel(w)}. The bar is net individual flow against the largest
-        sector's; the line is the sector's share of traded value over the last twelve five-session blocks, each on its
-        own scale. <em>Checks</em> counts the share-sessions behind each row: checked against a session value ·
-        identities only · excluded. Select a sector for its shares.
+        sector's;{' '}
+        {data.blocks.length > 0
+          ? `the line is the sector's share of traded value over the last ${countOf(
+              data.blocks.length,
+              'five-session block'
+            )}, each on its own scale.`
+          : 'the trend line needs five market sessions, and fewer are stored.'}{' '}
+        <em>Checks</em> counts the share-sessions behind each row: checked against a session value · identities only ·
+        excluded. A sector with nothing summed shows no share of the market (—), not 0%. Select a sector for its
+        shares.
       </p>
       <div className="bx-legend" aria-hidden="true">
         <span className="bx-legend-item">
@@ -436,7 +506,10 @@ function SectorTable({
                         sectorLabel(s)
                       )}
                       <div className="muted small">
-                        <span className="mono">{s.sector_code}</span> · {formatGrouped(s.instruments)} shares
+                        <span className="mono">{s.sector_code}</span> ·{' '}
+                        <span title="Shares with stored flow in the loaded sessions, of the shares in the sector's list">
+                          {formatGrouped(s.instruments)} of {countOf(s.shares, 'share')} with flow
+                        </span>
                         {s.name_fa ? (
                           <>
                             {' '}
@@ -495,13 +568,14 @@ function SectorShares({ code, window: w }: { code: string; window: WindowKey }) 
   return (
     <div className="mf-shares" data-testid={`mf-shares-${code}`}>
       <div className="field-label">
-        {sectorLabel(d)} — {formatGrouped(d.count)} shares over {windowLabel(d.window)}
+        {sectorLabel(d)} — {countOf(d.count, 'share')} over {windowLabel(d.window)}
       </div>
       <p className="muted small bx-unit">
-        Each board is its own row. <em>Share of sector</em> is the share's part of the sector's traded value; a listed share
-        that did not trade in the window is listed with empty figures. Price change is chained through each session's
-        reference price, so a capital increase is not read as a fall, and is empty when a traded session has no stored
-        close.
+        Each board is its own row. <em>Share of sector</em> is the share's part of the sector's traded value. A share
+        TSETMC's day files show trading with no flow stored for those sessions says <em>flow not stored</em>; a listed
+        share that did not trade in the window is listed with empty figures. Price change is chained through each
+        session's reference price, so a capital increase is not read as a fall; it is measured from the first close of
+        a share listed inside the window, and is empty when a traded session has no stored close.
       </p>
       <div className="table-wrap">
         <table className="table bx-table mf-table">
@@ -534,8 +608,24 @@ function SectorShares({ code, window: w }: { code: string; window: WindowKey }) 
                   {it.board}
                   {it.market !== 'bourse' ? ` · ${it.market}` : ''}
                   {!it.listed ? ' · delisted' : ''}
+                  <ListingBadge date={it.listing_session} />
                 </td>
-                <td className="num mono">{formatTomanScaled(it.summary.total_value_toman)}</td>
+                <td className="num mono">
+                  {it.summary.rows === 0 && it.flow_not_stored_sessions > 0 ? (
+                    <span
+                      className="muted small"
+                      data-testid={`mf-flow-not-stored-${it.ins_code}`}
+                      title={`TSETMC's day files show it trading on ${countOf(
+                        it.traded_sessions,
+                        'session'
+                      )} of this window; no flow is stored for them`}
+                    >
+                      flow not stored
+                    </span>
+                  ) : (
+                    formatTomanScaled(it.summary.total_value_toman)
+                  )}
+                </td>
                 <td className="num mono">
                   {it.summary.value_share_pct == null ? '—' : `${it.summary.value_share_pct.toFixed(1)}%`}
                 </td>
@@ -543,7 +633,7 @@ function SectorShares({ code, window: w }: { code: string; window: WindowKey }) 
                 <td className="num mono">{formatPct(it.summary.net_individual_pct_of_value, { digits: 1 })}</td>
                 <td className="num mono">{it.summary.buyer_power == null ? '—' : it.summary.buyer_power.toFixed(2)}</td>
                 <td className="num">
-                  <Pct value={it.price_change_pct} title={it.price_change_reason} />
+                  <Pct value={it.price_change_pct} title={it.price_change_reason ?? it.price_change_note} />
                 </td>
                 <td className="num">
                   <Tiers s={it.summary} />
@@ -596,7 +686,18 @@ function Heatmap({ data, calendar }: { data: SectorFlowsResponse; calendar: 'jal
     const longest = [...WINDOWS].reverse().find((k) => data.sessions[k]?.available) ?? '60'
     return sortSectors(data.sectors, longest, 'share', true)
   }, [data.sectors, data.sessions])
-  if (data.blocks.length === 0) return null
+  if (data.blocks.length === 0) {
+    // Said, not silently skipped: the table above promises a trend line too.
+    return (
+      <div className="card" data-testid="mf-heatmap-empty">
+        <div className="card-title">Net individual flow, five sessions at a time</div>
+        <p className="muted small">
+          The heatmap needs five market sessions; {formatGrouped(data.coverage.sessions_available)}{' '}
+          {data.coverage.sessions_available === 1 ? 'is' : 'are'} stored.
+        </p>
+      </div>
+    )
+  }
   return (
     <div className="card" data-testid="mf-heatmap">
       <div className="card-title">Net individual flow, five sessions at a time</div>
@@ -619,7 +720,7 @@ function Heatmap({ data, calendar }: { data: SectorFlowsResponse; calendar: 'jal
         <table className="table bx-table mf-heat" aria-label="Net individual flow as % of traded value, by sector and five-session block">
           <thead>
             <tr>
-              <th>Sector</th>
+              <th scope="col">Sector</th>
               {data.blocks.map((b) => (
                 <th key={b.to} className="num mf-heat-head" title={`${formatDate(b.from, calendar)} → ${formatDate(b.to, calendar)}`}>
                   {shortDate(b.to, calendar)}
@@ -629,16 +730,17 @@ function Heatmap({ data, calendar }: { data: SectorFlowsResponse; calendar: 'jal
           </thead>
           <tbody>
             <tr className="mf-heat-market">
-              <td>
+              <th scope="row">
                 <strong>Whole market</strong>
-              </td>
+              </th>
               {data.market_blocks.map((b) => (
                 <HeatCell key={b.to} b={b} who="Whole market" calendar={calendar} market />
               ))}
             </tr>
             {rows.map((s) => (
               <tr key={s.sector_code}>
-                <td className="mf-heat-name">
+                {/* A row header, so a screen reader names the sector with each cell. */}
+                <th scope="row" className="mf-heat-name">
                   {sectorLabel(s)}
                   {s.name_fa ? (
                     <span className="muted small">
@@ -646,7 +748,7 @@ function Heatmap({ data, calendar }: { data: SectorFlowsResponse; calendar: 'jal
                       <Fa>{s.name_fa}</Fa>
                     </span>
                   ) : null}
-                </td>
+                </th>
                 {data.blocks.map((blk, i) => (
                   <HeatCell key={blk.to} b={s.blocks[i]} who={sectorLabel(s)} calendar={calendar} />
                 ))}
@@ -705,6 +807,7 @@ function TopList({
                         {c.boards.join(' + ')}
                       </span>
                     ) : null}
+                    <ListingBadge date={c.listing_session} />
                   </td>
                   <td className="small">{sectorLabel({ sector_code: c.sector_code, name_en: c.sector_name_en })}</td>
                   <td className="num mono">{signedToman(c.summary.net_individual_toman)}</td>
@@ -712,7 +815,7 @@ function TopList({
                   <td className="num mono">{formatTomanScaled(c.summary.total_value_toman)}</td>
                   <td className="num mono">{c.summary.buyer_power == null ? '—' : c.summary.buyer_power.toFixed(2)}</td>
                   <td className="num">
-                    <Pct value={c.price_change_pct} title={c.price_change_reason} />
+                    <Pct value={c.price_change_pct} title={c.price_change_reason ?? c.price_change_note} />
                   </td>
                 </tr>
               ))}
@@ -726,6 +829,13 @@ function TopList({
 
 // --- what it is and is not ---------------------------------------------------------------------------
 
+/**
+ * What the page's figures are, in plain words, and then the API's own notes.
+ * The notes already say that the flow nets to zero, what each check is, and
+ * that nothing here is a forecast — this card used to say each of those again
+ * in its own words before listing them — so the prose here is only what the
+ * notes do not: what a positive number means, and where rotation lives.
+ */
 function Explainer({ checks, notes }: { checks: SectorFlowChecks; notes: string[] }) {
   return (
     <div className="card mf-explainer" data-testid="mf-explainer">
@@ -733,57 +843,46 @@ function Explainer({ checks, notes }: { checks: SectorFlowChecks; notes: string[
       <p className="bx-verdict">
         TSETMC reports, for every share and every session, how much individuals (<Fa>حقیقی</Fa>) bought and sold and how
         much institutions (<Fa>حقوقی</Fa>) did. <strong>Net individual flow</strong> is individuals' buying minus their
-        selling. Positive means individuals bought more than they sold — so institutions sold them exactly that much.
-      </p>
-      <p className="bx-verdict">
-        <strong>It is not new money entering the market.</strong> Every trade has a buyer and a seller, so when
-        individuals are net buyers of a sector, institutions are net sellers of it by the same amount. The flow is a
-        transfer between two groups of traders inside the market; across all of them it adds up to zero.
+        selling. Positive means individuals bought more than they sold — so institutions sold them exactly that much.{' '}
+        <strong>It is not new money entering the market, and it is not a forecast.</strong>
       </p>
       <p className="bx-verdict">
         What <em>does</em> move between sectors is attention: a sector's <strong>share of the market's traded value</strong>.
-        Its change against the window of equal length before (<em>Δ vs previous</em>) is the rotation, and it is not a
-        transfer that nets to zero between buyers and sellers.
+        Its change against the window of equal length before (<em>Δ vs previous</em>) is the rotation. Every share-session
+        is checked first (identities to {checks.identity_tolerance_pct}%, session values to{' '}
+        {checks.session_value_tolerance_pct}%); the notes below say how.
       </p>
-      <p className="bx-verdict">
-        <strong>It is not a forecast.</strong> These numbers describe who traded in sessions that have already settled.
-        A sector with individual inflow is not a signal about its next price.
-      </p>
-      <p className="bx-verdict">
-        Every share-session is checked before it counts: buying must equal selling, in value and in volume, to within{' '}
-        {checks.identity_tolerance_pct}%; where TSETMC's session statement or the daily bar gives the session's traded
-        value, the flow must agree with it to within {checks.session_value_tolerance_pct}%. Rows that fail are excluded
-        and counted; rows with no independent value are counted as checked on the identities only.
-      </p>
-      {notes.map((n) => (
-        <p key={n} className="muted small">
-          {n}
-        </p>
-      ))}
+      <ul className="muted small mf-notes">
+        {notes.map((n) => (
+          <li key={n}>{n}</li>
+        ))}
+      </ul>
     </div>
   )
 }
 
 function NotIngested({ data, calendar }: { data: SectorFlowsResponse; calendar: 'jalali' | 'gregorian' }) {
   const c = data.coverage
+  const stored = c.newest_stored
   return (
     <div className="card callout callout-warn" data-testid="mf-not-ingested" role="status">
-      <div className="card-title">Market-wide flows have not been ingested yet</div>
+      <div className="card-title">Market-wide flows are not stored for any session yet</div>
       <p className="bx-verdict">
-        A date counts as a market session only when at least {formatGrouped(c.min_traded_shares)} shares carry a traded
-        flow row.{' '}
-        {c.newest_stored_date ? (
+        A date counts as a market session only when TSETMC's day file for it shows at least{' '}
+        {formatGrouped(c.min_traded_shares)} shares trading and flow is stored for at least {c.min_coverage_pct}% of them,
+        by count and by traded value.{' '}
+        {stored?.date ? (
           <>
-            The newest stored date, {formatDate(c.newest_stored_date, calendar)}, carries{' '}
-            {formatGrouped(c.newest_stored_traded_shares)} — the roster alone, or a market-wide ingest still under way.
-            Either is part of the market, not the market, so nothing is summed here.
+            The newest stored date, {formatDate(stored.date, calendar)}, is not one: {stored.reason}. A sample of the market —
+            the roster alone, a part of the shares, or an ingest still under way — is not the market, so nothing is summed
+            here.
           </>
         ) : (
-          <>No money-flow row is stored at all, so nothing is summed here.</>
+          <>No money-flow row and no day file is stored at all, so nothing is summed here.</>
         )}
       </p>
       <p className="muted small">
-        The roster's own table — {formatGrouped(c.roster_instruments)} shares, labelled as the roster — is on the{' '}
+        The roster's own table — {countOf(c.roster_instruments, 'share')}, labelled as the roster — is on the{' '}
         <Link to="/bourse">Tehran market</Link> page. Market-wide flows arrive with the off-server fetch (
         <code>{data.data_age.refresh_command}</code>).
       </p>
@@ -829,8 +928,9 @@ export default function MoneyFlow() {
             Money flow <span className="muted">·</span> <Fa>جریان پول حقیقی و حقوقی</Fa>
           </h2>
           <div className="muted small">
-            Where individuals and institutions traded against each other across every listed share of the Tehran market,
-            by TSETMC sector. Descriptions of settled sessions — not forecasts, and not money entering the market.
+            Where individuals and institutions traded against each other on the Tehran market, by TSETMC sector, over the
+            shares whose flow is stored — measured against TSETMC's own list of who traded. Descriptions of settled
+            sessions — not forecasts, and not money entering the market.
           </div>
         </div>
       </div>
@@ -844,21 +944,21 @@ export default function MoneyFlow() {
         </>
       ) : (
         <>
-          {cov.newest_partial ? (
-            <div className="callout callout-warn" data-testid="mf-partial" role="status">
-              The newest session, {formatDate(cov.newest_session, calendar)}, carries{' '}
-              {formatGrouped(cov.newest_traded_shares)} traded shares against a median of{' '}
-              {cov.median_traded_prev20 === null ? '—' : formatGrouped(cov.median_traded_prev20)} over the sessions before
-              it: it looks partly ingested, so the 1-session figures and the newest block undercount the market.
-            </div>
+          {cov.newest ? (
+            <p className="muted small" data-testid="mf-coverage">
+              Newest session, {formatDate(cov.newest_session, calendar)}: flow for {formatGrouped(cov.newest.with_flow)} of
+              the {countOf(cov.newest.day_file_traded_shares, 'share')} TSETMC's day file shows trading (
+              {pctText(cov.newest.share_pct)}, and {pctText(cov.newest.value_pct)} of their traded value).
+            </p>
           ) : null}
           {cov.thin_dates_after_newest > 0 ? (
             <div className="callout callout-warn" data-testid="mf-thin-after" role="status">
-              {formatGrouped(cov.thin_dates_after_newest)} stored date(s) after{' '}
-              {formatDate(cov.newest_session, calendar)}
-              {cov.newest_stored_date ? `, up to ${formatDate(cov.newest_stored_date, calendar)},` : ''} carry flow for
-              fewer than {formatGrouped(cov.min_traded_shares)} traded shares — the roster alone, or a market-wide ingest
-              still under way — and are in no figure here. Every figure ends at {formatDate(cov.newest_session, calendar)}.
+              {formatGrouped(cov.thin_dates_after_newest)} stored date(s) after {formatDate(cov.newest_session, calendar)}{' '}
+              are not market sessions and are in no figure here
+              {cov.newest_thin?.date
+                ? ` — the newest, ${formatDate(cov.newest_thin.date, calendar)}: ${cov.newest_thin.reason ?? 'not covered'}`
+                : ''}
+              . Every figure ends at {formatDate(cov.newest_session, calendar)}.
             </div>
           ) : null}
 
@@ -896,7 +996,7 @@ export default function MoneyFlow() {
             ) : null}
           </div>
 
-          {market ? <MarketTiles m={market} window={w} /> : null}
+          {market ? <MarketTiles m={market} window={w} coverage={span?.coverage} /> : null}
 
           <SectorTable data={data} window={w} calendar={calendar} />
 

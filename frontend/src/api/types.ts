@@ -2416,7 +2416,10 @@ export interface TieredFlowSummary {
   total_value_toman: number | null
   individual_buy_share_pct: number | null
   individual_sell_share_pct: number | null
+  /** Without listing sessions, whose offering allocation would swamp the tickets. */
   buyer_power: number | null
+  /** Share-sessions that were a share's listing: in every figure but buyer power. */
+  listing_sessions: number
   inflow_sessions: number
   outflow_sessions: number
   instruments_traded: number
@@ -2433,6 +2436,17 @@ export interface SectorFlowWindow extends TieredFlowSummary {
   index_return_reason?: string
 }
 
+/** A window's flow measured against TSETMC's day files. */
+export interface SectorFlowWindowCoverage {
+  /** Share-sessions the day files show trading, and those with a traded flow row. */
+  day_file_share_sessions: number
+  with_flow: number
+  share_pct: number | null
+  value_pct: number | null
+  /** The weakest single session of the window, by share count. */
+  min_session_share_pct: number | null
+}
+
 export interface SectorFlowSessionWindow {
   sessions: number
   available: boolean
@@ -2440,6 +2454,8 @@ export interface SectorFlowSessionWindow {
   to: string | null
   previous_from: string | null
   previous_to: string | null
+  /** Present on an available window. */
+  coverage?: SectorFlowWindowCoverage
   reason?: string
 }
 
@@ -2461,8 +2477,11 @@ export interface SectorFlowSector {
   name_fa: string
   name_en: string
   index_ins_code?: string
+  /** Shares with a stored flow row in the loaded sessions. */
   instruments: number
   listed: number
+  /** Rows of the sector's share list: every listed share, and delisted ones with rows. */
+  shares: number
   /** Keys '1' | '5' | '20' | '60', present only when the window is available. */
   windows: Record<string, SectorFlowWindow>
   /** Aligned with the response's `blocks`, oldest first. */
@@ -2485,6 +2504,10 @@ export interface SectorFlowCompany {
   summary: TieredFlowSummary
   price_change_pct: number | null
   price_change_reason?: string
+  /** What the change is measured from when not the window's first reference. */
+  price_change_note?: string
+  /** The board shown was listed inside the window: an offering. */
+  listing_session?: string
 }
 
 export interface SectorFlowShare {
@@ -2501,25 +2524,45 @@ export interface SectorFlowShare {
   summary: TieredFlowSummary
   price_change_pct: number | null
   price_change_reason?: string
+  price_change_note?: string
+  listing_session?: string
+  /** Market sessions of the window on which TSETMC shows the share trading… */
+  traded_sessions: number
+  /** …and those of them with no traded flow row: "flow not stored", not "did not trade". */
+  flow_not_stored_sessions: number
+}
+
+/** One date's flow measured against its day file. */
+export interface SectorFlowDateCoverage {
+  date: string | null
+  /** Shares with a traded flow row. */
+  traded_shares: number
+  day_file: boolean
+  day_file_traded_shares: number
+  with_flow: number
+  share_pct: number | null
+  value_pct: number | null
+  /** Why the date is not a market session, when it is not. */
+  reason?: string
 }
 
 export interface SectorFlowCoverage {
   market_wide: boolean
   floor: string
+  /** A market session: a day file showing this many shares trading… */
   min_traded_shares: number
+  /** …and flow for at least this part of them, by count and by value. */
+  min_coverage_pct: number
+  newest: SectorFlowDateCoverage | null
   newest_session: string | null
-  newest_traded_shares: number
   instruments_with_rows_newest: number
-  median_traded_prev20: number | null
-  partial_threshold_pct: number
-  newest_partial: boolean
   sessions_available: number
   instruments_known: number
   instruments_listed: number
   roster_instruments: number
-  newest_stored_date: string | null
-  newest_stored_traded_shares: number
+  newest_stored: SectorFlowDateCoverage | null
   thin_dates_after_newest: number
+  newest_thin?: SectorFlowDateCoverage | null
   thin_dates_skipped: number
 }
 
