@@ -54,10 +54,10 @@ var eligibleSignalSymbolSet = func() map[string]bool {
 // refusedSignalSymbols names the registered symbols this service will not score,
 // each with the reason it is refused, in report order.
 //
-// IT IS A LIST, NOT JUST A MAP, AND IT IS ON THE WIRE. These six are registered
-// (all but IR_GOLD_FUND_KAHRABA hold observations) and a reader can see them
-// elsewhere in the app, so a board that simply omitted them left the page's
-// account of its own coverage incomplete:
+// IT IS A LIST, NOT JUST A MAP, AND IT IS ON THE WIRE. Every symbol here is
+// registered (all but IR_GOLD_FUND_KAHRABA hold observations) and a reader can
+// see it elsewhere in the app, so a board that simply omitted it left the
+// page's account of its own coverage incomplete:
 // the reader could not tell "we score this and it is pending" from "we
 // deliberately do not score this" from "we never heard of it". They therefore
 // appear in /signals/overview's `unavailable` block carrying the SAME sentence
@@ -111,6 +111,34 @@ var refusedSignalSymbols = []UnavailableEntry{
 			"Purchasing power. XAGUSD is not a substitute: it is the COMEX front-month contract " +
 			"in USD per troy ounce, not a Tehran toman silver price.",
 	},
+	// The other six instruments migration 0031 registers. They are held the
+	// same way as local silver and shown under Relative value and Purchasing
+	// power, so the board names them rather than leaving them for a reader to
+	// wonder about.
+	tgjuDailyRefusal("IR_COIN_BAHAR", "the Bahar Azadi gold coin, toman per coin", ""),
+	tgjuDailyRefusal("IR_COIN_HALF", "the half Azadi coin, toman per coin", ""),
+	tgjuDailyRefusal("IR_COIN_QUARTER", "the quarter Azadi coin, toman per coin", ""),
+	tgjuDailyRefusal("IR_COIN_GERAMI", "the gram gold coin, toman per coin", ""),
+	tgjuDailyRefusal("IR_GOLD_24K", "24k gold, toman per gram",
+		"TGJU publishes it as a fixed multiple of its 18k gram price (x 4/3), so it "+
+			"carries no movement of its own beyond 18k gold's. "),
+	tgjuDailyRefusal("IR_GOLD_MESGHAL", "melted gold, toman per mesghal",
+		"TGJU publishes it as a fixed multiple of its 18k gram price (x 4.3318), so it "+
+			"carries no movement of its own beyond 18k gold's. "),
+}
+
+// tgjuDailyRefusal is the refusal of a migration 0031 instrument: collected,
+// but only as TGJU's one settled close a day, and not scored. `derived` is the
+// extra sentence for a series TGJU computes from its 18k price, "" otherwise.
+func tgjuDailyRefusal(code, what, derived string) UnavailableEntry {
+	return UnavailableEntry{
+		SymbolOrClass: code,
+		Category:      unavailableNotScored,
+		Reason: fmt.Sprintf("%s (%s) is collected only as TGJU's ONE daily settled close per "+
+			"day -- no live quote, and no second source to check it against. %sIt is not "+
+			"modelled or scored; compare it under Relative value and Purchasing power.",
+			code, what, derived),
+	}
 }
 
 // ineligibleSignalSymbols is the membership index behind the list above, used to

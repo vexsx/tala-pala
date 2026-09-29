@@ -90,6 +90,24 @@ PARITY_SYMBOLS: frozenset[str] = frozenset({"IR_GOLD_18K"})
 # symbols are read against.
 FUND_FLOW_SYMBOL = "IR_GOLD_FUND_FLOW"
 
+
+def _tgju_daily_reason(symbol: str, what: str, derived: str = "") -> str:
+    """The refusal of a migration 0031 series other than silver.
+
+    Held the same way as silver — one TGJU close a day — and shown on the same
+    two pages, so each is refused by name rather than left to the generic
+    "not eligible" answer.  ``derived`` is the extra sentence for a series TGJU
+    computes from its own 18k price.
+    """
+    return (
+        f"{symbol} ({what}) is collected only as TGJU's ONE daily settled close "
+        f"per day (app/jobs/tgju_daily.py), with no live quote and no second "
+        f"source to check it against. {derived}It is not modelled and not "
+        f"scored; it is compared under Relative value and Purchasing power "
+        f"instead."
+    )
+
+
 # Symbols this system collects and serves, which are deliberately NOT given a
 # buy/hold/sell reading. Each reason is about the instrument or about how it is
 # collected, never about a shortage of rows.
@@ -123,6 +141,24 @@ EXCLUDED_SYMBOLS: dict[str, str] = {
         "power instead. XAGUSD is not a substitute: it is the COMEX front-month "
         "future in USD per troy ounce."
     ),
+    # The other six series migration 0031 registers, held and shown the same
+    # way as silver.
+    "IR_COIN_BAHAR": _tgju_daily_reason(
+        "IR_COIN_BAHAR", "the Bahar Azadi gold coin, toman per coin"),
+    "IR_COIN_HALF": _tgju_daily_reason(
+        "IR_COIN_HALF", "the half Azadi coin, toman per coin"),
+    "IR_COIN_QUARTER": _tgju_daily_reason(
+        "IR_COIN_QUARTER", "the quarter Azadi coin, toman per coin"),
+    "IR_COIN_GERAMI": _tgju_daily_reason(
+        "IR_COIN_GERAMI", "the gram gold coin, toman per coin"),
+    "IR_GOLD_24K": _tgju_daily_reason(
+        "IR_GOLD_24K", "24k gold, toman per gram",
+        "TGJU publishes it as a fixed multiple of its 18k gram price (x 4/3), "
+        "so it carries no movement of its own beyond 18k gold's. "),
+    "IR_GOLD_MESGHAL": _tgju_daily_reason(
+        "IR_GOLD_MESGHAL", "melted gold, toman per mesghal",
+        "TGJU publishes it as a fixed multiple of its 18k gram price "
+        "(x 4.3318), so it carries no movement of its own beyond 18k gold's. "),
 }
 
 # Whole asset classes a reader will look for and not find. Naming them is the

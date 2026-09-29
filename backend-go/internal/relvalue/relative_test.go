@@ -4,6 +4,8 @@ package relvalue
 // allowed to be published at all.
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -272,7 +274,7 @@ func TestBuildRelativeResponse_IndexesBothLegsAtTheBase(t *testing.T) {
 	if got.Series[0].AIndexed != 100 || got.Series[0].BIndexed != 100 {
 		t.Errorf("both legs must be 100 at the base: %+v", got.Series[0])
 	}
-	if got.Series[1].AIndexed != 200 || got.Series[1].Ratio != 2 {
+	if got.Series[1].AIndexed != 200 || got.Series[1].Ratio == nil || *got.Series[1].Ratio != 2 {
 		t.Errorf("point 1 = %+v, want a_indexed 200 and ratio 2", got.Series[1])
 	}
 	if math.Abs(mustFloat(t, got.AGrowthPct, "a growth")-50) > 1e-9 {
@@ -597,5 +599,19 @@ func TestBuildRelativeResponse_AFixedRatioReportsNoGap(t *testing.T) {
 	}
 	if got.A.DerivedFrom == nil || *got.A.DerivedFrom != "IR_GOLD_18K" {
 		t.Errorf("leg a must say what it is derived from: %+v", got.A)
+	}
+	// The per-point ratio and gap are the same spread under the same names; a
+	// null headline gap beside a series of numeric gaps would contradict itself.
+	for _, p := range got.Series {
+		if p.Ratio != nil || p.GapPct != nil {
+			t.Errorf("%s: ratio %v / gap %v on a fixed-ratio pair, want null", p.Date, p.Ratio, p.GapPct)
+		}
+	}
+	blob, err := json.Marshal(got.Series[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(blob, []byte(`"ratio":null`)) || !bytes.Contains(blob, []byte(`"gap_pct":null`)) {
+		t.Errorf("a withheld point must carry null, not omit the key: %s", blob)
 	}
 }

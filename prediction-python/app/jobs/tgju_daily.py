@@ -16,7 +16,9 @@ It also fills ONE hole in an existing series.  ``IR_COIN_EMAMI`` has no row of
 any source on 83 UTC days, 2026-04-28 → 2026-07-20 (measured on production
 2026-09-29), between the pricedb mirror going stale and live collection
 starting.  TGJU's ``sekee`` close is written on exactly those days and on no
-other: a day that already holds an observation keeps it.  ``USD_IRT`` and
+other: a day that already holds an observation keeps it, and a day is judged
+empty only once it has ENDED in UTC (until midnight a live row can still land
+in it).  ``USD_IRT`` and
 ``IR_GOLD_18K`` are refused rather than filled — production's USD_IRT is the
 USDT/toman market, a different instrument from TGJU's cash dollar, and 18k has
 no hole to fill.
@@ -65,8 +67,9 @@ on (not all of them filter on quality).  It is re-judged on every later run
 while it is still inside the fetched window, so an honest level shift — which
 looks like junk only while nothing after it has been published — is written
 once its later neighbours exist.  A bar with fewer than
-:data:`MIN_JUDGED_NEIGHBOURS` neighbours cannot be judged at all and is held
-the same way.
+:data:`MIN_JUDGED_NEIGHBOURS` neighbours cannot be judged at all; it is not
+stored either, only counted (``held_unjudged``) — a table that short cannot
+say what its own junk looks like.
 
 Never overwrite
 ---------------
@@ -120,6 +123,7 @@ from ..providers.tgju import (
     normalize_history_value,
     slug_meta,
 )
+
 # The deep backfill's guards and conventions, reused rather than restated: the
 # same length cap and recordsTotal check, the same Jalali-in-the-Gregorian-
 # column refusal, the same source label, audit key scheme and 23:00 UTC stamp.
@@ -273,10 +277,14 @@ def _has_history_rows(conn: Connection, symbol: str) -> bool:
     ).first() is not None
 
 
+def _utc_day_end(day: date) -> datetime:
+    """Midnight UTC at the end of ``day``: when that UTC day is complete."""
+    return datetime(day.year, day.month, day.day, tzinfo=timezone.utc) + timedelta(days=1)
+
+
 def _day_bounds(first: date, last: date) -> tuple[datetime, datetime]:
     lo = datetime(first.year, first.month, first.day, tzinfo=timezone.utc)
-    hi = datetime(last.year, last.month, last.day, tzinfo=timezone.utc) + timedelta(days=1)
-    return lo, hi
+    return lo, _utc_day_end(last)
 
 
 def _existing_by_day(
@@ -463,6 +471,14 @@ def ingest_symbol(
             if bar.day >= today or stamp > now:
                 # Not settled yet: the day is still in progress in Tehran, or
                 # its 23:00 UTC availability stamp has not arrived.
+                report["skipped_not_settled"] += 1
+                continue
+            if gap_fill and now < _utc_day_end(bar.day):
+                # "No observation on this UTC day" is only a fact once the UTC
+                # day is over. Between the 23:00 stamp and midnight UTC a live
+                # row can still land in it, and a TGJU close written first
+                # would then share the day with it — the mixed-source day the
+                # gap-fill exists to avoid. The next run writes it.
                 report["skipped_not_settled"] += 1
                 continue
             # The provider's own factor — the one live quotes and the deep

@@ -432,8 +432,12 @@ type relativePoint struct {
 	Date     string  `json:"date"`
 	AIndexed float64 `json:"a_indexed"`
 	BIndexed float64 `json:"b_indexed"`
-	Ratio    float64 `json:"ratio"`
-	GapPct   float64 `json:"gap_pct"`
+	// Ratio and GapPct are null on every point of a pair whose ratio its source
+	// fixes (constantByConstruction): the headline gap is withheld for that
+	// pair, and a per-point "gap" beside it would publish the same spread
+	// between two sources under the same name, one point at a time.
+	Ratio  *float64 `json:"ratio"`
+	GapPct *float64 `json:"gap_pct"`
 }
 
 type relativeResponse struct {
@@ -577,14 +581,17 @@ func buildRelativeResponse(in relativeInputs) relativeResponse {
 		if !gok {
 			continue
 		}
-		out.Series = append(out.Series, relativePoint{
+		point := relativePoint{
 			T:        p.Day.Unix(),
 			Date:     dayString(p.Day),
 			AIndexed: math.Round(ai*1e6) / 1e6,
 			BIndexed: math.Round(bi*1e6) / 1e6,
-			Ratio:    math.Round(ai/bi*1e6) / 1e6,
-			GapPct:   math.Round(g*1e6) / 1e6,
-		})
+		}
+		if constant == "" {
+			point.Ratio = fp(math.Round(ai/bi*1e6) / 1e6)
+			point.GapPct = fp(math.Round(g*1e6) / 1e6)
+		}
+		out.Series = append(out.Series, point)
 	}
 	if len(indices) < len(win) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf(

@@ -724,6 +724,23 @@ def test_the_job_publishes_the_universe_it_could_not_score(engine, settings):
     assert "IR_GOLD_FUND_AYAR" in withheld and withheld["IR_GOLD_FUND_AYAR"]
 
 
+def test_every_tgju_daily_series_is_accounted_for_with_its_reason(engine, settings):
+    """Migration 0031's seven series are held and shown on two pages, so each
+    one is refused by name — the same sentence the board carries — never left
+    to the generic "not eligible" answer."""
+    from app.jobs.tgju_daily import SERIES_SLUGS
+
+    for symbol in SERIES_SLUGS:
+        assert symbol not in universe.SIGNAL_SYMBOLS
+        reason = universe.EXCLUDED_SYMBOLS.get(symbol, "")
+        assert "daily settled close" in reason and "not scored" in reason, symbol
+        with pytest.raises(ValueError) as excinfo:
+            run_signals(engine, settings, [symbol])
+        assert "daily settled close" in str(excinfo.value), symbol
+    for symbol in ("IR_GOLD_24K", "IR_GOLD_MESGHAL"):
+        assert "fixed multiple" in universe.EXCLUDED_SYMBOLS[symbol]
+
+
 def test_endpoint_generates_every_eligible_symbol_and_narrows_on_request(
     client, engine, settings
 ):

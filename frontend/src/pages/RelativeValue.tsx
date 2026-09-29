@@ -49,8 +49,11 @@ const DEFAULT_B = 'USD_IRT'
 /**
  * Pairs a reader of this page commonly sets side by side, one click each.
  * The labels name the two legs and nothing else. A chip is offered only when
- * both of its codes are among the selectable assets, so a deployment that has
- * not stored a series yet shows no chip for it.
+ * both of its codes are among the selectable assets -- REGISTERED and pairable,
+ * which is not the same as stored: a registered series the daily job has not
+ * filled yet still gets its chip, and the pair then answers with the
+ * backend's "no stored day in common" warning and the empty chart, never with
+ * invented values.
  */
 const QUICK_PAIRS: QuickPair[] = [
   { a: 'IR_GOLD_18K', b: 'IR_SILVER_999', label: '18k gold vs silver 999' },
@@ -101,14 +104,35 @@ function gapSentence(
  * not a count of observations. When the gate on INDEPENDENT windows does not
  * pass, the shortfall is stated in words and no number is shown — hiding the
  * field would leave a reader assuming it had simply not been computed.
+ *
+ * With no gap there is nothing to rank, and the backend never runs the gate:
+ * the pair shares no day, the window holds none, or — 24k gold against 18k
+ * gold — the source fixes their ratio. Its basis then counts zero windows,
+ * and rendering those zeros as "0 independent windows; 5 needed" would tell
+ * the reader the pair lacks history when it does not. The backend's own
+ * reason (`note`) is shown instead.
  */
 function PercentileEvidence({
   percentile,
-  basis
+  basis,
+  gapReported
 }: {
   percentile: number | null
   basis: PercentileBasis | null
+  gapReported: boolean
 }) {
+  if (!gapReported) {
+    return (
+      <div className="rv-percentile rv-percentile-insufficient" data-testid="rv-percentile">
+        <div className="rv-percentile-head">
+          Percentile not reported: there is no gap over this window to place.
+        </div>
+        <div className="muted small">
+          {basis?.note || 'The response reported no gap, so nothing was ranked.'}
+        </div>
+      </div>
+    )
+  }
   if (!basis) {
     return (
       <div className="rv-percentile" data-testid="rv-percentile">
@@ -468,6 +492,7 @@ export default function RelativeValue() {
                 <PercentileEvidence
                   percentile={finiteOrNull(data.gap_percentile)}
                   basis={data.percentile_basis ?? null}
+                  gapReported={gap !== null}
                 />
                 <div className="muted small rv-footer">
                   The gap is (1 + {aName} growth) / (1 + {bName} growth) − 1, computed by the backend

@@ -24,7 +24,7 @@
   | `IR_COIN_GERAMI` | `gerami` | toman / coin | 3,360 from 2013-07-22 | per coin |
   | `IR_GOLD_24K` | `geram24` | toman / gram | 3,374 from 2014-05-02 | **derived by TGJU**: geram18 × 4/3 (median ratio 1.33332 over 2,963 days) — `derived_from = IR_GOLD_18K`, so its return in grams of 18k gold is withheld |
   | `IR_GOLD_MESGHAL` | `mesghal` | toman / mesghal (4.6083 g at 705‰) | 3,517 from 2013-07-22 | **derived by TGJU**: geram18 × 4.3318 (median 4.3316) — `derived_from = IR_GOLD_18K` |
-  | `IR_COIN_EMAMI` (gap-fill only) | `sekee` | toman / coin | 4,301 from 2010-04-04 | written **only on UTC days with no observation from any source** (production's 83-day hole 2026-04-28 → 2026-07-20); the instrument note says so. `USD_IRT` (the USDT/toman market, a different instrument from TGJU's cash dollar) and `IR_GOLD_18K` are never filled |
+  | `IR_COIN_EMAMI` (gap-fill only) | `sekee` | toman / coin | 4,301 from 2010-04-04 | written **only on UTC days with no observation from any source**, judged once the UTC day has ended (production's 83-day hole 2026-04-28 → 2026-07-20); the instrument note says so. `USD_IRT` (the USDT/toman market, a different instrument from TGJU's cash dollar) and `IR_GOLD_18K` are never filled |
 
   TGJU's closes agreed with production's end-of-day tgju/BrsApi values for the Emami coin on 29 of 30 days (worst 0.27%, 2026-07-19 → 09-28).
 - **Deep backfill** (`POST /internal/backfill/tgju-history`, manual): the same endpoint splices TGJU history in front of the live era for `IR_GOLD_18K`, `USD_IRT` and `IR_COIN_EMAMI`, and records the splice (see `jobs/tgju_backfill.py`).

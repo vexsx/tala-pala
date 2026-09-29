@@ -256,6 +256,36 @@
       "reason": "IR_SILVER_999 (Tehran silver 999, toman per gram) is collected only as TGJU's ONE daily settled close per day -- no live quote, and no second source to check it against -- and it is not modelled or scored; compare it under Relative value and Purchasing power. XAGUSD is not a substitute: it is the COMEX front-month contract in USD per troy ounce, not a Tehran toman silver price."
     },
     {
+      "symbol_or_class": "IR_COIN_BAHAR",
+      "category": "not_scored",
+      "reason": "IR_COIN_BAHAR (the Bahar Azadi gold coin, toman per coin) is collected only as TGJU's ONE daily settled close per day -- no live quote, and no second source to check it against. It is not modelled or scored; compare it under Relative value and Purchasing power."
+    },
+    {
+      "symbol_or_class": "IR_COIN_HALF",
+      "category": "not_scored",
+      "reason": "IR_COIN_HALF (the half Azadi coin, toman per coin) is collected only as TGJU's ONE daily settled close per day -- no live quote, and no second source to check it against. It is not modelled or scored; compare it under Relative value and Purchasing power."
+    },
+    {
+      "symbol_or_class": "IR_COIN_QUARTER",
+      "category": "not_scored",
+      "reason": "IR_COIN_QUARTER (the quarter Azadi coin, toman per coin) is collected only as TGJU's ONE daily settled close per day -- no live quote, and no second source to check it against. It is not modelled or scored; compare it under Relative value and Purchasing power."
+    },
+    {
+      "symbol_or_class": "IR_COIN_GERAMI",
+      "category": "not_scored",
+      "reason": "IR_COIN_GERAMI (the gram gold coin, toman per coin) is collected only as TGJU's ONE daily settled close per day -- no live quote, and no second source to check it against. It is not modelled or scored; compare it under Relative value and Purchasing power."
+    },
+    {
+      "symbol_or_class": "IR_GOLD_24K",
+      "category": "not_scored",
+      "reason": "IR_GOLD_24K (24k gold, toman per gram) is collected only as TGJU's ONE daily settled close per day -- no live quote, and no second source to check it against. TGJU publishes it as a fixed multiple of its 18k gram price (x 4/3), so it carries no movement of its own beyond 18k gold's. It is not modelled or scored; compare it under Relative value and Purchasing power."
+    },
+    {
+      "symbol_or_class": "IR_GOLD_MESGHAL",
+      "category": "not_scored",
+      "reason": "IR_GOLD_MESGHAL (melted gold, toman per mesghal) is collected only as TGJU's ONE daily settled close per day -- no live quote, and no second source to check it against. TGJU publishes it as a fixed multiple of its 18k gram price (x 4.3318), so it carries no movement of its own beyond 18k gold's. It is not modelled or scored; compare it under Relative value and Purchasing power."
+    },
+    {
       "symbol_or_class": "cars",
       "category": "not_collected",
       "reason": "Not collected. No vehicle price series exists in this system -- no provider in the roster publishes one, and `prices` holds zero rows for any car."

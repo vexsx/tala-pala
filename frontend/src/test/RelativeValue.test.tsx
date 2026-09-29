@@ -261,6 +261,34 @@ describe('RelativeValue — the percentile travels with its evidence', () => {
     )
   })
 
+  it('does not blame the evidence gate when there is no gap to place', async () => {
+    // A pair whose ratio its source fixes (24k gold vs 18k gold): the backend
+    // reports no gap and never ranks one, so its basis counts no windows. Those
+    // zeros are not a shortfall of history and must not be shown as one.
+    await renderPage(
+      response({
+        gap_pct: null,
+        gap_percentile: null,
+        ratio_drawdown_pct: null,
+        percentile_basis: {
+          window_days: 365,
+          overlapping_windows: 0,
+          independent_windows: 0,
+          min_independent_windows: 5,
+          sufficient: false,
+          note: 'No percentile: the ratio between these two instruments is fixed by their source.'
+        }
+      })
+    )
+
+    const block = screen.getByTestId('rv-percentile')
+    expect(block.textContent).toContain('Percentile not reported')
+    expect(block.textContent).toContain('fixed by their source')
+    expect(block.textContent).not.toContain('0 independent windows')
+    expect(block.textContent).not.toContain('evidence gate')
+    expect(block.textContent).not.toContain('0 overlapping windows')
+  })
+
   it('says so when no basis accompanied the response at all', async () => {
     await renderPage(response({ percentile_basis: null, gap_percentile: null }))
 

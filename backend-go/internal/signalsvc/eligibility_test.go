@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -387,5 +390,51 @@ func TestEveryRegisteredSignalSymbolIsAccountedForOnce(t *testing.T) {
 	if len(seen) != len(eligibleSignalSymbols)+len(refusedSignalSymbols) {
 		t.Errorf("the two tables overlap: %d distinct codes from %d entries",
 			len(seen), len(eligibleSignalSymbols)+len(refusedSignalSymbols))
+	}
+}
+
+// Every instrument migration 0031 registers is held -- as TGJU's daily settled
+// close -- and shown under Relative value and Purchasing power, so the board
+// must account for each one, either scored or refused with its reason. Read
+// from the migration itself, so a code added there cannot fall off the board.
+func TestEveryMigration0031InstrumentIsAccountedFor(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "database", "migrations", "0031_iran_commodities.up.sql")
+	sql, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	codes := regexp.MustCompile(`\('(IR_[A-Z0-9_]+)','market_price'`).FindAllStringSubmatch(string(sql), -1)
+	if len(codes) != 7 {
+		t.Fatalf("found %d registered codes in %s, want 7", len(codes), path)
+	}
+	refused := map[string]UnavailableEntry{}
+	for _, e := range refusedSignalSymbols {
+		refused[e.SymbolOrClass] = e
+	}
+	for _, m := range codes {
+		code := m[1]
+		symbol, verdict, reason := ParseSignalSymbol(code)
+		if verdict == verdictEligible {
+			continue
+		}
+		if symbol != code || verdict != verdictIneligible {
+			t.Errorf("%s is registered by 0031 but the board does not account for it (verdict %v)", code, verdict)
+			continue
+		}
+		entry := refused[code]
+		if entry.Category != unavailableNotScored {
+			t.Errorf("%s category = %q, want %q: it is collected", code, entry.Category, unavailableNotScored)
+		}
+		for _, fragment := range []string{code, "daily settled close", "not modelled or scored"} {
+			if !strings.Contains(reason, fragment) {
+				t.Errorf("%s's reason must say %q: %q", code, fragment, reason)
+			}
+		}
+	}
+	// The two TGJU derives from its 18k price say so.
+	for _, code := range []string{"IR_GOLD_24K", "IR_GOLD_MESGHAL"} {
+		if !strings.Contains(refused[code].Reason, "fixed multiple") {
+			t.Errorf("%s's reason must say TGJU derives it from 18k: %q", code, refused[code].Reason)
+		}
 	}
 }

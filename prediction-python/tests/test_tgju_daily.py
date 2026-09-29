@@ -613,6 +613,31 @@ def test_emami_is_filled_only_on_days_that_hold_no_observation(engine, settings)
 
 
 @respx.mock
+def test_emami_is_not_filled_on_a_utc_day_that_has_not_ended(engine, settings):
+    """At 23:30 UTC the bar's stamp has passed, but its UTC day has not: a live
+    row can still land in it, so "no observation that day" is not known yet."""
+    _seed_emami_like_production(engine)
+    with engine.begin() as conn:
+        conn.execute(prices.delete().where(
+            prices.c.symbol == EMAMI, prices.c.source == "brsapi",
+            prices.c.observed_at >= datetime(2026, 9, 28, tzinfo=timezone.utc)))
+    _serve_fixture("sekee")
+    late = datetime(2026, 9, 28, 23, 30, tzinfo=timezone.utc)
+    assert tehran_today(late) == date(2026, 9, 29)  # the Tehran date alone would allow it
+
+    report = ingest_symbol(engine, settings, EMAMI, now=late)
+
+    assert report["status"] == "ok"
+    assert date(2026, 9, 28) not in _stored_days(engine, EMAMI)
+    assert report["skipped_not_settled"] == 1
+    # The morning run, with the UTC day over and still empty, fills it.
+    _serve_fixture("sekee")
+    morning = ingest_symbol(engine, settings, EMAMI, now=NOW)
+    assert morning["inserted"] == 1
+    assert date(2026, 9, 28) in _stored_days(engine, EMAMI)
+
+
+@respx.mock
 def test_emami_reads_forty_rows_once_its_full_pass_is_recorded(engine, settings):
     _seed_emami_like_production(engine)
     route = _serve_fixture("sekee")
