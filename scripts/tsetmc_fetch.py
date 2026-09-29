@@ -417,7 +417,11 @@ def _print_market_report(report: dict) -> None:
             print(f"  REFUSED {r['name_fa']}: {r['refusal_reason']}")
     for market, r in sorted((report.get("market_values") or {}).items()):
         print(f"market val : {market:<10} {r['values_inserted']:>5} inserted, "
+              f"{r.get('values_revised', 0)} restated by TSETMC, "
               f"{r['first_date']}..{r['last_date']}")
+        if r.get("largest_revision"):
+            lr = r["largest_revision"]
+            print(f"             largest restatement {lr['date']}: {lr['pct']:+.4f}%")
     flows = report.get("client_flows") or {}
     print(f"money flow : {len(flows)} symbol(s), "
           f"{sum(r['sessions_inserted'] for r in flows.values())} session(s) inserted")

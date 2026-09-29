@@ -494,13 +494,25 @@ def test_a_tenfold_market_value_step_refuses_the_series(engine):
         assert conn.execute(select(func.count()).select_from(market_values)).scalar() == 0
 
 
-def test_a_contradicted_market_value_is_not_overwritten(engine):
+def test_a_restated_market_value_is_stored_and_counted(engine):
+    """TSETMC restates this series: two fetches an hour apart on 2026-09-29
+    disagreed on 18 bourse sessions, the largest by 0.18% (2022-04-30). The
+    latest statement is kept and every restatement is counted."""
     payload = load_fixture_json_gz("tsetmc_market_value_bourse.json.gz")
     ingest_market_values(engine, payload, "bourse")
     changed = copy.deepcopy(payload)
-    changed["marketValue"][0]["marketCap"] *= 1.02
-    with pytest.raises(MarketParseError, match="contradicts 1 stored"):
-        ingest_market_values(engine, changed, "bourse")
+    changed["marketValue"][0]["marketCap"] *= 1.0018
+    changed["marketValue"][1]["marketCap"] *= 1 + 3.8e-8  # recomputation noise
+    report = ingest_market_values(engine, changed, "bourse")
+    assert report["values_revised"] == 1
+    assert report["largest_revision"]["pct"] == pytest.approx(0.18, abs=1e-4)
+    with engine.connect() as conn:
+        stored = conn.execute(
+            select(market_values.c.market_cap).where(
+                market_values.c.trade_date == date(2026, 9, 28)
+            )
+        ).scalar_one()
+    assert float(stored) == pytest.approx(changed["marketValue"][0]["marketCap"])
 
 
 def test_client_flows_ingest_for_a_roster_symbol(engine):

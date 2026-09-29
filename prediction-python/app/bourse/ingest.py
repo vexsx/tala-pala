@@ -71,6 +71,11 @@ PROVIDER_CODE = "tsetmc_cdn"
 # an empty or error body.
 MIN_PLAUSIBLE_BYTES = 200
 
+# Below this relative difference a restated market value is recomputation
+# noise (the 2026-09-29 measurement: most restatements were under a millionth),
+# not a restatement worth counting.
+REVISION_NOISE = 1e-6
+
 # Rows per executemany batch.  The first load is ~256,000 index rows; one
 # INSERT per row with RETURNING, which is what insert_ignore does, would be a
 # quarter of a million round trips.
@@ -419,16 +424,31 @@ def ingest_market_values(
                 select(t.c.trade_date, t.c.market_cap).where(t.c.market == market)
             )
         }
-        conflicts = [
-            f"{d.isoformat()}: stored {stored[d]!r}, payload {v!r}"
-            for d, v in values
-            if d in stored and not _close_enough(stored[d], v)
-        ]
-        if conflicts:
-            raise MarketParseError(
-                f"{market} market value: the payload contradicts {len(conflicts)} stored "
-                f"session(s) ({'; '.join(conflicts[:3])}). Nothing is overwritten; delete "
-                "the rows deliberately if TSETMC genuinely restated them."
+        # TSETMC RESTATES this series, unlike the bars and the index closes.
+        # Measured 2026-09-29: two fetches an hour apart returned 18 bourse and
+        # 23 Farabourse sessions with different values — most by under a
+        # millionth (a recomputed aggregate, not a corrected one), the largest
+        # by 0.18% (2022-04-30). Refusing on a disagreement, the rule for a
+        # settled bar, would fail every refresh from the second one on. So the
+        # stored value is the publisher's LATEST statement, a difference below
+        # REVISION_NOISE is not counted as one, and every real restatement is
+        # counted and the largest named in the report. The series is display
+        # data — no model reads it — which is what makes latest-statement the
+        # honest rule here and not a way around point-in-time discipline.
+        revisions: list[tuple[date, float, float]] = []
+        for d, v in values:
+            old = stored.get(d)
+            if old is None or old == v:
+                continue
+            if abs(v - old) <= REVISION_NOISE * max(abs(v), abs(old)):
+                continue
+            revisions.append((d, old, v))
+        if revisions:
+            conn.execute(
+                update(t)
+                .where(and_(t.c.market == bindparam("m"), t.c.trade_date == bindparam("d")))
+                .values(market_cap=bindparam("v"), collected_at=bindparam("c")),
+                [{"m": market, "d": d, "v": new, "c": collected_at} for d, _, new in revisions],
             )
         pending = [
             {"market": market, "trade_date": d, "market_cap": v, "collected_at": collected_at}
@@ -440,10 +460,22 @@ def ingest_market_values(
         after = conn.execute(
             select(func.count()).select_from(t).where(t.c.market == market)
         ).scalar_one()
+    largest = max(revisions, key=lambda r: abs(r[2] / r[1] - 1), default=None)
     return {
         "market": market,
         "values_total": len(parsed.values),
         "values_inserted": int(after) - before,
+        "values_revised": len(revisions),
+        "largest_revision": (
+            {
+                "date": largest[0].isoformat(),
+                "stored": largest[1],
+                "restated": largest[2],
+                "pct": round((largest[2] / largest[1] - 1) * 100, 6),
+            }
+            if largest
+            else None
+        ),
         "unsettled_skipped": unsettled,
         "dropped_nonpositive": parsed.dropped_nonpositive,
         "first_date": values[0][0].isoformat(),
