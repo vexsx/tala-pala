@@ -3576,3 +3576,212 @@ input[type='checkbox'] {
 .bx-legend {
   gap: 6px 16px;
 }
+
+/* --- money flow (/money-flow) ------------------------------------------------ */
+
+/* The heatmap's neutral midpoint: a gray one step off each theme's panel, so
+ * "within ±1%" reads as nothing rather than as a third hue. The three steps per
+ * arm are the diverging pair mixed into that gray at 22/42/62%; text on every
+ * step stays in the text token (worst contrast 4.7:1 dark, 5.9:1 light). */
+:root,
+:root[data-theme='dark'] {
+  --mf-neutral: #262d36;
+}
+
+:root[data-theme='light'] {
+  --mf-neutral: #e8eaed;
+}
+
+/* Figures never wrap; headers and names may, so the table fits a laptop. */
+.mf-table td {
+  white-space: nowrap;
+}
+
+.mf-table th {
+  white-space: normal;
+  vertical-align: bottom;
+}
+
+.mf-table td.bx-name {
+  white-space: normal;
+  min-width: 150px;
+}
+
+.mf-open td {
+  background: var(--panel-2);
+}
+
+.mf-expand > td {
+  background: var(--bg-2);
+  padding: 10px 12px 14px;
+}
+
+.mf-shares .table-wrap {
+  margin-top: 6px;
+}
+
+/* Net individual flow about a 2px zero gap: out to the left, in to the right. */
+.mf-dbar {
+  display: inline-flex;
+  width: 72px;
+  height: 10px;
+  gap: 2px;
+  vertical-align: middle;
+  margin-inline-end: 8px;
+}
+
+.mf-dbar-half {
+  flex: 1;
+  display: flex;
+  background: color-mix(in srgb, var(--border) 45%, transparent);
+  border-radius: 2px;
+}
+
+.mf-dbar-neg {
+  justify-content: flex-end;
+}
+
+.mf-dbar-half > span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+
+.mf-dbar-neg > span {
+  background: var(--flow-out);
+}
+
+.mf-dbar-pos > span {
+  background: var(--flow-in);
+}
+
+.mf-net-cell {
+  white-space: nowrap;
+}
+
+.mf-spark {
+  display: block;
+}
+
+/* A swatch key for a filled mark (the bar), beside .bx-key's line key. */
+.mf-key {
+  display: inline-block;
+  width: 12px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.mf-tiers {
+  color: var(--muted);
+}
+
+.mf-plain-symbol {
+  cursor: default;
+}
+
+/* Side by side only where both lists fit whole; stacked otherwise. */
+.mf-top {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 780px), 1fr));
+  gap: 16px;
+}
+
+.mf-top .card {
+  margin-bottom: 0;
+}
+
+.mf-top + p {
+  margin: 8px 0 16px;
+}
+
+/* The heatmap is a table: every cell carries its figure as text, and the fill
+ * only repeats it. */
+.mf-heat {
+  border-collapse: separate;
+  border-spacing: 2px;
+}
+
+.mf-heat td.mf-heat-cell {
+  text-align: center;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  min-width: 44px;
+  padding: 5px 4px;
+  border-radius: 2px;
+  color: var(--text);
+  border-bottom: 0;
+}
+
+.mf-heat th.mf-heat-head {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.mf-heat-name {
+  white-space: nowrap;
+}
+
+.mf-heat-market td {
+  border-bottom: 2px solid var(--border);
+}
+
+.mf-h-0 {
+  background: var(--mf-neutral);
+}
+
+.mf-h-p1 {
+  background: color-mix(in srgb, var(--flow-in) 22%, var(--mf-neutral));
+}
+
+.mf-h-p2 {
+  background: color-mix(in srgb, var(--flow-in) 42%, var(--mf-neutral));
+}
+
+.mf-h-p3 {
+  background: color-mix(in srgb, var(--flow-in) 62%, var(--mf-neutral));
+}
+
+.mf-h-n1 {
+  background: color-mix(in srgb, var(--flow-out) 22%, var(--mf-neutral));
+}
+
+.mf-h-n2 {
+  background: color-mix(in srgb, var(--flow-out) 42%, var(--mf-neutral));
+}
+
+.mf-h-n3 {
+  background: color-mix(in srgb, var(--flow-out) 62%, var(--mf-neutral));
+}
+
+.mf-heat td.mf-h-na {
+  background: transparent;
+  color: var(--muted);
+}
+
+.mf-heat-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 6px 0 10px;
+}
+
+.mf-heat-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.mf-heat-swatch {
+  display: inline-block;
+  width: 18px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.mf-explainer .bx-verdict {
+  margin: 6px 0;
+}

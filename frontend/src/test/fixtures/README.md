@@ -195,3 +195,326 @@ closure from 2026-02-25, the second-market index carries 31 values TSETMC
 stores off by a factor of ten, and فولاد's year contains the 5.5-month halt
 that once flipped its beta negative. A hand-written payload would have had
 none of the three.
+
+## Market-wide money flow (`bourse-sector-flows*.json`) — HAND-BUILT, pending a production capture
+
+**These three files are NOT captures.** `GET /api/v1/bourse/sector-flows` reads
+migration 0030's tables, which no deployment had filled when the page was
+written, so there was nothing to `curl`. Replace them with captures as soon as
+production has run a market-wide ingest (see *Refreshing* below), and until
+then read every number in them as illustrative, not as the market.
+
+What keeps them from being the kind of fixture this directory warns about:
+**no output field is authored.** Like the screener's, they were emitted by the
+Go code that serves the routes — `bourse.buildSectorFlows`, the build
+`Handler.SectorFlows` caches, and `bourse.buildSectorShares`, the body of
+`Handler.SectorFlowShares` — from a generator injected into `package bourse`
+with `go test -overlay`, so nothing was added to `backend-go/`. Every field
+name, null, reason string, tier count, note and the `data_age` block is the
+server's own. Only the INPUTS below are invented, deterministically (seed 1405):
+
+* a 291-share market — 18 real TSETMC sector codes with their Persian names and
+  bourse sector-index insCodes (from `bourse-overview.json`), sector 46 with no
+  index; the 19 roster shares under their real insCodes and symbols (from
+  `bourse-flows.json`), everything else a clearly synthetic `نماد<sector><n>`;
+* 125 Tehran sessions (Saturday–Wednesday) ending 2026-09-28, with the 2026
+  closure (2026-02-25 → 2026-05-18) left out, so the previous 60-session window
+  spans it;
+* flows whose identities hold exactly, except ~0.2% of rows failing the volume
+  identity, ~0.1% failing the value identity and ~0.1% disagreeing with the
+  session statement — the `excluded` tier; one zero row — `no_trade`;
+* session statements (`market_share_sessions`) for the newest 100 sessions
+  except session 12, a whole-market day file that was "never ingested": its rows
+  are `identity_only`, and non-roster shares have no close there, so their 20-
+  and 60-session price change is `null` with the reason; roster rows carry a
+  daily bar and so reach `bar_checked` everywhere;
+* فولاد with a block board (فولاد2, trading on ~15% of sessions) and a second
+  board (فولاد3, listed 36 sessions ago), so the company rollup shows
+  `main + block + secondary`; a 100% capital increase on ذوب at session 8 (the
+  reference price halves), which the chained price change reads through; one
+  share halted for the newest 30 sessions; one delisted share with history only;
+* persistent per-sector drifts in net flow and in activity, so the heatmap and
+  the value-share lines have something to show.
+
+| file | request | what it exercises |
+| --- | --- | --- |
+| `bourse-sector-flows.json` | `GET /bourse/sector-flows`, clock 2026-09-29 | every window available, 12 blocks, the four tiers, index returns (and one sector with none), top lists with roster and non-roster companies, a three-board company, `null` price changes with reasons |
+| `bourse-sector-flows-27-w5.json` | `GET /bourse/sector-flows/27?window=5` | one sector's shares, each board its own row; the untraded block board with empty figures |
+| `bourse-sector-flows-roster-only.json` | `GET /bourse/sector-flows` before the first market-wide ingest: the 19 seeded roster rows (`listed=false`) and ten sessions of their flow only | `coverage.market_wide: false`, nothing summed, the "not ingested yet" note — the roster is not passed off as the market |
+
+### Regenerating
+
+Save the generator below as a file outside the repo, point an overlay at it,
+and run it from `backend-go` (the three files are rewritten in place):
+
+```bash
+GEN=/path/to/moneyflow_fixture_gen_test.go
+printf '{"Replace":{"%s/internal/bourse/zz_moneyflow_fixture_test.go":"%s"}}' "$PWD" "$GEN" > /tmp/overlay.json
+MONEYFLOW_FIXTURES=$PWD/../frontend/src/test/fixtures \
+  /usr/local/go/bin/go test -count=1 -overlay /tmp/overlay.json \
+  -run TestGenerateMoneyFlowFixtures ./internal/bourse/
+```
+
+If `MoneyFlow.test.tsx` then fails, the contract changed: read the diff before
+touching the test.
+
+### Refreshing (replace with captures)
+
+Once production has ingested market-wide flows, capture the three payloads with
+a throwaway user exactly as the Tehran market fixtures above were, keep the
+file names, and delete this section's generator. The roster-only file cannot be
+captured after the fact; keep it generated.
+
+```go
+package bourse
+
+// Hand-built money-flow fixtures, emitted by buildSectorFlows and
+// buildSectorShares. Only the INPUTS below are invented; see
+// frontend/src/test/fixtures/README.md.
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestGenerateMoneyFlowFixtures(t *testing.T) {
+	dir := os.Getenv("MONEYFLOW_FIXTURES")
+	if dir == "" {
+		t.Skip("MONEYFLOW_FIXTURES is the fixtures directory")
+	}
+	rng := rand.New(rand.NewSource(1405))
+	clock := day("2026-09-29")
+	// Saturday to Wednesday, without the 2026 closure; newest first.
+	var days []time.Time
+	for d := day("2026-09-28"); len(days) < 125; d = d.AddDate(0, 0, -1) {
+		closed := !d.Before(day("2026-02-25")) && !d.After(day("2026-05-18"))
+		if d.Weekday() != time.Thursday && d.Weekday() != time.Friday && !closed {
+			days = append(days, d)
+		}
+	}
+	sectors := []struct {
+		code, fa, en, index string
+		shares              int
+		scale               float64
+	}{
+		{"01", "زراعت و خدمات وابسته", "Agriculture and related services", "34408080767216529", 10, 0.5},
+		{"13", "استخراج کانه های فلزی", "Metal ore mining", "13235969998952202", 18, 1.2},
+		{"23", "فراورده های نفتی، کک و سوخت هسته ای", "Refined petroleum, coke and nuclear fuel", "12331083953323969", 10, 1.6},
+		{"27", "فلزات اساسی", "Basic metals", "32453344048876642", 30, 1.5},
+		{"34", "خودرو و ساخت قطعات", "Automobiles and parts", "20213770409093165", 20, 1.3},
+		{"38", "قند و شکر", "Sugar", "21948907150049163", 10, 0.6},
+		{"39", "شرکتهای چند رشته ای صنعتی", "Diversified industrials", "40355846462826897", 8, 1.0},
+		{"42", "محصولات غذایی و آشامیدنی به جز قند و شکر", "Food and beverages (excl. sugar)", "15508900928481581", 18, 0.7},
+		{"43", "مواد و محصولات دارویی", "Pharmaceuticals", "3615666621538524", 20, 0.8},
+		{"44", "محصولات شیمیایی", "Chemicals", "33626672012415176", 22, 1.4},
+		{"46", "تجارت عمده فروشی به جز وسایل نقلیه موتور", "Wholesale trade", "", 4, 0.3},
+		{"53", "سیمان، آهک و گچ", "Cement, lime and plaster", "70077233737515808", 16, 0.8},
+		{"56", "سرمایه گذاریها", "Investment companies", "34295935482222451", 28, 0.9},
+		{"57", "بانکها و موسسات اعتباری", "Banks and credit institutions", "72002976013856737", 12, 1.3},
+		{"64", "مخابرات", "Telecommunications", "41867092385281437", 4, 1.0},
+		{"66", "بیمه وصندوق بازنشستگی به جزتامین اجتماعی", "Insurance and pension funds", "59105676994811497", 14, 0.6},
+		{"70", "انبوه سازی، املاک و مستغلات", "Construction and real estate", "4654922806626448", 16, 0.7},
+		{"72", "رایانه و فعالیت‌های وابسته به آن", "Computer services", "8900726085939949", 10, 0.6},
+	}
+	// The roster: real insCodes and symbols (bourse-flows.json), invented flows.
+	roster := [][3]string{
+		{"22811176775480091", "اخابر", "64"}, {"44891482026867833", "خساپا", "34"},
+		{"65883838195688438", "خودرو", "34"}, {"48990026850202503", "خگستر", "34"},
+		{"71483646978964608", "ذوب", "27"}, {"35366681030756042", "شبندر", "23"},
+		{"51617145873056483", "شتران", "23"}, {"2400322364771558", "شستا", "39"},
+		{"7745894403636165", "شپنا", "23"}, {"25244329144808274", "فارس", "44"},
+		{"35425587644337450", "فملی", "27"}, {"46348559193224090", "فولاد", "27"},
+		{"19040514831923530", "نوری", "44"}, {"68635710163497089", "همراه", "64"},
+		{"28320293733348826", "وبصادر", "57"}, {"778253364357513", "وبملت", "57"},
+		{"63917421733088077", "وتجارت", "57"}, {"9536587154100457", "وپاسار", "57"},
+		{"35700344742885862", "کگل", "13"},
+	}
+	type share struct {
+		meta        shareMeta
+		base, trade float64
+		from, to    int // session indexes it trades in (0 = newest)
+	}
+	var shares []share
+	add := func(m shareMeta, base float64) {
+		m.Market, m.Listed = "bourse", true
+		if m.Board == "" {
+			m.Board = "main"
+		}
+		shares = append(shares, share{meta: m, base: base, trade: 0.93, from: 0, to: len(days) - 1})
+	}
+	for i, r := range roster {
+		add(shareMeta{InsCode: r[0], Symbol: r[1], NameFA: "نمونه " + r[1],
+			CompanyCode: fmt.Sprintf("IRO1R%03d", i), SectorCode: r[2], InRoster: true,
+			RosterSymbol: r[1]}, 90e9*math.Exp(rng.NormFloat64()*0.6))
+	}
+	shares[11].meta.CompanyCode = "IRO1FOLD"
+	add(shareMeta{InsCode: "9000000000000002", Symbol: "فولاد2", NameFA: "نمونه فولاد (بلوک)",
+		Board: "block", CompanyCode: "IRO1FOLD", SectorCode: "27"}, 40e9)
+	shares[len(shares)-1].trade = 0.15
+	add(shareMeta{InsCode: "9000000000000003", Symbol: "فولاد3", NameFA: "نمونه فولاد (تابلوی دوم)",
+		Board: "secondary", CompanyCode: "IRO1FOLD", SectorCode: "27"}, 2e9)
+	shares[len(shares)-1].to = 35 // listed on the second board 36 sessions ago
+	seq := 100
+	for _, s := range sectors {
+		for j := 0; j < s.shares; j++ {
+			seq++
+			add(shareMeta{InsCode: fmt.Sprintf("9%016d", seq), Symbol: fmt.Sprintf("نماد%s%02d", s.code, j),
+				NameFA: fmt.Sprintf("شرکت نمونه %s-%02d", s.code, j), CompanyCode: fmt.Sprintf("IRO1S%03d", seq),
+				SectorCode: s.code}, s.scale*12e9*math.Exp(rng.NormFloat64()))
+			if j%5 == 4 {
+				shares[len(shares)-1].meta.Market = "farabourse"
+			}
+		}
+	}
+	shares[40].from = 30                                // halted for the newest 30 sessions
+	shares[41].meta.Listed, shares[41].from = false, 70 // delisted; history only
+	for i := 50; i < len(shares); i += 9 {
+		shares[i].trade = 0.55 // illiquid
+	}
+
+	// Persistent sector tilts: net flow and activity drift, oldest to newest.
+	tilt, activity := map[string][]float64{}, map[string][]float64{}
+	for _, s := range sectors {
+		mu, act := 0.0, 0.0
+		tilt[s.code], activity[s.code] = make([]float64, len(days)), make([]float64, len(days))
+		for i := len(days) - 1; i >= 0; i-- {
+			mu = 0.85*mu + rng.NormFloat64()*0.05
+			act = 0.9*act + rng.NormFloat64()*0.12
+			tilt[s.code][i], activity[s.code][i] = mu, math.Exp(act)
+		}
+	}
+	missingFile := 12 // one whole-market day file never ingested
+	var rows []marketRow
+	var prices []priceRow
+	for _, sh := range shares {
+		close := 1000 + rng.Float64()*20000
+		for i := len(days) - 1; i >= 0; i-- {
+			d := days[i]
+			if sh.meta.Symbol == "نماد4400" && i == 2 { // a zero row, as TSETMC sometimes stores one
+				rows = append(rows, marketRow{InsCode: sh.meta.InsCode, Flow: FlowSession{Day: d}})
+				continue
+			}
+			if i < sh.from || i > sh.to || rng.Float64() > sh.trade {
+				continue
+			}
+			v := sh.base * activity[sh.meta.SectorCode][i] * math.Exp(rng.NormFloat64()*0.5)
+			a := math.Min(0.97, math.Max(0.2, 0.66+rng.NormFloat64()*0.12))
+			x := math.Min(a, math.Max(a-1, tilt[sh.meta.SectorCode][i]+rng.NormFloat64()*0.15))
+			py := close
+			if sh.meta.Symbol == "ذوب" && i == 8 {
+				py = close / 2 // a 100% capital increase: the reference halves
+			}
+			close = py * (1 + math.Min(0.05, math.Max(-0.05, 0.001+rng.NormFloat64()*0.02)))
+			f := FlowSession{Day: d, BuyIValue: a * v, BuyNValue: (1 - a) * v,
+				SellIValue: (a - x) * v, SellNValue: (1 - a + x) * v}
+			f.BuyIVolume, f.BuyNVolume = f.BuyIValue/close, f.BuyNValue/close
+			f.SellIVolume, f.SellNVolume = f.SellIValue/close, f.SellNValue/close
+			f.BuyICount = int64(math.Max(1, math.Round(f.BuyIValue/(80e6*math.Exp(rng.NormFloat64()*0.3)))))
+			f.SellICount = int64(math.Max(1, math.Round(f.SellIValue/(80e6*math.Exp(rng.NormFloat64()*0.3)))))
+			f.BuyNCount, f.SellNCount = 1+rng.Int63n(4), 1+rng.Int63n(4)
+			r := marketRow{InsCode: sh.meta.InsCode, Flow: f}
+			switch u := rng.Float64(); {
+			case u < 0.002:
+				r.Flow.SellNVolume *= 1.02 // the volume identity fails
+			case u < 0.003:
+				r.Flow.SellNValue *= 1.01 // the value identity fails
+			}
+			if sh.meta.InRoster {
+				bar := v
+				r.Flow.BarValue = &bar
+				prices = append(prices, priceRow{InsCode: sh.meta.InsCode, Day: d, Close: close, PriceYesterday: py})
+			}
+			if i < 100 && i != missingFile {
+				sv := v * (1 + rng.NormFloat64()*0.0003)
+				if rng.Float64() < 0.001 {
+					sv *= 1.03 // disagrees with the session statement
+				}
+				r.SessionValue = &sv
+				if !sh.meta.InRoster {
+					prices = append(prices, priceRow{InsCode: sh.meta.InsCode, Day: d, Close: close, PriceYesterday: py})
+				}
+			}
+			rows = append(rows, r)
+		}
+	}
+
+	counts := func(rows []marketRow) []sessionCount {
+		idx := map[time.Time]int{}
+		var out []sessionCount
+		for _, r := range rows {
+			i, ok := idx[r.Flow.Day]
+			if !ok {
+				i, idx[r.Flow.Day] = len(out), len(out)
+				out = append(out, sessionCount{Day: r.Flow.Day})
+			}
+			out[i].Rows++
+			if f := r.Flow; f.BuyIValue+f.BuyNValue+f.SellIValue+f.SellNValue > 0 {
+				out[i].Traded++
+			}
+		}
+		return out
+	}
+	var names []sectorName
+	index, series := map[string]string{}, map[string][]IndexPoint{}
+	for _, s := range sectors {
+		names = append(names, sectorName{Code: s.code, NameFA: s.fa, NameEN: s.en})
+		if s.index == "" {
+			continue
+		}
+		index[s.code] = s.index
+		level := 50000 + rng.Float64()*400000
+		for i := len(days) - 1; i >= 0; i-- {
+			level *= 1 + 0.001 + rng.NormFloat64()*0.015
+			series[s.index] = append(series[s.index], IndexPoint{Day: days[i], Value: level})
+		}
+	}
+	var metas []shareMeta
+	for _, sh := range shares {
+		metas = append(metas, sh.meta)
+	}
+	build := func(rows []marketRow) sectorFlowsBuilt {
+		return buildSectorFlows(sectorFlowInput{Calendar: buildMarketCalendar(counts(rows), calendarSessions),
+			Rows: rows, Prices: prices, Shares: metas, Sectors: names, SectorIndex: index, IndexSeries: series})
+	}
+	write := func(name string, v any) {
+		body, err := json.Marshal(v) // compact, as the route serves it
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), append(body, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	market := build(rows)
+	write("bourse-sector-flows.json", market.response(clock))
+	list, refusal := buildSectorShares(&market, "27", 5, clock)
+	if refusal != nil {
+		t.Fatal(refusal.Message)
+	}
+	write("bourse-sector-flows-27-w5.json", list)
+	var rosterRows []marketRow
+	for _, r := range rows {
+		if r.Flow.BarValue != nil && !r.Flow.Day.Before(days[9]) {
+			rosterRows = append(rosterRows, r)
+		}
+	}
+	// Before the first market-watch ingest market_shares holds only the seeded
+	// roster, listed=FALSE, and the flow table only the roster's rows.
+	var seeded []shareMeta
+	for _, m := range metas {
+		if m.InRoster {
+			m.Listed = false
+			seeded = append(seeded, m)
+		}
+	}
+	rosterOnly := buildSectorFlows(sectorFlowInput{Rows: rosterRows, Shares: seeded, Sectors: names,
+		Calendar: buildMarketCalendar(counts(rosterRows), calendarSessions)})
+	write("bourse-sector-flows-roster-only.json", rosterOnly.response(clock))
+}
+```

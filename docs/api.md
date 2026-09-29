@@ -33,6 +33,8 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `GET /bourse/breadth?basis&period` | Equal-weighted against cap-weighted (`basis=total`: TEDPIX vs شاخص کل هم‌وزن; `price`: the price indices), rebased, with their ratio |
 | `GET /bourse/market-value?period` | Total value of the bourse and the Farabourse per session, in toman and dollars. Size, not a return |
 | `GET /bourse/flows` | The roster's money flow over the newest 1/5/20/60 sessions, and the same summed across the roster (not the market) |
+| `GET /bourse/sector-flows` | Every listed share's حقیقی/حقوقی flow summed by TSETMC sector over the newest 1/5/20/60 **market** sessions: value share and its change, net individual flow, buyer power, sector index return, check tiers, a 12×5-session heatmap, top 15 companies by inflow and outflow. See below |
+| `GET /bourse/sector-flows/{sector}?window` | Every share in one sector over one window (`1`, `5` default, `20`, `60`), each board its own row |
 | `GET /market/funds` | TSE gold-fund stats: prices, volume, retail buy/sell % (latest + today's averages), buyer power, retail net-flow history |
 | `GET /predictions?symbol` · `GET /predictions/{horizon}?symbol` | Latest per horizon · history incl. actuals (symbol: IR_GOLD_18K default, XAUUSD) |
 | `GET /predictions/custom?days=N` | On-demand forecast + buy/hold/sell lean for an arbitrary 1–90 day horizon (computed live, not persisted) |
@@ -237,6 +239,169 @@ Money flow: a session counts only when buying equals selling and the total
 equals the traded value on that session's daily bar; one failing either is
 returned with `consistent: false` and its `excluded_reason`, and left out of
 every sum. None of these figures is a forecast.
+
+## Market-wide money flow (`/bourse/sector-flows`, migration 0030)
+
+`/bourse/flows` covers the nineteen roster shares. Migration 0030 stores the
+حقیقی/حقوقی flow of every share in TSETMC's market watch — bourse, Farabourse
+and base market, every board — from 1 Farvardin 1404 (2025-03-21), and these
+two routes sum it by TSETMC's own sector classification. Everything is read
+from the database and summed in Go (`internal/bourse/sectorflows.go`) with the
+same tolerance constants the roster's check uses; the built response is held
+in memory and rebuilt only when an ingest changes the tables it reads.
+
+### What net individual flow is, and what it is not
+
+**Net individual flow** is individuals' buying minus their selling, in toman
+(`buy_I_value − sell_I_value`). Every trade has a buyer and a seller, so
+institutions' net flow is **exactly its negative** — the response states it as
+`net_institutional_toman` so no reader takes the two for independent flows.
+
+It is **not new money entering the market or a sector.** A sector with
+individual inflow is a sector whose institutions sold to individuals by the
+same amount. What does move between sectors without netting to zero is their
+**share of the market's traded value**; `value_share_pct` and
+`value_share_change_pp` (against the window of equal length before) are the
+rotation figures. None of these numbers is a forecast, and no field carries
+signal or advice.
+
+### Market sessions, not each share's rows
+
+A date is a **market session** only when at least **200 shares** carry a
+traded flow row on it (`coverage.min_traded_shares`): the roster's full history
+lives in the same table, and a date on which only the roster traded is the
+roster, not the market. Window *n* is the *n* newest market sessions — the same
+dates for every share — so a share halted through a window contributes nothing
+to it (the roster table's windows are each share's own newest rows instead).
+Windows end at the newest market session, not today. A window longer than the
+stored calendar is `available: false` with a `reason`, never shortened.
+
+The newest session is flagged `coverage.newest_partial` when its traded-share
+count is under **80%** of the median of the 20 sessions before it — the
+signature of an ingest that stopped halfway. Stored dates with fewer than 200
+traded shares newer than the newest session, or between sessions, are counted
+(`thin_dates_after_newest`, `thin_dates_skipped`) and left out.
+
+Until any date qualifies, `coverage.market_wide` is `false`, every figure is
+empty, and the first note reads "Market-wide flows not ingested yet" — the
+roster is never passed off as the market.
+
+### Check tiers
+
+Every share-session row is in exactly one tier, and every summary carries the
+four counts, so no figure claims a check it did not make. Only `bar_checked`
+and `identity_only` rows enter the sums (`consistent` is their total).
+
+| tier | meaning |
+|---|---|
+| `no_trade` | nothing traded on either side; neither checked nor failed |
+| `excluded` | buying ≠ selling in **value** or in **volume** by more than 0.1%, or a stored session value — `market_share_sessions.value` or `equity_bars.value` — differs from the flow total by more than 1% |
+| `bar_checked` | both identities hold **and** an independent session value agrees within 1% |
+| `identity_only` | both identities hold and no independent session value exists |
+
+The tolerances travel on every response as `checks.identity_tolerance_pct`
+(0.1) and `checks.session_value_tolerance_pct` (1). The volume identity is new
+here and separate on purpose: on فولاد's history the value identity fails on 1
+of 3,849 traded rows and the volume identity on 3. The roster's
+`/bourse/flows` and `/stocks/{symbol}/flows` keep their stricter check (a
+session with no daily bar is excluded there).
+
+### `TieredFlowSummary`
+
+The window summary for a share, a company, a sector or the market. Amounts in
+toman; percentages in percent.
+
+| field | meaning |
+|---|---|
+| `from`, `to`, `sessions` | the window's first and last market session, and how many |
+| `rows` | share-session rows stored in the window; `bar_checked + identity_only + excluded + no_trade` |
+| `consistent` | `bar_checked + identity_only`, the rows the figures are summed from |
+| `net_individual_toman` | Σ(buy_I − sell_I) over consistent rows; `null` when there is none |
+| `net_institutional_toman` | exactly `−net_individual_toman` |
+| `net_individual_pct_of_value` | net individual flow ÷ traded value × 100 |
+| `total_value_toman` | Σ(buy_I + buy_N): traded value |
+| `individual_buy_share_pct`, `individual_sell_share_pct` | individuals' part of the buying and of the selling |
+| `buyer_power` | (Σbuy_I_value ÷ Σbuy_I_count) ÷ (Σsell_I_value ÷ Σsell_I_count): aggregate tickets, per trader-session — a ratio of ticket sizes, not a forecast |
+| `inflow_sessions`, `outflow_sessions` | consistent share-sessions with net individual flow above / below zero |
+| `instruments_traded`, `inflow_instruments`, `outflow_instruments` | shares with a consistent row, and those whose window net is positive / negative |
+| `value_share_pct` | part of the **enclosing** total's traded value: a sector's of the market's; in `/sector-flows/{sector}` a share's of its sector's; in `top`, a company's of the market's |
+| `previous_value_share_pct`, `value_share_change_pp` | the same share over the window of equal length before, and the change in percentage points (sectors only; `null` when no earlier window is stored) |
+
+### `GET /bourse/sector-flows`
+
+| field | meaning |
+|---|---|
+| `sessions` | per window key `"1" "5" "20" "60"`: `available`, `from`, `to`, `previous_from`, `previous_to`, `reason` when unavailable |
+| `market` | per available window, the whole market's `TieredFlowSummary` (its `value_share_pct` is 100) |
+| `sectors[]` | `sector_code`, `name_fa`, `name_en` (from `market_sectors`; both empty for a code TSETMC names nowhere), `index_ins_code` (the sector's bourse index, when one exists), `instruments` (shares with a stored row in the loaded sessions), `listed` (in the newest market watch), `windows` (per window, a `TieredFlowSummary` plus `index_return_pct` / `index_return_reason`), `blocks` |
+| `index_return_pct` | the sector's bourse index from its value in force at the market session **before** the window's first to its value at the window's last; `null` with a reason where the sector has no index, the index has no validated series, or the session before the window is not stored |
+| `blocks`, `market_blocks`, `sectors[].blocks` | the newest 60 market sessions in 12 blocks of 5, oldest first (only whole blocks): `from`, `to`, `rows`, `consistent`, `excluded`, `net_individual_toman`, `net_individual_pct_of_value`, `total_value_toman`, `value_share_pct` — the heatmap and the value-share sparklines |
+| `top` | per window, `inflow` and `outflow`: the 15 companies with the largest net individual inflow / outflow |
+| `coverage` | `market_wide`, `floor`, `min_traded_shares`, `newest_session`, `newest_traded_shares`, `instruments_with_rows_newest`, `median_traded_prev20`, `partial_threshold_pct`, `newest_partial`, `sessions_available`, `instruments_known`, `instruments_listed`, `roster_instruments`, `newest_stored_date`, `newest_stored_traded_shares`, `thin_dates_after_newest`, `thin_dates_skipped` |
+| `checks`, `notes`, `data_age` | the tolerances; what the figures are and are not; the age of the newest market session (the bourse `data_age` block, 10-day bound) |
+
+**Companies.** `top` sums every board of a company (`company_code`, TSETMC's
+`insID[:8]`): main, block (بلوک) and second board are separate instruments, all
+real trades, and all counted in their sector. A company is shown by its
+**main-board** symbol (`board`, `ins_code`; `boards` lists what was summed).
+`in_roster` is true only for an enabled roster share, and only then does
+`roster_symbol` name the `/stocks/{symbol}` page; no other symbol has one.
+
+**Price change** (`price_change_pct`, on the board shown) is chained through
+the exchange's own reference price: Π(close ÷ price_yesterday) over the
+share's sessions in the window, less one. TSETMC lowers `price_yesterday` on an
+ex-date, so a capital increase or a dividend is not read as a fall — a 100%
+capital increase followed by a +4% session is +4%, not −48%. Closes come from
+`market_share_sessions` and, for a roster share where that is missing, its
+traded `equity_bars` row. If any session the share traded in has no stored
+close, the change is `null` with `price_change_reason` rather than a product
+that silently skipped a session.
+
+**Notes carried.** Zero-sum (above); the check tiers; the calendar rule;
+sector membership is TSETMC's classification at the last fetch applied to every
+session (look-ahead); only shares in the market watch when a fetch ran are
+stored (survivorship: a share delisted before the first fetch is missing);
+boards; price change; descriptive, not predictive; and, when they apply, the
+partial newest session and thin dates.
+
+### `GET /bourse/sector-flows/{sector}?window=`
+
+`sector` is a two-digit TSETMC code; `window` is `1`, `5` (default), `20` or
+`60`. Returns `sector_code`, `name_fa`, `name_en`, `index_ins_code`, `window`,
+`sessions` (that window), `sector` (the sector's window summary, as above),
+`items[]`, `count`, `coverage`, `checks`, `notes`, `data_age`.
+
+Each item is one instrument — every board its own row — with `ins_code`,
+`symbol`, `name_fa`, `market`, `board`, `company_code`, `sector_code`,
+`listed`, `in_roster`, `roster_symbol`, `summary` (`TieredFlowSummary`, its
+`value_share_pct` of the **sector**), `price_change_pct`, `price_change_reason`.
+Every listed share of the sector is present; one with no traded row in the
+window has empty figures and `rows: 0`. Items are ordered by traded value.
+
+| status | when |
+|---|---|
+| `400` | `sector` is not two digits, or `window` is not one of 1/5/20/60 |
+| `404 not_found` | no stored share is classified in that sector |
+| `409 window_unavailable` | fewer market sessions are stored than the window needs |
+| `200`, `items: []` | market-wide flows are not ingested yet (`coverage.market_wide: false`) |
+
+```json
+{
+  "sessions": {"5": {"sessions": 5, "available": true, "from": "2026-09-22", "to": "2026-09-28",
+                     "previous_from": "2026-09-15", "previous_to": "2026-09-21"}},
+  "market": {"5": {"rows": 1284, "consistent": 1280, "bar_checked": 1280, "identity_only": 0,
+                   "excluded": 3, "no_trade": 1, "net_individual_toman": -925813839159.13,
+                   "net_institutional_toman": 925813839159.13, "value_share_pct": 100, "…": "…"}},
+  "sectors": [{"sector_code": "27", "name_en": "Basic metals", "index_ins_code": "32453344048876642",
+               "windows": {"5": {"value_share_pct": 16.928036, "value_share_change_pp": 4.81076,
+                                 "index_return_pct": -4.756814, "…": "…"}}, "blocks": ["…12…"]}],
+  "coverage": {"market_wide": true, "min_traded_shares": 200, "newest_partial": false, "…": "…"},
+  "checks": {"identity_tolerance_pct": 0.1, "session_value_tolerance_pct": 1}
+}
+```
+
+(An excerpt of the hand-built frontend fixture, `bourse-sector-flows.json`:
+illustrative figures, not the market.)
 
 ## Example
 

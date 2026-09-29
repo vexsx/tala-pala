@@ -124,8 +124,9 @@ type EquityHandlers interface {
 // BourseHandlers serves the Tehran market as a whole: TSETMC's indices (with
 // the one correction their data needs, applied by prediction-python and
 // verified against the exchange's live figure), the equal- against the
-// cap-weighted index, the total market value, the roster's money flow and the
-// market snapshot. Reads and arithmetic only; nothing forecasts.
+// cap-weighted index, the total market value, the roster's money flow, the
+// market-wide money flow by sector and the market snapshot. Reads and
+// arithmetic only; nothing forecasts.
 type BourseHandlers interface {
 	Overview(http.ResponseWriter, *http.Request)
 	Indices(http.ResponseWriter, *http.Request)
@@ -133,6 +134,8 @@ type BourseHandlers interface {
 	Breadth(http.ResponseWriter, *http.Request)
 	MarketValue(http.ResponseWriter, *http.Request)
 	Flows(http.ResponseWriter, *http.Request)
+	SectorFlows(http.ResponseWriter, *http.Request)
+	SectorFlowShares(http.ResponseWriter, *http.Request)
 }
 
 // RelativeValueHandlers serves the numeraire and relative-value engine:
@@ -300,6 +303,12 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			r.Get("/api/v1/bourse/breadth", d.Bourse.Breadth)
 			r.Get("/api/v1/bourse/market-value", d.Bourse.MarketValue)
 			r.Get("/api/v1/bourse/flows", d.Bourse.Flows)
+			// The market-wide flow (migration 0030): every listed share's
+			// حقیقی/حقوقی flow summed by TSETMC sector over market sessions,
+			// and one sector's shares. Not under /bourse/flows/, so nothing
+			// that matches the roster route's prefix can answer for it.
+			r.Get("/api/v1/bourse/sector-flows", d.Bourse.SectorFlows)
+			r.Get("/api/v1/bourse/sector-flows/{sector}", d.Bourse.SectorFlowShares)
 
 			// The numeraire and relative-value engine. /markets/numeraires is
 			// registered so a client can discover which units of account this

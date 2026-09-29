@@ -50,6 +50,12 @@ type Handler struct {
 
 	mu    sync.Mutex
 	store *indexStore
+
+	// The built market-wide money flow (sectorflows_handler.go), keyed the
+	// same way on its own ingest's footprint. A separate lock, so a rebuild of
+	// one cache never waits on the other.
+	flowMu    sync.Mutex
+	flowStore *sectorFlowsBuilt
 }
 
 // NewHandler is the constructor main.go wires.

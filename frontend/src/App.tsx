@@ -28,6 +28,7 @@ import Markets from './pages/Markets'
 import RelativeValue from './pages/RelativeValue'
 import Stocks from './pages/Stocks'
 import Bourse from './pages/Bourse'
+import MoneyFlow from './pages/MoneyFlow'
 import StockDetail from './pages/StockDetail'
 import Economy from './pages/Economy'
 import Portfolio from './pages/Portfolio'
@@ -47,6 +48,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean; adminOnly?: b
   { to: '/economy', label: 'Economy' },
   { to: '/relative-value', label: 'Relative value' },
   { to: '/bourse', label: 'Tehran market' },
+  { to: '/money-flow', label: 'Money flow' },
   { to: '/stocks', label: 'Stocks' },
   { to: '/portfolio', label: 'Portfolio' },
   { to: '/alerts', label: 'Alerts' },
@@ -206,6 +208,7 @@ export default function App() {
               <Route path="/relative-value" element={<RelativeValue />} />
               <Route path="/economy" element={<Economy />} />
               <Route path="/bourse" element={<Bourse />} />
+              <Route path="/money-flow" element={<MoneyFlow />} />
               <Route path="/stocks" element={<Stocks />} />
               {/*
                * The screener ranks nineteen instruments; this is where a reader

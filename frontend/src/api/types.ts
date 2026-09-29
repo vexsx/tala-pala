@@ -2369,3 +2369,170 @@ export interface StockRelativeResponse {
   notes: string[]
   data_age: BourseDataAge
 }
+
+// --- the market-wide money flow (GET /bourse/sector-flows) ----------------------
+
+/**
+ * A window's flow for a share, a company, a sector or the market —
+ * `bourse.TieredFlowSummary`. Amounts in toman. `rows` are share-sessions,
+ * each in exactly one of the four check tiers; only `bar_checked` and
+ * `identity_only` rows enter the figures.
+ */
+export interface TieredFlowSummary {
+  from: string | null
+  to: string | null
+  /** Market sessions in the window. */
+  sessions: number
+  rows: number
+  consistent: number
+  bar_checked: number
+  identity_only: number
+  excluded: number
+  no_trade: number
+  net_individual_toman: number | null
+  /** Stated as exactly −net_individual_toman: the two sides of one set of trades. */
+  net_institutional_toman: number | null
+  net_individual_pct_of_value: number | null
+  total_value_toman: number | null
+  individual_buy_share_pct: number | null
+  individual_sell_share_pct: number | null
+  buyer_power: number | null
+  inflow_sessions: number
+  outflow_sessions: number
+  instruments_traded: number
+  inflow_instruments: number
+  outflow_instruments: number
+  /** Of the enclosing total: a sector's of the market, a share's of its sector. */
+  value_share_pct: number | null
+  previous_value_share_pct: number | null
+  value_share_change_pp: number | null
+}
+
+export interface SectorFlowWindow extends TieredFlowSummary {
+  index_return_pct: number | null
+  index_return_reason?: string
+}
+
+export interface SectorFlowSessionWindow {
+  sessions: number
+  available: boolean
+  from: string | null
+  to: string | null
+  previous_from: string | null
+  previous_to: string | null
+  reason?: string
+}
+
+/** One five-session block of the heatmap. */
+export interface SectorFlowBlock {
+  from: string
+  to: string
+  rows: number
+  consistent: number
+  excluded: number
+  net_individual_toman: number | null
+  net_individual_pct_of_value: number | null
+  total_value_toman: number | null
+  value_share_pct: number | null
+}
+
+export interface SectorFlowSector {
+  sector_code: string
+  name_fa: string
+  name_en: string
+  index_ins_code?: string
+  instruments: number
+  listed: number
+  /** Keys '1' | '5' | '20' | '60', present only when the window is available. */
+  windows: Record<string, SectorFlowWindow>
+  /** Aligned with the response's `blocks`, oldest first. */
+  blocks: SectorFlowBlock[]
+}
+
+/** A company over one window, every board summed, shown by its main board. */
+export interface SectorFlowCompany {
+  company_code: string
+  ins_code: string
+  symbol: string
+  name_fa: string
+  board: string
+  sector_code: string
+  sector_name_fa: string
+  sector_name_en: string
+  boards: string[]
+  in_roster: boolean
+  roster_symbol?: string
+  summary: TieredFlowSummary
+  price_change_pct: number | null
+  price_change_reason?: string
+}
+
+export interface SectorFlowShare {
+  ins_code: string
+  symbol: string
+  name_fa: string
+  market: string
+  board: string
+  company_code: string
+  sector_code: string
+  listed: boolean
+  in_roster: boolean
+  roster_symbol?: string
+  summary: TieredFlowSummary
+  price_change_pct: number | null
+  price_change_reason?: string
+}
+
+export interface SectorFlowCoverage {
+  market_wide: boolean
+  floor: string
+  min_traded_shares: number
+  newest_session: string | null
+  newest_traded_shares: number
+  instruments_with_rows_newest: number
+  median_traded_prev20: number | null
+  partial_threshold_pct: number
+  newest_partial: boolean
+  sessions_available: number
+  instruments_known: number
+  instruments_listed: number
+  roster_instruments: number
+  newest_stored_date: string | null
+  newest_stored_traded_shares: number
+  thin_dates_after_newest: number
+  thin_dates_skipped: number
+}
+
+export interface SectorFlowChecks {
+  identity_tolerance_pct: number
+  session_value_tolerance_pct: number
+}
+
+export interface SectorFlowsResponse {
+  sessions: Record<string, SectorFlowSessionWindow>
+  market: Record<string, TieredFlowSummary>
+  sectors: SectorFlowSector[]
+  blocks: Array<{ from: string; to: string; sessions: number }>
+  market_blocks: SectorFlowBlock[]
+  top: Record<string, { inflow: SectorFlowCompany[]; outflow: SectorFlowCompany[] }>
+  coverage: SectorFlowCoverage
+  checks: SectorFlowChecks
+  notes: string[]
+  data_age: BourseDataAge
+}
+
+export interface SectorFlowSharesResponse {
+  sector_code: string
+  name_fa: string
+  name_en: string
+  index_ins_code?: string
+  window: string
+  sessions: SectorFlowSessionWindow
+  sector: SectorFlowWindow | null
+  items: SectorFlowShare[]
+  count: number
+  coverage: SectorFlowCoverage
+  checks: SectorFlowChecks
+  notes: string[]
+  data_age: BourseDataAge
+}

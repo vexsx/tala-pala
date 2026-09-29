@@ -824,6 +824,9 @@ function FlowsCard({ calendar }: { calendar: 'jalali' | 'gregorian' }) {
               {n}
             </p>
           ))}
+          <p className="small" data-testid="bx-flows-market-link">
+            The whole market, sector by sector: <Link to="/money-flow">Money flow</Link>.
+          </p>
         </>
       )}
     </div>
