@@ -220,6 +220,11 @@ type stockRow struct {
 	// bars from 2018-11-10 and first traded on 2019-07-13; the 161 in between
 	// are placeholders at the 1,000-rial par value.
 	AdjustedFirstBar *time.Time
+	// StaleActions counts stored corporate actions of the verdict's version
+	// whose evidence no longer holds: the stored bar just before the action is
+	// not the one it was measured from, because a session was stored between
+	// them after it was detected (see buildAdjustment).
+	StaleActions int
 }
 
 // adjustmentItem is the verdict as a client sees it. It travels on the roster
@@ -247,6 +252,17 @@ type adjustmentItem struct {
 
 const statusNeverIngested = "never_ingested"
 
+// statusOutOfDate is a stored verdict whose actions the stored bars no longer
+// support. TSETMC's CDN served one copy of the roster's histories without the
+// 2023-03-27 session (measured 2026-09-29); detected over it, 2023-03-28's
+// reference read as a corporate action on eighteen shares, and when the other
+// copy later stored the session, the action stayed and rescaled every adjusted
+// price before it — اخابر by ×1.0627 — while the verdict still said
+// validated. The ingest now re-derives the actions over the stored bars; this
+// is the read side refusing a store an older ingest left inconsistent, until
+// the next ingest recomputes it.
+const statusOutOfDate = "out_of_date"
+
 func buildAdjustment(row stockRow) adjustmentItem {
 	if row.AdjustmentStatus == nil {
 		return adjustmentItem{Status: statusNeverIngested}
@@ -254,6 +270,12 @@ func buildAdjustment(row stockRow) adjustmentItem {
 	item := adjustmentItem{
 		Status:   *row.AdjustmentStatus,
 		Servable: *row.AdjustmentStatus == statusValidated,
+	}
+	if row.StaleActions > 0 {
+		item.Status, item.Servable = statusOutOfDate, false
+		item.RefusalReason = fmt.Sprintf("%d stored corporate action(s) were measured across a "+
+			"session stored after they were detected, so the adjustment no longer describes the "+
+			"stored bars; it is recomputed by the next ingest", row.StaleActions)
 	}
 	if row.AdjustmentVersion != nil {
 		item.Version = *row.AdjustmentVersion
@@ -269,7 +291,7 @@ func buildAdjustment(row stockRow) adjustmentItem {
 	}
 	item.AdjustedFirstBar = formatDate(row.AdjustedFirstBar)
 	item.WorstReturn = row.WorstReturn
-	if row.RefusalReason != nil {
+	if row.RefusalReason != nil && item.RefusalReason == "" {
 		item.RefusalReason = *row.RefusalReason
 	}
 	if row.ComputedAt != nil {
@@ -534,7 +556,15 @@ const stockColumns = `
 	       i.first_bar, i.last_bar, i.bar_count, i.enabled, i.notes,
 	       a.adjustment_version, a.status, a.actions_applied, a.reopenings,
 	       a.pre_listing_bars, a.worst_return, a.refusal_reason, a.computed_at,
-	       a.first_bar AS adjusted_first_bar`
+	       a.first_bar AS adjusted_first_bar,
+	       (SELECT count(*)
+	        FROM corporate_actions c
+	        WHERE c.ins_code = i.ins_code
+	          AND c.adjustment_version = a.adjustment_version
+	          AND c.prev_trade_date IS DISTINCT FROM (
+	              SELECT max(b.trade_date) FROM equity_bars b
+	              WHERE b.ins_code = c.ins_code AND b.trade_date < c.effective_date)
+	       )::int AS stale_actions`
 
 // verdictJoin picks ONE verdict per instrument: the most recently computed.
 //
@@ -579,7 +609,7 @@ func scanStock(row pgx.Row) (stockRow, error) {
 		&s.FirstBar, &s.LastBar, &s.BarCount, &s.Enabled, &s.Notes,
 		&s.AdjustmentVersion, &s.AdjustmentStatus, &s.ActionsApplied,
 		&s.Reopenings, &s.PreListingBars, &s.WorstReturn, &s.RefusalReason,
-		&s.ComputedAt, &s.AdjustedFirstBar)
+		&s.ComputedAt, &s.AdjustedFirstBar, &s.StaleActions)
 	return s, err
 }
 

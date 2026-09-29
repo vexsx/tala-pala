@@ -88,7 +88,7 @@ var (
 // tehranResponseKeys is candleResponseKeys plus what a Tehran series adds. A
 // test pins every one of them onto the wire.
 var tehranResponseKeys = append(append([]string{}, candleResponseKeys...),
-	"price_fields", "unit", "source", "instrument", "data_age", "notes", "revision")
+	"unit", "source", "instrument", "data_age", "notes", "revision")
 
 // seriesCandle is one settled session on the wire. It deliberately is not
 // `candle`: that type always emits ticks and synthetic, which describe tick
@@ -418,12 +418,14 @@ func tehranResponse(q candleQuery, win candleWindow, cov candleCoverage, page te
 		// data_age — the one a reader must look at.
 		"as_of":        now,
 		"price_fields": meta.PriceFields,
-		"unit":         meta.Unit,
-		"source":       tehranSource,
-		"instrument":   meta.Instrument,
-		"data_age":     meta.DataAge,
-		"notes":        meta.Notes,
-		"revision":     meta.Revision,
+		// A Tehran series is aged by data_age, not by a cadence.
+		"cadence":    nil,
+		"unit":       meta.Unit,
+		"source":     tehranSource,
+		"instrument": meta.Instrument,
+		"data_age":   meta.DataAge,
+		"notes":      meta.Notes,
+		"revision":   meta.Revision,
 	}
 }
 
@@ -457,17 +459,16 @@ func indexNotes(info bourse.IndexInfo, page tehranPage) []string {
 	case bok:
 		notes = append(notes, fmt.Sprintf("This is %s; TSETMC does not state its weighting.", b))
 	}
-	unchanged := 0
+	// Stated without a count: this response is one page of the series, and
+	// its count disagreed with the status bar's over every page loaded ("59
+	// session(s) on this page" beside "62 of 1000"). The client counts.
 	for _, c := range page.Candles {
 		if c.Unchanged {
-			unchanged++
+			notes = append(notes, "Sessions that repeat the previous close exactly — the "+
+				"market was closed, or nothing in the index traded — are drawn flat, as TSETMC "+
+				"published them, and left out of every indicator.")
+			break
 		}
-	}
-	if unchanged > 0 {
-		notes = append(notes, fmt.Sprintf(
-			"%d session(s) on this page repeat the previous close exactly — the market was "+
-				"closed, or nothing in the index traded. They are drawn flat, as TSETMC "+
-				"published them, and left out of every indicator.", unchanged))
 	}
 	if info.Notes != "" {
 		notes = append(notes, info.Notes)
@@ -602,11 +603,9 @@ func (h *Handler) equityCandles(w http.ResponseWriter, r *http.Request, q candle
 	if historyFrom == nil && len(bars.Items) > 0 {
 		historyFrom = &bars.Items[0].Day
 	}
+	// No per-page count of halts: equities' own notes say how a halt is drawn,
+	// and the status bar counts them over every page loaded.
 	notes := append([]string{}, bars.Notes...)
-	if halted := haltedSessions(page.Candles); halted > 0 {
-		notes = append(notes, fmt.Sprintf("%d of the %d sessions on this page had no trade.",
-			halted, len(page.Candles)))
-	}
 	httpserver.JSON(w, http.StatusOK, tehranResponse(q, win,
 		tehranCoverage(historyFrom, equityCoverageNote), page, tehranMeta{
 			PriceFields: equityPriceFields,
@@ -616,14 +615,4 @@ func (h *Handler) equityCandles(w http.ResponseWriter, r *http.Request, q candle
 			Notes:       notes,
 			Revision:    bars.Revision,
 		}, now))
-}
-
-func haltedSessions(candles []seriesCandle) int {
-	n := 0
-	for _, c := range candles {
-		if c.Traded != nil && !*c.Traded {
-			n++
-		}
-	}
-	return n
 }

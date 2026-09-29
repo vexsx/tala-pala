@@ -165,3 +165,49 @@ func TestTheChartCursorIsExclusive(t *testing.T) {
 		t.Fatal("a chart symbol is resolved by insCode, never by a Persian name")
 	}
 }
+
+// The refusal is the sentence the chart shows: it used to end on the route
+// "/api/v1/stocks/{symbol}/bars?adjusted=false", placeholder unfilled.
+func TestTheChartRefusalSaysWhyInWords(t *testing.T) {
+	var gate *AdjustmentUnavailableError
+	if err := chartGate(stockRow{InsCode: "1", SymbolFA: "کچاد"}); !errors.As(err, &gate) {
+		t.Fatalf("never ingested must be refused: %v", err)
+	}
+	msg := gate.Error()
+	if !strings.Contains(msg, "کچاد cannot be charted") || !strings.Contains(msg, "never been ingested") {
+		t.Errorf("message = %q", msg)
+	}
+	if strings.Contains(msg, "{symbol}") || strings.Contains(msg, "/api/") {
+		t.Errorf("a route is not a reason: %q", msg)
+	}
+	if gate.Details()["raw_bars"] != "/api/v1/stocks/کچاد/bars?adjusted=false" {
+		t.Errorf("the raw route travels in the details, filled in: %v", gate.Details()["raw_bars"])
+	}
+}
+
+// A stored action measured across a session stored after it was detected is
+// a phantom (the 2023-03-28 actions of TSETMC's copy without 2023-03-27): the
+// adjustment is refused as out of date until an ingest recomputes it, rather
+// than served under a verdict that still says validated.
+func TestAnAdjustmentWhoseActionsTheStoredBarsContradictIsRefused(t *testing.T) {
+	row := foolad()
+	row.StaleActions = 1
+	adj := buildAdjustment(row)
+	if adj.Servable || adj.Status != statusOutOfDate {
+		t.Fatalf("adjustment = %+v, want out_of_date and not servable", adj)
+	}
+	if !strings.Contains(adj.RefusalReason, "1 stored corporate action") {
+		t.Errorf("refusal reason = %q", adj.RefusalReason)
+	}
+	var gate *AdjustmentUnavailableError
+	if err := chartGate(row); !errors.As(err, &gate) || !strings.Contains(gate.Error(), "out of date") {
+		t.Fatalf("the chart must refuse an out-of-date adjustment: %v", err)
+	}
+	if !strings.Contains(stockColumns, "stale_actions") ||
+		!strings.Contains(stockColumns, "c.prev_trade_date IS DISTINCT FROM") {
+		t.Fatal("every roster read must count the actions the stored bars contradict")
+	}
+	if adj := buildAdjustment(foolad()); !adj.Servable || adj.Status != statusValidated {
+		t.Fatalf("a consistent store stays served: %+v", adj)
+	}
+}

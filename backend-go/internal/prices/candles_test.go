@@ -1264,7 +1264,7 @@ func TestCandleResponseEchoesTheEffectiveWindow(t *testing.T) {
 	q := mustQuery(t, "from=2026-08-01T00:00:00Z&to=2026-08-01T23:59:59Z&interval=1d")
 	win := snapCandleWindow(q, q.Interval, now)
 	body := candleResponse(q, q.Interval, candleCoverage{}, win, candlePage{},
-		buildCandlePayload(nil, 0, q.Interval, now, false), now)
+		buildCandlePayload(nil, 0, q.Interval, now, false, false), now)
 
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -1331,7 +1331,7 @@ func TestCandlePayloadLevelsDoNotNarrowWithLimit(t *testing.T) {
 		{"a single-bar page", 59},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := buildCandlePayload(bars, tc.start, iv, now, true)
+			p := buildCandlePayload(bars, tc.start, iv, now, true, false)
 			if len(p.Candles) != len(bars)-tc.start {
 				t.Fatalf("page has %d candles, want %d", len(p.Candles), len(bars)-tc.start)
 			}
@@ -1387,7 +1387,7 @@ func TestCandlePayloadRefusesLevelsItCannotMeasure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bars := build(tc.bars)
 			now := base.AddDate(0, 0, tc.bars) // every fetched bucket has finished
-			p := buildCandlePayload(bars, tc.start, iv, now, false)
+			p := buildCandlePayload(bars, tc.start, iv, now, false, false)
 			if got := p.Support != nil; got != tc.wantBand {
 				t.Fatalf("support present = %v, want %v (bars=%d)", got, tc.wantBand, tc.bars)
 			}
@@ -1419,7 +1419,7 @@ func TestCandlePayloadKeepsPivotsOnAPageOfOneFormingBar(t *testing.T) {
 			open: v, high: v + 2, low: v - 2, close: v, ticks: 5}
 	}
 	now := base.Add(2*time.Hour + 30*time.Minute) // the last bucket is still open
-	p := buildCandlePayload(bars, 2, iv, now, false)
+	p := buildCandlePayload(bars, 2, iv, now, false, false)
 	if len(p.Candles) != 1 || p.Candles[0].Confirmed {
 		t.Fatalf("page = %d candles, confirmed=%v", len(p.Candles), p.Candles[0].Confirmed)
 	}
@@ -1477,5 +1477,96 @@ func TestUnsupportedIntervalMessageIsTheContractText(t *testing.T) {
 	// unavailable, so it is part of the contract, not a log line.
 	if unsupportedIntervalMessage != "This timeframe is not available for the current data source." {
 		t.Fatalf("message drifted: %q", unsupportedIntervalMessage)
+	}
+}
+
+// --- daily-close series ------------------------------------------------------
+
+// dailyBars is a series of one settled close per day: every bucket one
+// observation, open = high = low = close.
+func dailyBars(n int, base time.Time) []candleBar {
+	bars := make([]candleBar, n)
+	for i := range bars {
+		v := 500000 + float64(i*100)
+		bars[i] = candleBar{date: base.AddDate(0, 0, i), open: v, high: v, low: v, close: v, ticks: 1}
+	}
+	return bars
+}
+
+// Silver 999, the Bahar coin and the funds with no live source are one
+// settled close a day. Drawn as OHLC they showed O=H=L=C and a "1 obs" badge
+// on every bar; SuperTrend was drawn from a range no trade made, and the
+// pivot card showed seven identical levels. The response now says the series
+// is close-only and refuses what needs a range, as it does for an index.
+func TestADailyCloseSeriesIsServedCloseOnly(t *testing.T) {
+	iv := mustInterval(t, "1d")
+	base := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+	bars := dailyBars(80, base)
+	now := base.AddDate(0, 0, 81)
+	p := buildCandlePayload(bars, 20, iv, now, true, true)
+	if len(p.PriceFields) != 1 || p.PriceFields[0] != "close" || p.Cadence != cadenceDailyClose {
+		t.Fatalf("price_fields = %v, cadence = %q", p.PriceFields, p.Cadence)
+	}
+	for _, key := range rangeOverlayKeys {
+		if v, ok := p.Overlays[key]; !ok || v != nil {
+			t.Errorf("%s = %v, want a whole-field null", key, v)
+		}
+	}
+	if sma, ok := p.Overlays["sma_20"].([]*float64); !ok || sma[len(sma)-1] == nil {
+		t.Error("SMA 20 needs only the close and stays")
+	}
+	if p.Pivots != nil {
+		t.Errorf("pivots from one close are seven copies of it: %+v", *p.Pivots)
+	}
+	if p.Support == nil {
+		t.Error("the support/resistance band is built from closes and stays")
+	}
+
+	q := mustQuery(t, "interval=1d")
+	raw, err := json.Marshal(candleResponse(q, iv, candleCoverage{}, snapCandleWindow(q, iv, now),
+		candlePage{}, p, now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"price_fields":["close"]`) ||
+		!strings.Contains(string(raw), `"cadence":"daily_close"`) {
+		t.Fatalf("the wire must say close-only and daily_close: %s", raw[:200])
+	}
+}
+
+// A tick series keeps its four prices, its range overlays and its pivots,
+// and says so with null price_fields and cadence.
+func TestATickSeriesKeepsItsRange(t *testing.T) {
+	iv := mustInterval(t, "1h")
+	base := time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)
+	bars := make([]candleBar, 60)
+	for i := range bars {
+		v := float64(1000 + i)
+		bars[i] = candleBar{date: base.Add(time.Duration(i) * time.Hour),
+			open: v, high: v + 2, low: v - 2, close: v, ticks: 12}
+	}
+	p := buildCandlePayload(bars, 10, iv, base.Add(61*time.Hour), true, false)
+	if p.PriceFields != nil || p.Cadence != "" {
+		t.Fatalf("price_fields = %v, cadence = %q", p.PriceFields, p.Cadence)
+	}
+	if p.Overlays["supertrend"] == nil || p.Pivots == nil {
+		t.Fatal("a series with an observed range keeps its range overlays and pivots")
+	}
+}
+
+// Classic pivots are built from the newest finished bucket's high, low and
+// close. When that bucket holds ONE observation all three are the same number
+// and the seven levels collapse onto it, so none is published.
+func TestPivotsAreNullWhenTheNewestFinishedBucketHoldsOneObservation(t *testing.T) {
+	iv := mustInterval(t, "1d")
+	base := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
+	bars := dailyBars(5, base)
+	p := buildCandlePayload(bars, 0, iv, base.AddDate(0, 0, 10), false, false)
+	if p.Pivots != nil {
+		t.Fatalf("pivots from a single observation: %+v", *p.Pivots)
+	}
+	bars[4].ticks, bars[4].high, bars[4].low = 40, bars[4].close+50, bars[4].close-50
+	if p := buildCandlePayload(bars, 0, iv, base.AddDate(0, 0, 10), false, false); p.Pivots == nil {
+		t.Fatal("a finished bucket with an observed range keeps its pivots")
 	}
 }

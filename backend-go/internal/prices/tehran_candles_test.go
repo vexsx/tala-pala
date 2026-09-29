@@ -331,8 +331,14 @@ func TestAHaltedSessionIsAGapNotAFlatDay(t *testing.T) {
 	if decodeMap(t, page.Candles[2])["close_outside_range"] != true {
 		t.Fatal("an official close outside the range must say so")
 	}
-	if haltedSessions(page.Candles) != 1 {
-		t.Fatal("one halt on the page")
+	halts := 0
+	for i := range page.Candles {
+		if decodeMap(t, page.Candles[i])["traded"] == false {
+			halts++
+		}
+	}
+	if halts != 1 {
+		t.Fatalf("%d halts on the page, want one", halts)
 	}
 }
 
@@ -585,8 +591,10 @@ func TestAShareChartAsksForTheWarmUpAndTodaysSession(t *testing.T) {
 	if inst := body["instrument"].(map[string]any); inst["symbol"] != "فولاد" {
 		t.Fatalf("instrument = %v", inst)
 	}
+	// No count per page: the status bar counts halts over every page loaded,
+	// and "1 of the 2 sessions on this page" disagreed with it.
 	notes := body["notes"].([]any)
-	if len(notes) != 2 || notes[1] != "1 of the 2 sessions on this page had no trade." {
+	if len(notes) != 1 || notes[0] != "rials" {
 		t.Fatalf("notes = %v", notes)
 	}
 }
@@ -625,9 +633,18 @@ func TestIndexNotesStateWhatTheLineIs(t *testing.T) {
 	notes := indexNotes(info, page)
 	joined := strings.Join(notes, "\n")
 	for _, want := range []string{"31 of this index's stored closes", "a price index (dividends excluded), equal-weighted",
-		"2 session(s) on this page repeat", "registry note", "not a forecast"} {
+		"Sessions that repeat the previous close exactly", "registry note", "not a forecast"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("notes do not say %q:\n%s", want, joined)
 		}
+	}
+	// A count on one page disagreed with the status bar's count over every
+	// page loaded ("59 session(s) on this page" beside "62 of 1000").
+	if strings.Contains(joined, "on this page") {
+		t.Fatalf("a page's own count is not the chart's:\n%s", joined)
+	}
+	if notes := indexNotes(info, tehranPage{Candles: []seriesCandle{{}, {}}}); strings.Contains(
+		strings.Join(notes, "\n"), "repeat the previous close") {
+		t.Fatal("a page with no repeated session says nothing about them")
 	}
 }

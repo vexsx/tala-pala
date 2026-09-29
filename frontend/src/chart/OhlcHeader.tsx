@@ -11,7 +11,7 @@ import {
   pctClass,
   type DisplayUnit
 } from '../lib/format'
-import { intervalLabel, type IntervalId } from './intervals'
+import { intervalLabel, intervalSeconds, type IntervalId } from './intervals'
 import { symbolKind, symbolQuote } from './symbols'
 import { indexOfTime, isHalted, isSingleObservation } from './useCandles'
 
@@ -113,9 +113,14 @@ export function OhlcHeader({
   // it has no substitute either.
   const basis = prev ? prev.close : bar.open
   const changePct = basis !== null && basis !== 0 ? ((bar.close - basis) / basis) * 100 : null
-  const single = isSingleObservation(bar)
-  const halted = isHalted(bar)
   const closeOnly = Array.isArray(priceFields) && !priceFields.includes('open')
+  // A close-only series has no range by definition, so "one observation, no
+  // range" says nothing about any one bar of it.
+  const single = !closeOnly && isSingleObservation(bar)
+  const halted = isHalted(bar)
+  // A bucket of a day or longer is a date: the Tehran rendering of its UTC
+  // start ("03:30") is a time nobody traded at.
+  const dated = caption !== null || intervalSeconds(interval) >= 86_400
   const equity = symbolKind(symbol) === 'tse_equity'
   const price = (value: number | null) => (value === null ? '—' : formatChartPrice(value, symbol, unit))
 
@@ -125,9 +130,10 @@ export function OhlcHeader({
       <span className="ohlc-interval">{intervalLabel(interval)}</span>
       {caption && <span className="ohlc-unit muted small">{caption}</span>}
       <span className="ohlc-time muted small">
-        {/* A Tehran session is a trade DATE; a clock time on it would be the
-            Tehran rendering of UTC midnight, which no one traded at. */}
-        {caption
+        {/* A Tehran session, and any bucket of a day or more, is a DATE; a
+            clock time on it would be the Tehran rendering of UTC midnight,
+            which no one traded at. */}
+        {dated
           ? formatDate(bar.open_time ?? new Date(bar.t * 1000), calendar)
           : formatDateTime(bar.open_time ?? new Date(bar.t * 1000), calendar)}
       </span>

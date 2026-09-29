@@ -252,3 +252,27 @@ def test_naive_datetimes_are_treated_as_utc(mh_settings):
     assert is_acceptably_fresh(
         "IR_GOLD_18K", datetime(2026, 7, 20, 11, 45), now, mh_settings
     )
+
+
+# --- one settled close per session: stale after four calendar days -----------
+
+
+@pytest.mark.parametrize("symbol", [
+    "IR_SILVER_999", "IR_GOLD_MESGHAL", "IR_GOLD_FUND_KAHRABA", "IR_SILVER_FUND_SIMIN",
+])
+def test_a_daily_close_is_fresh_until_it_is_more_than_four_days_old(mh_settings, symbol):
+    """Mirrors backend-go markethours: yesterday's 23:00 UTC close is the
+    newest that can exist during today's session, so the minutes rule can only
+    call it stale."""
+    wednesday_close = utc(2026, 7, 15, 23, 0)
+    assert is_acceptably_fresh(symbol, utc(2026, 7, 19, 23, 0), utc(2026, 7, 20, 9, 30),
+                               mh_settings)
+    assert is_acceptably_fresh(symbol, wednesday_close, utc(2026, 7, 18, 6, 0), mh_settings)
+    assert is_acceptably_fresh(symbol, wednesday_close, utc(2026, 7, 19, 20, 29), mh_settings)
+    assert not is_acceptably_fresh(symbol, wednesday_close, utc(2026, 7, 19, 20, 31), mh_settings)
+
+
+def test_live_quote_series_keep_the_session_rule(mh_settings):
+    for symbol in ("IR_GOLD_FUND_AYAR", "IR_COIN_EMAMI"):
+        assert not is_acceptably_fresh(symbol, utc(2026, 7, 19, 23, 0), utc(2026, 7, 20, 9, 30),
+                                       mh_settings)

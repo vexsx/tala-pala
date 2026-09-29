@@ -54,9 +54,11 @@ export const SYMBOL_LABELS: Record<Symbol_, string> = {
   BRENT_OIL: 'Brent oil',
   DXY: 'Dollar index',
   US10Y: 'US 10Y yield',
-  IR_GOLD_FUND_AYAR: 'Ayar fund (عیار)',
-  IR_GOLD_FUND_TALA: 'Lotus gold fund (طلا)',
-  IR_GOLD_FUND_KAHRABA: 'Kahroba fund (کهربا)',
+  // The registry's name_en (migration 0024) with the ticker, so the picker,
+  // the chart header and the side card call one fund by one name.
+  IR_GOLD_FUND_AYAR: 'Ayar gold ETF (عیار)',
+  IR_GOLD_FUND_TALA: 'Tala gold ETF (طلا)',
+  IR_GOLD_FUND_KAHRABA: 'Kahraba gold ETF (کهربا)',
   IR_GOLD_FUND_FLOW: 'Funds retail net flow'
 }
 
@@ -104,10 +106,22 @@ export interface CurrentPrice {
   /** 'closed' means the last observation is a last-session price, not stale data. */
   market_state?: MarketState
   change_24h_pct: number | null
+  /**
+   * 'daily_close' for a series that only ever receives one settled close per
+   * session (TGJU's daily history, the funds with no live quote): its
+   * `stale` is the server's four-day daily-close rule, and its age is a DATE,
+   * not hours. Absent for a live-quote series.
+   */
+  cadence?: 'daily_close'
 }
 
 export interface CurrentPricesResponse {
-  prices: Partial<Record<Symbol_, CurrentPrice>>
+  /**
+   * Every symbol `prices` holds a usable row for — the canonical twelve and
+   * every registry code since (silver 999, the coins, the funds…), so keyed
+   * by string rather than by the canonical union.
+   */
+  prices: Partial<Record<string, CurrentPrice>>
   as_of: string
 }
 
@@ -882,9 +896,15 @@ export interface ChartCandlesResponse {
   resistance: number | null
   /** When the response was built — NOT how old the data is (see data_age). */
   as_of: string
+  /**
+   * ['close'] for a close-only series — a Tehran index, or a registry series
+   * of one settled close per session: draw a line, not candles. Null or
+   * absent for a tick series, whose four prices are observed.
+   */
+  price_fields?: string[] | null
+  /** 'daily_close' for a registry series of one settled close per session. */
+  cadence?: 'daily_close' | null
   // The fields below travel on a Tehran series (IDX:/EQ:) only.
-  /** ['close'] for an index: draw a line, not candles. */
-  price_fields?: string[]
   /** 'index_points' | 'IRR' */
   unit?: string
   /** 'TSETMC' */

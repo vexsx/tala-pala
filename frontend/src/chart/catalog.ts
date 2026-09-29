@@ -11,6 +11,7 @@ import type {
 import { SYMBOL_LABELS } from '../api/types'
 import { unwrapList } from '../lib/unwrap'
 import { KIND_LABEL } from '../lib/bourse'
+import { domainLabel } from '../lib/markets'
 import { CHART_SYMBOLS } from './prefs'
 import { registerRegistryQuotes, TSE_INDEX, type ChartSymbol, type SymbolKind } from './symbols'
 
@@ -56,14 +57,18 @@ export interface CatalogSources {
 // The registry commodities
 // ---------------------------------------------------------------------------
 
-/** Registry domains in picker order, with their group names. */
+/**
+ * Registry domains in picker order. Their names are lib/markets.ts's — the
+ * ones Relative value and Purchasing power use — so one registry domain is not
+ * "FX" on one page and "Currency" on the next.
+ */
 const DOMAIN_GROUPS: Array<{ domain: string; label: string }> = [
-  { domain: 'gold', label: 'Gold & coins' },
-  { domain: 'silver', label: 'Silver' },
-  { domain: 'fund', label: 'Commodity funds' },
-  { domain: 'fx', label: 'FX' },
-  { domain: 'global', label: 'Global' }
-]
+  'gold',
+  'silver',
+  'fund',
+  'fx',
+  'global'
+].map((domain) => ({ domain, label: domainLabel(domain) }))
 
 /**
  * The registry rows the candles API draws from `prices` — the frontend twin of
@@ -128,7 +133,7 @@ function tickGroups(instruments: InstrumentItem[] | null): ChartSymbolGroup[] {
     ...Array.from(byDomain.keys())
       .filter((d) => !known.has(d))
       .sort()
-      .map((d) => ({ domain: d, label: d }))
+      .map((d) => ({ domain: d, label: domainLabel(d) }))
   ]
   const groups: ChartSymbolGroup[] = []
   for (const { domain, label } of order) {

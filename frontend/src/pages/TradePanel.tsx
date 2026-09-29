@@ -407,6 +407,11 @@ export default function TradePanel() {
   const stDir = st && st.length > 0 ? st[st.length - 1] : 0
   const firstLoad = candles.loading && candles.candles.length === 0
   const refusedEmpty = !candles.loading && candles.error !== null && candles.candles.length === 0
+  // A 409 is the API declining to serve this series (a refused index, an
+  // adjustment that was not validated): asking again cannot change it.
+  const declined = candles.errorStatus === 409
+  // One settled close per session: dated, not aged, and drawn as closes.
+  const dailyClose = !tehran && (candles.cadence === 'daily_close' || quote?.cadence === 'daily_close')
   const onGold = symbol === 'IR_GOLD_18K'
 
   return (
@@ -461,7 +466,7 @@ export default function TradePanel() {
             {firstLoad ? (
               <Loading label="Loading candles…" />
             ) : candles.error && candles.candles.length === 0 ? (
-              <ErrorMessage message={candles.error} onRetry={candles.reload} />
+              <ErrorMessage message={candles.error} onRetry={declined ? undefined : candles.reload} />
             ) : candles.candles.length === 0 ? (
               <EmptyState
                 title="No candle data"
@@ -559,11 +564,22 @@ export default function TradePanel() {
               // A refused series has no age to wait for: "not known yet"
               // would promise one. It is simply a chart with no data.
               dataAge={tehran && !refusedEmpty ? candles.dataAge : undefined}
+              dailyClose={dailyClose}
             />
           </div>
         </div>
 
         <aside className="trade-side">
+          {!tehran && option?.title && (
+            // What a registry series is — its source, its unit, what it is
+            // derived from, its junk bars — used to live only in the picker
+            // option's hover title, which a native dropdown never shows.
+            <div className="card" data-testid="trade-registry-instrument">
+              <div className="card-title">{symbolLabel}</div>
+              <p className="muted small">{option.title}</p>
+            </div>
+          )}
+
           {tehran && (
             <TehranInstrumentCard
               symbol={symbol}
@@ -832,15 +848,18 @@ function TehranInstrumentCard({
           ))}
         </ul>
       )}
-      {equity && instrument && isEquityInstrument(instrument) ? (
-        <Link className="small" to={`/stocks/${encodeURIComponent(instrument.symbol)}`}>
-          {instrument.symbol} against its market →
-        </Link>
-      ) : (
-        <Link className="small" to="/bourse">
-          The Tehran market page →
-        </Link>
-      )}
+      {/* Its own line: inline, a refusal sentence ran straight into the link. */}
+      <div className="tchart-card-link">
+        {equity && instrument && isEquityInstrument(instrument) ? (
+          <Link className="small" to={`/stocks/${encodeURIComponent(instrument.symbol)}`}>
+            {instrument.symbol} against its market →
+          </Link>
+        ) : (
+          <Link className="small" to="/bourse">
+            The Tehran market page →
+          </Link>
+        )}
+      </div>
     </div>
   )
 }

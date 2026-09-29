@@ -915,7 +915,7 @@ func TestSignalsOverviewFixtureMatchesTheWireShape(t *testing.T) {
 		// "not collected" would be stating the opposite of the truth.
 		"DXY": unavailableNotScored, "US10Y": unavailableNotScored,
 		"BRENT_OIL": unavailableNotScored, "IR_GOLD_FUND_FLOW": unavailableNotScored,
-		"IR_GOLD_FUND_KAHRABA": unavailableNotScored,
+		"IR_GOLD_FUND_KAHRABA":  unavailableNotScored,
 		"IR_SILVER_FUND_SILVER": unavailableNotScored, "IR_SILVER_FUND_SIMIN": unavailableNotScored,
 		// Collected since migrations 0028 and 0030, and not scored.
 		"tehran_equities": unavailableNotScored,

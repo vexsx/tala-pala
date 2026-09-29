@@ -33,6 +33,14 @@ export interface ChartStatusBarProps {
    * is unknown, which is not the same as fresh. Omit it for a tick series.
    */
   dataAge?: StockDataAge | null
+  /**
+   * A registry series of one settled close per session (the API's cadence
+   * 'daily_close'). Its age is the DATE of its newest close — "13h ago" read
+   * as an outage beside a close as fresh as one can be — its staleness is the
+   * server's four-day daily-close rule, and its bars are closes, not
+   * single-observation buckets.
+   */
+  dailyClose?: boolean
 }
 
 /**
@@ -55,7 +63,8 @@ export function ChartStatusBar({
   coverage,
   source,
   stale,
-  dataAge
+  dataAge,
+  dailyClose = false
 }: ChartStatusBarProps) {
   const [now, setNow] = useState(() => Date.now())
 
@@ -76,12 +85,18 @@ export function ChartStatusBar({
         <span className="muted small">no data</span>
       ) : asOf === null ? (
         <span className="muted small">age not known yet</span>
+      ) : dailyClose ? (
+        <DailyCloseAge asOf={asOf} stale={stale === true} />
       ) : (
         <TickAge asOf={asOf} stale={isStale(asOf, interval, stale)} />
       )}
       <span className="muted small">{intervalLabel(interval)}</span>
       {dataAge !== undefined ? (
         <SessionCounts candles={candles} />
+      ) : dailyClose ? (
+        <span className="muted small">
+          {candles.length} daily close{candles.length === 1 ? '' : 's'}
+        </span>
       ) : (
         <BucketCounts candles={candles} coverage={coverage} />
       )}
@@ -95,6 +110,23 @@ function TickAge({ asOf, stale }: { asOf: string | null; stale: boolean }) {
     <span className="freshness" title={asOf ?? 'no data yet'}>
       <span className={`dot dot-${stale ? 'bad' : 'ok'}`} aria-hidden="true" />
       <span className="muted small">{relativeTime(asOf)}</span>
+      {stale && <span className="badge badge-bad">STALE</span>}
+    </span>
+  )
+}
+
+/**
+ * A daily settled close is dated, not aged: it is stamped 23:00 UTC on its own
+ * trade date, so that UTC date IS the session it closed, and "13h ago" beside
+ * it read as an outage. STALE is the server's verdict (more than four days
+ * old: a close is missing), never an hours heuristic.
+ */
+function DailyCloseAge({ asOf, stale }: { asOf: string; stale: boolean }) {
+  const { calendar } = useSettings()
+  return (
+    <span className="freshness" title={`settled close stamped ${asOf}`}>
+      <span className={`dot dot-${stale ? 'bad' : 'ok'}`} aria-hidden="true" />
+      <span className="muted small">daily close of {formatDate(asOf.slice(0, 10), calendar)}</span>
       {stale && <span className="badge badge-bad">STALE</span>}
     </span>
   )

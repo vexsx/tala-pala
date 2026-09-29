@@ -109,12 +109,19 @@ type latestPrice struct {
 	ObservedAt time.Time
 }
 
-func (h *Handler) latestPrices(ctx context.Context) (map[string]latestPrice, error) {
-	rows, err := h.Pool.Query(ctx, `
+// latestPricesSelect is each symbol's newest usable observation. Never one
+// stamped after now: a daily close is stamped 23:00 UTC on its own date, and a
+// backfill that stored today's still-forming bar under that stamp (the Yahoo
+// backfill did, until it was fixed) would otherwise be served as the current
+// price hours before its close existed.
+const latestPricesSelect = `
 		SELECT DISTINCT ON (symbol) symbol, value::float8, currency, unit, source, observed_at
 		FROM prices
-		WHERE quality = 'ok'
-		ORDER BY symbol, observed_at DESC`)
+		WHERE quality = 'ok' AND observed_at <= $1
+		ORDER BY symbol, observed_at DESC`
+
+func (h *Handler) latestPrices(ctx context.Context) (map[string]latestPrice, error) {
+	rows, err := h.Pool.Query(ctx, latestPricesSelect, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -172,23 +179,41 @@ func (h *Handler) Current(w http.ResponseWriter, r *http.Request) {
 
 	out := map[string]any{}
 	for sym, p := range latest {
-		entry := map[string]any{
-			"value":        p.Value,
-			"currency":     p.Currency,
-			"unit":         p.Unit,
-			"source":       p.Source,
-			"observed_at":  p.ObservedAt.UTC(),
-			"stale":        !markethours.AcceptablyFresh(sym, p.ObservedAt, now, staleMin, h.MarketOpen, h.MarketClose),
-			"market_state": MarketState(sym, now, h.MarketOpen, h.MarketClose),
-		}
-		if pv, ok := prev[sym]; ok {
-			entry["change_24h_pct"] = fp(ChangePct(p.Value, pv))
-		} else {
-			entry["change_24h_pct"] = nil
-		}
-		out[sym] = entry
+		pv, hasPrev := prev[sym]
+		out[sym] = currentEntry(sym, p, pv, hasPrev, now, staleMin, h.MarketOpen, h.MarketClose)
 	}
 	httpserver.JSON(w, http.StatusOK, map[string]any{"prices": out, "as_of": now})
+}
+
+// cadenceDailyClose marks a series that only ever receives one settled close
+// per session (markethours.DailyCloseOnly), so a client can say "daily close
+// of <date>" rather than an age in hours that reads as an outage.
+const cadenceDailyClose = "daily_close"
+
+// currentEntry is one symbol's /prices/current block. Pure (unit tested).
+// `stale` is markethours' verdict, which for a daily-close series is the
+// four-day daily-close rule rather than the minutes rule that could only ever
+// call yesterday's close stale.
+func currentEntry(sym string, p latestPrice, prevValue float64, hasPrev bool, now time.Time,
+	staleMin int, open, close string) map[string]any {
+	entry := map[string]any{
+		"value":        p.Value,
+		"currency":     p.Currency,
+		"unit":         p.Unit,
+		"source":       p.Source,
+		"observed_at":  p.ObservedAt.UTC(),
+		"stale":        !markethours.AcceptablyFresh(sym, p.ObservedAt, now, staleMin, open, close),
+		"market_state": MarketState(sym, now, open, close),
+	}
+	if markethours.DailyCloseOnly(sym) {
+		entry["cadence"] = cadenceDailyClose
+	}
+	if hasPrev {
+		entry["change_24h_pct"] = fp(ChangePct(p.Value, prevValue))
+	} else {
+		entry["change_24h_pct"] = nil
+	}
+	return entry
 }
 
 // History implements GET /api/v1/prices/history.

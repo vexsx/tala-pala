@@ -37,15 +37,24 @@ export interface CandleStore {
   loading: boolean
   loadingOlder: boolean
   error: string | null
+  /**
+   * The HTTP status of the newest page's refusal, when it was one: a 409 is
+   * the API declining to serve the series (a refused index, an unvalidated
+   * adjustment), which retrying cannot change.
+   */
+  errorStatus: number | null
   hasMore: boolean
   loadOlder: () => void
   reload: () => void
   asOf: string | null
   /**
-   * The price fields the series actually has; null means full OHLC (every
-   * tick response). ['close'] is a close-only series — a Tehran index.
+   * The price fields the series actually has; null means full OHLC (a tick
+   * series). ['close'] is a close-only series — a Tehran index, or a registry
+   * series of one settled close per session.
    */
   priceFields: string[] | null
+  /** 'daily_close' for a registry series of one settled close per session. */
+  cadence: 'daily_close' | null
   /** 'index_points' | 'IRR' for a Tehran series; null for ticks. */
   unit: string | null
   /** The data's own source, when the response names one ('TSETMC'). */
@@ -77,6 +86,7 @@ interface Meta {
   hasMore: boolean
   nextBefore: string | null
   priceFields: string[] | null
+  cadence: 'daily_close' | null
   unit: string | null
   source: string | null
   instrument: ChartIndexInstrument | ChartEquityInstrument | null
@@ -97,6 +107,7 @@ const EMPTY_META: Meta = {
   hasMore: false,
   nextBefore: null,
   priceFields: null,
+  cadence: null,
   unit: null,
   source: null,
   instrument: null,
@@ -183,6 +194,12 @@ export function countSingleObservation(candles: ChartCandle[]): number {
   return n
 }
 
+/** The HTTP status an ApiError carries, read by shape rather than class. */
+function statusOf(err: unknown): number | null {
+  const status = (err as { status?: unknown } | null)?.status
+  return typeof status === 'number' ? status : null
+}
+
 /** Prepend older buckets, dropping any the store already holds. */
 function mergeOlder(older: ChartCandle[], current: ChartCandle[]): ChartCandle[] {
   if (older.length === 0) return current
@@ -241,6 +258,7 @@ export function useCandles(
   const [loading, setLoading] = useState(true)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [errorStatus, setErrorStatus] = useState<number | null>(null)
   const [reloadTick, setReloadTick] = useState(0)
 
   // Everything the async callbacks need without re-subscribing on every render.
@@ -293,6 +311,7 @@ export function useCandles(
     setLoading(true)
     setLoadingOlder(false)
     setError(null)
+    setErrorStatus(null)
 
     api<ChartCandlesResponse>(
       buildPath(symbol, interval, defaultBars(interval), { overlays: true }),
@@ -313,6 +332,7 @@ export function useCandles(
           hasMore: res.has_more === true,
           nextBefore: res.next_before ?? null,
           priceFields: Array.isArray(res.price_fields) ? res.price_fields : null,
+          cadence: res.cadence === 'daily_close' ? 'daily_close' : null,
           unit: res.unit ?? null,
           source: res.source ?? null,
           instrument: res.instrument ?? null,
@@ -334,6 +354,7 @@ export function useCandles(
         setCandles([])
         setMeta({ ...EMPTY_META, loadedFor: key })
         setError(errorMessage(err))
+        setErrorStatus(statusOf(err))
         setLoading(false)
       })
 
@@ -476,11 +497,13 @@ export function useCandles(
     loading,
     loadingOlder,
     error,
+    errorStatus,
     hasMore: meta.hasMore,
     loadOlder,
     reload,
     asOf: meta.asOf,
     priceFields: meta.priceFields,
+    cadence: meta.cadence,
     unit: meta.unit,
     source: meta.source,
     instrument: meta.instrument,

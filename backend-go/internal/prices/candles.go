@@ -72,6 +72,7 @@ import (
 
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/httpserver"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/indicators"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/markethours"
 )
 
 // candleInterval is one selectable timeframe.
@@ -963,10 +964,27 @@ type candlePayload struct {
 	Candles []candle
 	// Overlays is nil when ?overlays=0, and serializes as null.
 	Overlays map[string]any
-	// Pivots is nil when no fetched bucket has finished.
+	// Pivots is nil when no fetched bucket has finished, and when the newest
+	// finished one holds a single observation.
 	Pivots              *indicators.PivotPoints
 	Support, Resistance *float64
+	// PriceFields is ["close"] for a daily-close series and nil otherwise: the
+	// response states which prices a candle carries, as a Tehran one does.
+	PriceFields []string
+	// Cadence is cadenceDailyClose for a daily-close series, "" otherwise.
+	Cadence string
 }
+
+// dailyClosePriceFields is what a daily-close series' candles carry: one
+// settled close per session repeated four times is not an open, a high and a
+// low, and a client that drew it as OHLC drew a range that no trade made.
+var dailyClosePriceFields = []string{"close"}
+
+// rangeOverlayKeys are the overlays built from each bar's high and low. On a
+// series with no range they are refused as whole-field nulls, exactly as a
+// Tehran index's are (closeOnlyOverlays), never computed from the close.
+var rangeOverlayKeys = []string{"supertrend", "supertrend_dir", "psar",
+	"ichimoku_tenkan", "ichimoku_kijun", "ichimoku_senkou_a", "ichimoku_senkou_b"}
 
 // buildCandlePayload cuts the page out of the fetched buckets and computes the
 // overlays and levels drawn on it. `start` is the first VISIBLE bucket;
@@ -978,18 +996,32 @@ type candlePayload struct {
 // included, so that they do not narrow with ?limit=. A caller asking for three
 // bars is asking for three bars, not for a support level measured over three
 // bars — and it cannot tell the two apart in the response.
+//
+// `dailyClose` is a series that only ever receives one settled close per
+// session (markethours.DailyCloseOnly): its candles carry a close and nothing
+// else, so every overlay and level built from a high and a low is refused.
 func buildCandlePayload(bars []candleBar, start int, iv candleInterval,
-	now time.Time, overlays bool) candlePayload {
+	now time.Time, overlays, dailyClose bool) candlePayload {
 	all := buildCandles(bars, iv, now)
 	p := candlePayload{Candles: all[start:]}
+	if dailyClose {
+		p.PriceFields, p.Cadence = dailyClosePriceFields, cadenceDailyClose
+	}
 	if overlays {
 		p.Overlays = candleOverlays(bars, start)
+		if dailyClose {
+			for _, key := range rangeOverlayKeys {
+				p.Overlays[key] = nil
+			}
+		}
 	}
 	// The newest COMPLETED bucket of the fetch. It is normally inside the page
 	// as well — only the forming bucket is unconfirmed — but a page of one
 	// forming bar must not report the levels as missing when a finished bucket
-	// was fetched right behind it.
-	if i := lastConfirmed(all); i >= 0 {
+	// was fetched right behind it. A bucket of ONE observation has no range:
+	// its classic pivots were seven copies of the same price (silver 999 showed
+	// 506,570 at R3 through S3), so they are null rather than drawn.
+	if i := lastConfirmed(all); i >= 0 && !dailyClose && !all[i].Synthetic {
 		pivots := indicators.Pivots(all[i].High, all[i].Low, all[i].Close)
 		p.Pivots = &pivots
 	}
@@ -1012,7 +1044,7 @@ func buildCandlePayload(bars []candleBar, start int, iv candleInterval,
 var candleResponseKeys = []string{
 	"symbol", "interval", "interval_seconds", "timezone", "candles",
 	"has_more", "next_before", "coverage", "effective_window", "overlays",
-	"pivots", "support", "resistance", "as_of",
+	"pivots", "support", "resistance", "as_of", "price_fields", "cadence",
 }
 
 // candleResponse is the wire body. Pure function (unit tested): every value in
@@ -1042,7 +1074,20 @@ func candleResponse(q candleQuery, iv candleInterval, cov candleCoverage,
 		"support":    payload.Support,
 		"resistance": payload.Resistance,
 		"as_of":      now,
+		// null for a tick series (the four prices are observed), ["close"] for
+		// a daily-close one; cadence says which, so the chart can date the
+		// newest close instead of aging it in hours.
+		"price_fields": payload.PriceFields,
+		"cadence":      nullableString(payload.Cadence),
 	}
+}
+
+// nullableString is s, or JSON null when it is empty.
+func nullableString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // --- handler -----------------------------------------------------------------
@@ -1157,6 +1202,7 @@ func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
 		}
 		page.HasMore = older
 	}
-	payload := buildCandlePayload(bars, page.Start, iv, now, q.Overlays)
+	payload := buildCandlePayload(bars, page.Start, iv, now, q.Overlays,
+		markethours.DailyCloseOnly(q.Symbol))
 	httpserver.JSON(w, http.StatusOK, candleResponse(q, iv, cov, win, page, payload, now))
 }

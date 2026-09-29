@@ -279,3 +279,51 @@ func TestUSDAlwaysOpen(t *testing.T) {
 		t.Fatal("IR_COIN_EMAMI must still be closed before 12:00 Tehran")
 	}
 }
+
+// A series that only ever receives one settled close per session was always
+// stale under the minutes rule: during bazaar hours its newest row is
+// yesterday's 23:00 UTC close, and today's does not exist yet. The Trade
+// status bar showed "13h ago · STALE" beside data as fresh as it can be.
+func TestADailyCloseIsFreshUntilItIsMoreThanFourDaysOld(t *testing.T) {
+	closeOf := func(day int) time.Time { return utc(day, 23, 0) } // 23:00 UTC on its date
+	cases := []struct {
+		name     string
+		observed time.Time
+		at       time.Time
+		want     bool
+	}{
+		// Monday 13:00 Tehran, Sunday's close the newest that exists.
+		{"yesterday's close mid-session", closeOf(19), utc(20, 9, 30), true},
+		// Saturday morning: Wednesday's is the newest, three days back.
+		{"the weekend", closeOf(15), utc(18, 6, 0), true},
+		// A holiday on Saturday as well: four days, still the newest.
+		{"the weekend and a holiday", closeOf(15), utc(19, 6, 0), true},
+		// Five days: a close is missing.
+		{"five days", closeOf(15), utc(20, 6, 0), false},
+		// The age is counted in Tehran's date, which turns at 20:30 UTC.
+		{"four days until Tehran midnight", closeOf(15), utc(19, 20, 29), true},
+		{"five days after it", closeOf(15), utc(19, 20, 31), false},
+	}
+	for _, code := range []string{"IR_SILVER_999", "IR_GOLD_24K", "IR_GOLD_FUND_KAHRABA",
+		"IR_SILVER_FUND_SILVER", "IR_SILVER_FUND_SIMIN"} {
+		if !DailyCloseOnly(code) {
+			t.Fatalf("%s only receives daily closes", code)
+		}
+		for _, tc := range cases {
+			if got := AcceptablyFresh(code, tc.observed, tc.at, 30, DefaultOpen, DefaultClose); got != tc.want {
+				t.Errorf("%s %s: AcceptablyFresh = %v, want %v", code, tc.name, got, tc.want)
+			}
+		}
+	}
+	// Live-quote series keep the session rule: the funds with BrsApi's
+	// intraday mirror, 18k gold, the Emami coin.
+	for _, code := range []string{"IR_GOLD_FUND_AYAR", "IR_GOLD_FUND_TALA", "IR_GOLD_18K",
+		"IR_COIN_EMAMI", "XAUUSD", "IR_GOLD_FUND_FLOW"} {
+		if DailyCloseOnly(code) {
+			t.Errorf("%s has a live source and keeps the session rule", code)
+		}
+	}
+	if AcceptablyFresh("IR_COIN_EMAMI", closeOf(19), utc(20, 9, 30), 30, DefaultOpen, DefaultClose) {
+		t.Error("a live-quote series a session old is stale, as before")
+	}
+}

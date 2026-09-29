@@ -17,6 +17,12 @@
 // Freshness follows the addendum: while a market is OPEN, data older than
 // STALE_MINUTES is stale; while CLOSED, data observed during the last session
 // (observed_at >= closure start - STALE_MINUTES) is still acceptably fresh.
+//
+// Series that only ever receive ONE settled close per session (DailyCloseOnly)
+// have their own rule instead, because the minutes rule can only ever call
+// them stale: their newest row is yesterday's close, and today's does not
+// exist until the session has settled. They are stale when that close is more
+// than DailyCloseStaleDays calendar days old.
 package markethours
 
 import (
@@ -71,6 +77,50 @@ var iranian = map[string]bool{
 	"IR_COIN_GERAMI":  true,
 	"IR_GOLD_24K":     true,
 	"IR_GOLD_MESGHAL": true,
+}
+
+// dailyCloseOnly are the series that only ever receive one settled close per
+// session, stamped 23:00 UTC on its own date: the seven TGJU daily-history
+// instruments of migration 0031, and the commodity funds with no live source,
+// whose only rows are the settled closes the weekly off-server TSETMC fetch
+// stores (migration 0030). The gold funds with BrsApi's intraday mirror (AYAR,
+// TALA) are live-quote series and keep the session rule.
+var dailyCloseOnly = map[string]bool{
+	"IR_SILVER_999":         true,
+	"IR_COIN_BAHAR":         true,
+	"IR_COIN_HALF":          true,
+	"IR_COIN_QUARTER":       true,
+	"IR_COIN_GERAMI":        true,
+	"IR_GOLD_24K":           true,
+	"IR_GOLD_MESGHAL":       true,
+	"IR_SILVER_FUND_SILVER": true,
+	"IR_SILVER_FUND_SIMIN":  true,
+	"IR_GOLD_FUND_KAHRABA":  true,
+}
+
+// DailyCloseStaleDays is how many calendar days old a daily close may be and
+// still be the newest one that can exist. The bazaar and the exchange shut
+// Thursday and Friday, so on a Saturday the newest settled close is
+// Wednesday's, three days back; one public holiday against that weekend makes
+// it four. A fifth day means a close is missing. A long closure (Nowruz runs
+// to about thirteen days) does read as stale — and during it the series IS
+// that old.
+const DailyCloseStaleDays = 4
+
+// DailyCloseOnly reports whether symbol only ever receives one settled close
+// per session (see dailyCloseOnly).
+func DailyCloseOnly(symbol string) bool { return dailyCloseOnly[symbol] }
+
+// dailyCloseAgeDays is the calendar-day age of a daily close stamped at
+// observedAt, measured at `at`: the Tehran date now against the close's own
+// date. A close is stamped 23:00 UTC on its trade date, so its UTC date IS the
+// trade date.
+func dailyCloseAgeDays(observedAt, at time.Time) int {
+	o := observedAt.UTC()
+	closeDay := time.Date(o.Year(), o.Month(), o.Day(), 0, 0, 0, 0, time.UTC)
+	t := at.In(tehran)
+	today := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return int(today.Sub(closeDay).Hours() / 24)
 }
 
 // tehran is the Asia/Tehran location. The runtime container installs tzdata
@@ -189,7 +239,13 @@ func ClosureStartedAt(symbol string, at time.Time, open, close string) time.Time
 //	market open:   age <= staleMinutes
 //	market closed: observedAt >= closure start - staleMinutes
 //	               (i.e. last-session data never goes stale overnight)
+//
+// and, for a DailyCloseOnly series, under the daily-close rule instead: the
+// close is at most DailyCloseStaleDays calendar days old.
 func AcceptablyFresh(symbol string, observedAt, at time.Time, staleMinutes int, open, close string) bool {
+	if dailyCloseOnly[symbol] {
+		return dailyCloseAgeDays(observedAt, at) <= DailyCloseStaleDays
+	}
 	stale := time.Duration(staleMinutes) * time.Minute
 	if IsOpen(symbol, at, open, close) {
 		return at.Sub(observedAt) <= stale

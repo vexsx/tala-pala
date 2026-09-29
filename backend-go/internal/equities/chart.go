@@ -49,11 +49,25 @@ type AdjustmentUnavailableError struct {
 	RefusalReason string
 }
 
+// Error is the sentence the chart shows, so it says why in words a reader
+// can use: it used to end on "/api/v1/stocks/{symbol}/bars?adjusted=false",
+// a developer's route with its placeholder unfilled, beside a Retry button
+// that could never help. The route stays in Details (raw_bars).
 func (e *AdjustmentUnavailableError) Error() string {
-	return fmt.Sprintf(
-		"no validated corporate-action adjustment exists for %q, so adjusted prices are "+
-			"not served and this share cannot be charted; its raw prints are on "+
-			"/api/v1/stocks/{symbol}/bars?adjusted=false", e.Symbol)
+	var why string
+	switch e.Status {
+	case statusNeverIngested, "":
+		why = "it has never been ingested, so no adjustment exists for it"
+	case statusOutOfDate:
+		why = "its corporate-action adjustment is out of date until the next ingest recomputes it"
+	default:
+		why = "its corporate-action adjustment did not pass validation"
+		if e.RefusalReason != "" {
+			why += " (" + e.RefusalReason + ")"
+		}
+	}
+	return fmt.Sprintf("%s cannot be charted: %s, and a chart of unadjusted prices would "+
+		"draw every capital increase as a crash.", e.Symbol, why)
 }
 
 // Details is the error envelope's details block.
@@ -63,6 +77,8 @@ func (e *AdjustmentUnavailableError) Details() map[string]any {
 		"status":         e.Status,
 		"version":        e.Version,
 		"refusal_reason": e.RefusalReason,
+		// The exchange's raw prints are still served, on the share's own route.
+		"raw_bars": fmt.Sprintf("/api/v1/stocks/%s/bars?adjusted=false", e.Symbol),
 	}
 }
 
@@ -326,9 +342,10 @@ func chartNotes(adj Adjustment, defective int) []string {
 				"are not part of the adjusted series.", adj.PreListingBars, adj.AdjustedFirstBar))
 	}
 	if defective > 0 {
-		notes = append(notes, fmt.Sprintf(
-			"%d traded session(s) on this page carry a zero open, high or low; their "+
-				"range is not drawn, their official close is.", defective))
+		// Without a count: this is one page of the series (see indexNotes in
+		// internal/prices), and a count per page disagreed with the chart's.
+		notes = append(notes, "Some traded sessions carry a zero open, high or low; "+
+			"their range is not drawn, their official close is.")
 	}
 	return notes
 }

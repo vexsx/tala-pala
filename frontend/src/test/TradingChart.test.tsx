@@ -416,7 +416,7 @@ describe('OhlcHeader', () => {
   it('renders the bucket time in the Jalali calendar by default', () => {
     render(
       <SettingsProvider>
-        <OhlcHeader symbol="IR_GOLD_18K" interval="1d" candles={[stamped]} hovered={null} unit="IRT" />
+        <OhlcHeader symbol="IR_GOLD_18K" interval="1h" candles={[stamped]} hovered={null} unit="IRT" />
       </SettingsProvider>
     )
     expect(screen.getByText('1405/05/21 12:30')).toBeInTheDocument()
@@ -426,10 +426,44 @@ describe('OhlcHeader', () => {
     window.localStorage.setItem('igp_calendar', 'gregorian')
     render(
       <SettingsProvider>
-        <OhlcHeader symbol="IR_GOLD_18K" interval="1d" candles={[stamped]} hovered={null} unit="IRT" />
+        <OhlcHeader symbol="IR_GOLD_18K" interval="1h" candles={[stamped]} hovered={null} unit="IRT" />
       </SettingsProvider>
     )
     expect(screen.getByText('2026-08-12 12:30')).toBeInTheDocument()
+  })
+
+  it('dates a bucket of a day or more without a clock time', () => {
+    // A daily bucket starts at UTC midnight, 03:30 in Tehran: a time nobody
+    // traded at, which the header used to print beside every daily close.
+    render(
+      <SettingsProvider>
+        <OhlcHeader symbol="IR_GOLD_18K" interval="1d" candles={[stamped]} hovered={null} unit="IRT" />
+      </SettingsProvider>
+    )
+    expect(screen.getByText('1405/05/21')).toBeInTheDocument()
+    expect(screen.queryByText(/12:30/)).toBeNull()
+  })
+
+  it('shows a daily-close series as closes, with no "1 obs" badge', () => {
+    // Silver 999: one settled close a day. O=H=L=C and a single-observation
+    // badge on every bar read as a broken feed; the API says close-only.
+    const close = { ...stamped, open: 506570, high: 506570, low: 506570, close: 506570, ticks: 1, synthetic: true }
+    render(
+      <SettingsProvider>
+        <OhlcHeader
+          symbol="IR_SILVER_999"
+          interval="1d"
+          candles={[close]}
+          hovered={null}
+          unit="IRT"
+          priceFields={['close']}
+        />
+      </SettingsProvider>
+    )
+    expect(screen.queryByText('O')).toBeNull()
+    expect(screen.queryByText('H')).toBeNull()
+    expect(screen.getByText('C')).toBeInTheDocument()
+    expect(screen.queryByText('1 obs')).toBeNull()
   })
 })
 
@@ -537,6 +571,25 @@ describe('TradePanel wiring', () => {
 })
 
 describe('ChartStatusBar', () => {
+  it('marks a daily close STALE only on the server\'s daily-close verdict', () => {
+    // More than four days old: a close is missing. The date stays on screen.
+    render(
+      <SettingsProvider>
+        <ChartStatusBar
+          asOf="2026-09-22T23:00:00Z"
+          interval="1d"
+          candles={[singleBar(0, 505_000)]}
+          coverage={null}
+          stale
+          dailyClose
+        />
+      </SettingsProvider>
+    )
+    expect(screen.getByText('daily close of 1405/06/31')).toBeInTheDocument()
+    expect(screen.getByText('STALE')).toBeInTheDocument()
+    expect(screen.getByText('1 daily close')).toBeInTheDocument()
+  })
+
   it('counts the single-observation buckets out loud', () => {
     render(
       <ChartStatusBar
@@ -878,7 +931,7 @@ describe('ChartToolbar picker', () => {
   it('groups the static catalog and renders it before any list answers', () => {
     const { container } = render(<ChartToolbar {...base} symbol="IR_GOLD_18K" />)
     const groups = Array.from(container.querySelectorAll('optgroup')).map((g) => g.getAttribute('label'))
-    expect(groups).toEqual(['Gold & coins', 'Global', 'Tehran · All-share'])
+    expect(groups).toEqual(['Gold & coins', 'Global markets', 'Tehran · All-share'])
     expect(screen.getByRole('option', { name: /TEDPIX/ })).toBeEnabled()
   })
 
@@ -1149,6 +1202,121 @@ describe('TradePanel on the Tehran market', () => {
     await waitFor(() => expect(within(status).getByText('3d ago')).toBeInTheDocument())
     expect(within(status).queryByText(/^\d+s ago$/)).toBeNull()
     expect(within(status).getByText('tgju_history')).toBeInTheDocument()
+  })
+
+  it('dates a daily settled close instead of aging it, and draws it as closes', async () => {
+    // The API marks silver 999 as one settled close a day. "13h ago · STALE"
+    // and "1000 of 1000 bars are single-observation" beside it read as an
+    // outage; the newest close is the newest that can exist.
+    window.localStorage.setItem('igp_chart_symbol', 'IR_SILVER_999')
+    const daily = (i: number, v: number) => ({ ...singleBar(i, v), open: v, high: v, low: v })
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/market/candles')) {
+        return Promise.resolve({
+          symbol: 'IR_SILVER_999',
+          interval: '1d',
+          interval_seconds: DAY,
+          timezone: 'UTC',
+          candles: [daily(0, 505_000), daily(1, 506_570)],
+          coverage: coverage({ intraday_from: null }),
+          has_more: false,
+          next_before: null,
+          pivots: null,
+          support: null,
+          resistance: null,
+          as_of: new Date().toISOString(),
+          price_fields: ['close'],
+          cadence: 'daily_close'
+        })
+      }
+      if (path === '/prices/current') {
+        const prices: CurrentPricesResponse = {
+          as_of: new Date().toISOString(),
+          prices: {
+            IR_SILVER_999: {
+              value: 50_657,
+              currency: 'IRT',
+              unit: 'gram',
+              source: 'tgju_history',
+              observed_at: '2026-09-28T23:00:00Z',
+              stale: false,
+              change_24h_pct: null,
+              cadence: 'daily_close'
+            }
+          }
+        }
+        return Promise.resolve(prices)
+      }
+      return new Promise(() => undefined)
+    })
+    renderPanel()
+    await waitFor(() => expect(lw.createChartCalls).toBe(1))
+    const status = document.querySelector('.tchart-status') as HTMLElement
+    await waitFor(() => expect(within(status).getByText('daily close of 1405/07/06')).toBeInTheDocument())
+    expect(within(status).queryByText(/ago$/)).toBeNull()
+    expect(within(status).queryByText('STALE')).toBeNull()
+    expect(within(status).getByText('2 daily closes')).toBeInTheDocument()
+    expect(within(status).queryByText(/single-observation/)).toBeNull()
+    // Close-only, like an index: a line, and no pivot card from one price.
+    await waitFor(() => expect(lw.seriesDefs).toContain('Line'))
+    expect(screen.queryByText('Pivot levels (classic)')).toBeNull()
+  })
+
+  it('shows what a registry series is, not only in a tooltip', async () => {
+    // The picker's hover title never shows in a native dropdown, so silver's
+    // "TGJU is the only source; junk bars…" note was invisible.
+    window.localStorage.setItem('igp_chart_symbol', 'IR_SILVER_999')
+    const note = 'TGJU silver_999: one daily settled close; three junk bars are held as suspect.'
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/instruments')) {
+        return Promise.resolve({
+          items: [{ code: 'IR_SILVER_999', kind: 'market_price', name_en: 'Silver 999 (gram, Tehran)',
+            name_fa: 'نقره ۹۹۹', domain: 'silver', quote_currency: 'IRT', unit: 'gram', enabled: true,
+            is_proxy: false, notes: note }]
+        })
+      }
+      if (path.startsWith('/market/candles')) {
+        return Promise.resolve({
+          symbol: 'IR_SILVER_999', interval: '1d', interval_seconds: DAY, timezone: 'UTC',
+          candles: [bar(0, 150_000)], coverage: coverage({ intraday_from: null }), has_more: false,
+          next_before: null, support: null, resistance: null, as_of: new Date().toISOString()
+        })
+      }
+      return new Promise(() => undefined)
+    })
+    renderPanel()
+    const card = await screen.findByTestId('trade-registry-instrument')
+    expect(within(card).getByText(note)).toBeInTheDocument()
+  })
+
+  it('offers no Retry for a share the API declines to chart, and keeps its link apart', async () => {
+    // A 409 is a refusal, not an outage: asking again cannot change it. Its
+    // sentence used to run straight into "The Tehran market page →".
+    const refusal = 'کچاد cannot be charted: it has never been ingested, so no adjustment exists for it'
+    window.localStorage.setItem('igp_chart_symbol', 'EQ:22811176775480091')
+    apiMock.mockImplementation((path: string) =>
+      path.startsWith('/market/candles')
+        ? Promise.reject(Object.assign(new Error(refusal), { status: 409, code: 'adjustment_unavailable' }))
+        : new Promise(() => undefined)
+    )
+    renderPanel()
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(refusal))
+    expect(within(screen.getByRole('alert')).queryByRole('button', { name: 'Retry' })).toBeNull()
+    const card = screen.getByTestId('trade-instrument')
+    const link = within(card).getByRole('link')
+    expect(link.parentElement).toHaveClass('tchart-card-link')
+  })
+
+  it('still offers Retry when the request failed rather than being declined', async () => {
+    window.localStorage.setItem('igp_chart_symbol', TSE_INDEX.EQUAL_WEIGHTED)
+    apiMock.mockImplementation((path: string) =>
+      path.startsWith('/market/candles')
+        ? Promise.reject(Object.assign(new Error('Network error'), { status: 0 }))
+        : new Promise(() => undefined)
+    )
+    renderPanel()
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Network error'))
+    expect(within(screen.getByRole('alert')).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
   })
 
   it('claims no age for a registry series before its newest observation is known', async () => {

@@ -276,7 +276,7 @@ function labels(groups: ChartSymbolGroup[]): string[] {
 
 describe('the picker', () => {
   it('renders the gold symbols and the headline Tehran indices before anything answers', () => {
-    expect(labels(STATIC_CATALOG)).toEqual(['Gold & coins', 'Global', 'Tehran · All-share'])
+    expect(labels(STATIC_CATALOG)).toEqual(['Gold & coins', 'Global markets', 'Tehran · All-share'])
     const all = catalogIndex(STATIC_CATALOG)
     expect(all.get('IR_GOLD_18K')).toBeTruthy()
     expect(all.get('XAUUSD')).toBeTruthy()
@@ -290,8 +290,8 @@ describe('the picker', () => {
       'Gold & coins',
       'Silver',
       'Commodity funds',
-      'FX',
-      'Global',
+      'Currency',
+      'Global markets',
       'Tehran · All-share',
       'Tehran · Boards & segments',
       'Bourse · Sectors',

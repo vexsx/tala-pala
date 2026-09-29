@@ -188,9 +188,11 @@ const NEEDS_RANGE: IndicatorKind[] = ['supertrend', 'psar', 'ichimoku', 'pivots'
 
 /**
  * Whether an indicator can be computed on a series with these price fields.
- * A close-only series (a Tehran index) has no high and no low, and SuperTrend,
- * PSAR, Ichimoku and the pivots are built from exactly those — so they are
- * refused with the reason, never approximated from the close.
+ * A close-only series — a Tehran index, or a registry series of one settled
+ * close per session (silver 999, the Bahar coin, a fund with no live quote) —
+ * is served without a high and a low, and SuperTrend, PSAR, Ichimoku and the
+ * pivots are built from exactly those, so they are refused with the reason,
+ * never approximated from the close.
  */
 export function indicatorSupport(kind: IndicatorKind, priceFields: string[] | null | undefined): Support {
   if (!priceFields || (priceFields.includes('high') && priceFields.includes('low'))) return OK
@@ -198,7 +200,7 @@ export function indicatorSupport(kind: IndicatorKind, priceFields: string[] | nu
   return {
     ok: false,
     reason:
-      'Needs each session’s high and low. TSETMC publishes one closing value per session for an index, so this series has neither.',
+      'Needs each session’s high and low, and this series is served as one closing value per session, without either.',
     short: 'needs a high and a low'
   }
 }

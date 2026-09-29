@@ -1326,7 +1326,9 @@ input[type='checkbox'] {
 
 @media (max-width: 1100px) {
   .trade-layout {
-    grid-template-columns: 1fr;
+    /* minmax(0, …): a plain 1fr grows to its widest child, and the symbol
+       picker's longest option made the page 483px wide at 375px. */
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1767,6 +1769,10 @@ input[type='checkbox'] {
   padding: 5px 8px;
   font: inherit;
   font-size: 12px;
+  /* A native <select> sizes itself to its longest option; the picker's
+     "Tehran · Shares" labels are ~435px of text. */
+  max-width: 100%;
+  text-overflow: ellipsis;
 }
 
 /* The preset strip must never wrap into a second row on a phone; it scrolls. */
@@ -3796,4 +3802,10 @@ input[type='checkbox'] {
 
 .mf-explainer .bx-verdict {
   margin: 6px 0;
+}
+
+/* The Tehran instrument card's link sits on its own line: inline, a refusal
+   sentence ran straight into it. */
+.tchart-card-link {
+  margin-top: 6px;
 }
