@@ -107,6 +107,13 @@ func run() error {
 		MarketOpen: cfg.MarketTehranOpen, MarketClose: cfg.MarketTehranClose,
 	}
 
+	// The Tehran market handlers are built ONCE and shared: /bourse/* and the
+	// Trade chart's IDX: symbols read the same in-memory index store (~10 MB,
+	// rebuilt on each ingest), and a second handler would hold a second copy
+	// that reloads on its own schedule.
+	bourseHandler := bourse.NewHandler(pool, logger)
+	equitiesHandler := &equities.Handler{Pool: pool, Log: logger}
+
 	// Rate limiters (stopped on shutdown).
 	globalLimiter := httpserver.NewRateLimiter(cfg.RateLimitRPM)
 	defer globalLimiter.Stop()
@@ -129,6 +136,9 @@ func run() error {
 		Prices: &prices.Handler{
 			Pool: pool, Log: logger, StaleMinutesDefault: cfg.StaleMinutes,
 			MarketOpen: cfg.MarketTehranOpen, MarketClose: cfg.MarketTehranClose,
+			Registry: prices.NewInstrumentRegistry(pool),
+			Indices:  bourseHandler,
+			Equities: equitiesHandler,
 		},
 		Predictions: &predictions.Handler{Pool: pool, Log: logger, Client: pyClient},
 		Signals:     &signalsvc.Handler{Pool: pool, Log: logger},
@@ -143,9 +153,9 @@ func run() error {
 			NewsCollectionEnabled: cfg.NewsCollectionEnabled,
 		},
 		Economic: &economic.Handler{Pool: pool, Log: logger},
-		Equities: &equities.Handler{Pool: pool, Log: logger},
+		Equities: equitiesHandler,
 		RelValue: &relvalue.Handler{Pool: pool, Log: logger},
-		Bourse:   bourse.NewHandler(pool, logger),
+		Bourse:   bourseHandler,
 
 		GlobalLimiter: globalLimiter,
 		LoginLimiter:  loginLimiter,

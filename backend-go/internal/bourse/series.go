@@ -255,6 +255,12 @@ var (
 
 // IndexInfo is the part of the registry a caller outside this package needs to
 // label a series it draws.
+//
+// The fields after RefusalReason are filled by ChartSeries only, and are
+// omitempty so the responses LoadIndexPoints already feeds (a share against
+// its market) do not change shape: the Trade chart states the weighting, the
+// return basis and the verdict beside the line, because "TEDPIX" and "the
+// equal-weighted price index" are different measurements that draw alike.
 type IndexInfo struct {
 	InsCode       string `json:"ins_code"`
 	NameFA        string `json:"name_fa"`
@@ -263,6 +269,15 @@ type IndexInfo struct {
 	Kind          string `json:"kind"`
 	SectorCode    string `json:"sector_code"`
 	RefusalReason string `json:"refusal_reason,omitempty"`
+
+	Weighting   string `json:"weighting,omitempty"`
+	ReturnBasis string `json:"return_basis,omitempty"`
+	Notes       string `json:"notes,omitempty"`
+	// validated | refused | never_ingested — the same vocabulary as checkItem.
+	CheckStatus string `json:"check_status,omitempty"`
+	// How many stored closes needed a power of ten; 0 is a real answer and
+	// is serialized as such by the chart response, not by this struct.
+	RowsRescaled int `json:"rows_rescaled,omitempty"`
 }
 
 // LoadIndexPoints reads ONE index's corrected series straight from the

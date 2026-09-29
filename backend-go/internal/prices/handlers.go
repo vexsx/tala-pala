@@ -87,6 +87,17 @@ type Handler struct {
 	// Tehran session bounds ("HH:MM") for market_state / freshness.
 	MarketOpen  string
 	MarketClose string
+
+	// Registry widens the chart's tick symbols beyond KnownSymbols to every
+	// chartable `instruments` row (chart_symbols.go). Nil serves the canonical
+	// set only.
+	Registry TickSymbolRegistry
+	// Indices and Equities serve the Tehran chart symbols IDX:/EQ:
+	// (tehran_candles.go). main.go passes the SAME bourse and equities
+	// handlers the /bourse and /stocks routes use, so the ~10 MB index store
+	// exists once.
+	Indices  IndexSeriesSource
+	Equities EquityBarSource
 }
 
 type latestPrice struct {

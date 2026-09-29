@@ -225,20 +225,26 @@ type drawingRow struct {
 // handler can only ever write a normalized shape: points and style are
 // re-derived from the parsed form rather than passed through, which keeps
 // stray keys and non-canonical numbers out of JSONB.
+//
+// This form knows the canonical symbol set only; the handlers validate with
+// the registry's wider set (validateDrawingRequest).
 func ValidateDrawingRequest(req drawingRequest) (drawingRow, map[string]any) {
+	return validateDrawingRequest(req, knownSymbolsOnly)
+}
+
+// validateDrawingRequest is ValidateDrawingRequest over the chart's symbol
+// set: whatever the candles endpoint draws can be annotated, and nothing else.
+func validateDrawingRequest(req drawingRequest, served symbolServed) (drawingRow, map[string]any) {
 	problems := map[string]any{}
 	row := drawingRow{
-		Symbol:      strings.ToUpper(strings.TrimSpace(req.Symbol)),
+		Symbol:      normalizeChartSymbol(req.Symbol),
 		Interval:    strings.ToLower(strings.TrimSpace(req.Interval)),
 		DrawingType: strings.ToLower(strings.TrimSpace(req.DrawingType)),
 		Locked:      req.Locked != nil && *req.Locked,
 		Visible:     req.Visible == nil || *req.Visible,
 	}
-	if !KnownSymbols[row.Symbol] {
-		problems["symbol"] = "unknown or missing symbol"
-	}
-	if !drawingIntervals[row.Interval] {
-		problems["interval"] = "must be one of " + strings.Join(drawingIntervalOrder, ", ")
+	for field, problem := range drawingChartProblems(row.Symbol, row.Interval, served) {
+		problems[field] = problem
 	}
 	want, knownType := drawingPointCounts[row.DrawingType]
 	if !knownType {
@@ -259,6 +265,25 @@ func ValidateDrawingRequest(req drawingRequest) (drawingRow, map[string]any) {
 		return row, nil
 	}
 	return row, problems
+}
+
+// drawingChartProblems validates the (symbol, interval) pair a drawing is keyed
+// by. A Tehran symbol is a daily chart and nothing else — the candles endpoint
+// refuses every other interval for it — so a drawing on its 4h chart would be
+// anchored to a chart that cannot exist. Pure (unit tested).
+func drawingChartProblems(symbol, interval string, served symbolServed) map[string]any {
+	problems := map[string]any{}
+	tehran := IsTehranChartSymbol(symbol)
+	if !tehran && (!tickSymbolRE.MatchString(symbol) || !served(symbol)) {
+		problems["symbol"] = "unknown or missing symbol"
+	}
+	switch {
+	case !drawingIntervals[interval]:
+		problems["interval"] = "must be one of " + strings.Join(drawingIntervalOrder, ", ")
+	case tehran && interval != tehranInterval:
+		problems["interval"] = "a Tehran market chart is daily only: interval must be " + tehranInterval
+	}
+	return problems
 }
 
 // drawingChartMismatch names the fields whose values would move a drawing to a
@@ -423,14 +448,14 @@ func (h *Handler) ListDrawings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	symbol := strings.ToUpper(strings.TrimSpace(q.Get("symbol")))
+	symbol := normalizeChartSymbol(q.Get("symbol"))
 	interval := strings.ToLower(strings.TrimSpace(q.Get("interval")))
-	problems := map[string]any{}
-	if !KnownSymbols[symbol] {
-		problems["symbol"] = "unknown or missing symbol"
-	}
-	if !drawingIntervals[interval] {
-		problems["interval"] = "must be one of " + strings.Join(drawingIntervalOrder, ", ")
+	lookup := &servedLookup{h: h, ctx: r.Context()}
+	problems := drawingChartProblems(symbol, interval, lookup.served)
+	if lookup.err != nil {
+		h.Log.Error("chart_drawings_registry", "error", lookup.err)
+		httpserver.Internal(w, "database error")
+		return
 	}
 	if len(problems) > 0 {
 		httpserver.BadRequest(w, "invalid drawing query", problems)
@@ -470,6 +495,24 @@ func (h *Handler) ListDrawings(w http.ResponseWriter, r *http.Request) {
 	httpserver.JSON(w, http.StatusOK, drawingListResponse(items, truncated))
 }
 
+// validateDrawing validates a create/update body against the chart's symbol
+// set and answers the refusal itself. A registry that cannot be read is a 500:
+// reporting it as an unknown symbol would blame the caller for a server fault.
+func (h *Handler) validateDrawing(w http.ResponseWriter, r *http.Request, req drawingRequest) (drawingRow, bool) {
+	lookup := &servedLookup{h: h, ctx: r.Context()}
+	row, problems := validateDrawingRequest(req, lookup.served)
+	if lookup.err != nil {
+		h.Log.Error("chart_drawings_registry", "error", lookup.err)
+		httpserver.Internal(w, "database error")
+		return row, false
+	}
+	if problems != nil {
+		httpserver.BadRequest(w, "invalid drawing", problems)
+		return row, false
+	}
+	return row, true
+}
+
 // CreateDrawing implements POST /api/v1/chart/drawings.
 func (h *Handler) CreateDrawing(w http.ResponseWriter, r *http.Request) {
 	u, ok := drawingUser(w, r)
@@ -480,9 +523,8 @@ func (h *Handler) CreateDrawing(w http.ResponseWriter, r *http.Request) {
 	if !httpserver.DecodeJSON(w, r, &req) {
 		return
 	}
-	row, problems := ValidateDrawingRequest(req)
-	if problems != nil {
-		httpserver.BadRequest(w, "invalid drawing", problems)
+	row, ok := h.validateDrawing(w, r, req)
+	if !ok {
 		return
 	}
 	d, err := scanDrawing(h.Pool.QueryRow(r.Context(), sqlInsertDrawing,
@@ -521,9 +563,8 @@ func (h *Handler) UpdateDrawing(w http.ResponseWriter, r *http.Request) {
 	if !httpserver.DecodeJSON(w, r, &req) {
 		return
 	}
-	row, problems := ValidateDrawingRequest(req)
-	if problems != nil {
-		httpserver.BadRequest(w, "invalid drawing", problems)
+	row, ok := h.validateDrawing(w, r, req)
+	if !ok {
 		return
 	}
 	d, err := scanDrawing(h.Pool.QueryRow(r.Context(), sqlUpdateDrawing,

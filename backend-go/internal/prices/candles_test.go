@@ -926,6 +926,32 @@ func TestParseCandleQuery(t *testing.T) {
 			},
 		},
 		{"unknown symbol rejected", "symbol=NOT_A_SYMBOL", true, nil},
+		{"a tick symbol is normalized like the drawings' one", "symbol=%20xauusd%20", false, func(t *testing.T, q candleQuery) {
+			if q.Symbol != "XAUUSD" || q.Source != sourceTicks || q.Code != "XAUUSD" {
+				t.Fatalf("%+v", q)
+			}
+		}},
+		{"a Tehran index", "symbol=IDX:32097828799138957", false, func(t *testing.T, q candleQuery) {
+			if q.Source != sourceTSEIndex || q.Code != "32097828799138957" || q.Symbol != "IDX:32097828799138957" {
+				t.Fatalf("%+v", q)
+			}
+		}},
+		{"a Tehran share", "symbol=EQ:46348559193224090", false, func(t *testing.T, q candleQuery) {
+			if q.Source != sourceTSEEquity || q.Code != "46348559193224090" {
+				t.Fatalf("%+v", q)
+			}
+		}},
+		{"a lower-case prefix normalizes", "symbol=idx:32097828799138957", false, func(t *testing.T, q candleQuery) {
+			if q.Symbol != "IDX:32097828799138957" || q.Source != sourceTSEIndex {
+				t.Fatalf("%+v", q)
+			}
+		}},
+		// A Tehran symbol is its insCode, never a name: TEDPIX is not a code.
+		{"a prefix with no code", "symbol=IDX:", true, nil},
+		{"a prefix with a non-numeric code", "symbol=IDX:abc", true, nil},
+		{"a code too short to be an insCode", "symbol=EQ:12345", true, nil},
+		{"an unknown prefix", "symbol=FUND:32097828799138957", true, nil},
+		{"an index name instead of its code", "symbol=TEDPIX", true, nil},
 		{"empty-but-present symbol falls back to the default", "symbol=", false, func(t *testing.T, q candleQuery) {
 			if q.Symbol != "IR_GOLD_18K" {
 				t.Fatalf("symbol = %q", q.Symbol)
@@ -1418,6 +1444,12 @@ func TestCandles_InvalidParamsReturn400(t *testing.T) {
 		{"limit out of range", "?limit=5000"},
 		{"unparseable cursor", "?before=tomorrow"},
 		{"unknown overlays flag", "?overlays=perhaps"},
+		// A Tehran symbol at any timeframe but 1d, refused before either
+		// Tehran source is reached (both are nil here, like the pool).
+		{"tehran index at 4h", "?symbol=IDX:32097828799138957&interval=4h"},
+		{"tehran index weekly", "?symbol=IDX:32097828799138957&interval=1w"},
+		{"tehran share at 1h", "?symbol=EQ:46348559193224090&interval=1h"},
+		{"malformed tehran symbol", "?symbol=IDX:abc"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

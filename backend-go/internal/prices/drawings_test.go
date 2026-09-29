@@ -3,6 +3,7 @@ package prices
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -157,7 +158,7 @@ func TestValidateDrawingRequestSymbolAndInterval(t *testing.T) {
 		interval string
 		field    string
 	}{
-		{"unknown symbol", "IR_GOLD_24K", "1h", "symbol"},
+		{"unknown symbol", "IR_GOLD_99K", "1h", "symbol"},
 		{"empty symbol", "", "1h", "symbol"},
 		{"unknown interval", "IR_GOLD_18K", "7m", "interval"},
 		{"empty interval", "IR_GOLD_18K", "", "interval"},
@@ -176,6 +177,75 @@ func TestValidateDrawingRequestSymbolAndInterval(t *testing.T) {
 					"symbol", tc.symbol, "interval", tc.interval, problems)
 			}
 		})
+	}
+}
+
+// Whatever the candles endpoint draws can be annotated — the registry's codes
+// and the Tehran symbols — and a Tehran chart exists at 1d only, so that is
+// the only interval a drawing on one may be keyed by.
+func TestDrawingsAcceptTheChartSymbolSet(t *testing.T) {
+	served := func(s string) bool { return KnownSymbols[s] || s == "IR_GOLD_24K" }
+	accepted := []struct{ symbol, interval string }{
+		{"IDX:32097828799138957", "1d"},
+		{"idx:32097828799138957", "1D"},
+		{"EQ:46348559193224090", "1d"},
+		{"IR_GOLD_24K", "1h"},
+	}
+	for _, c := range accepted {
+		req := drawingReq("horizontal_line", pointsFor(1))
+		req.Symbol, req.Interval = c.symbol, c.interval
+		row, problems := validateDrawingRequest(req, served)
+		if problems != nil {
+			t.Errorf("%s @ %s rejected: %v", c.symbol, c.interval, problems)
+		}
+		if row.Symbol != normalizeChartSymbol(c.symbol) {
+			t.Errorf("stored symbol %q", row.Symbol)
+		}
+	}
+
+	refused := []struct{ name, symbol, interval, field string }{
+		{"a Tehran index at 4h", "IDX:32097828799138957", "4h", "interval"},
+		{"a Tehran share weekly", "EQ:46348559193224090", "1w", "interval"},
+		{"a malformed Tehran symbol", "IDX:abc", "1d", "symbol"},
+		{"an index name, not its code", "TEDPIX", "1d", "symbol"},
+		{"a registry code nobody registered", "IR_GOLD_99K", "1d", "symbol"},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			req := drawingReq("horizontal_line", pointsFor(1))
+			req.Symbol, req.Interval = c.symbol, c.interval
+			if _, problems := validateDrawingRequest(req, served); problems[c.field] == nil {
+				t.Fatalf("accepted (problems=%v)", problems)
+			}
+		})
+	}
+
+	// The registry widens the set only when it is asked: the pure validator
+	// alone still knows the canonical symbols only.
+	req := drawingReq("horizontal_line", pointsFor(1))
+	req.Symbol = "IR_GOLD_24K"
+	if _, problems := ValidateDrawingRequest(req); problems["symbol"] == nil {
+		t.Fatal("a registry code must not pass without the registry")
+	}
+}
+
+func TestListDrawingsRefusesATehranChartThatCannotExist(t *testing.T) {
+	list := func(h *Handler, query string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/chart/drawings?"+query, nil)
+		r = r.WithContext(httpserver.ContextWithUser(r.Context(), httpserver.AuthUser{ID: "u1"}))
+		rec := httptest.NewRecorder()
+		h.ListDrawings(rec, r)
+		return rec
+	}
+	// Refused before the (nil) pool is reached.
+	rec := list(&Handler{Log: quietLogger()}, "symbol=IDX:32097828799138957&interval=4h")
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "daily only") {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	// A registry that cannot be read is a 500, not an unknown symbol.
+	down := &Handler{Log: quietLogger(), Registry: &fakeRegistry{err: errTestRegistryDown}}
+	if rec := list(down, "symbol=IR_SILVER_999&interval=1d"); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d, want 500", rec.Code)
 	}
 }
 
@@ -713,6 +783,8 @@ func readMigration(t *testing.T, name string) string {
 	}
 	return string(b)
 }
+
+var errTestRegistryDown = errors.New("registry down")
 
 func collapseSpace(s string) string {
 	return strings.Join(strings.Fields(s), " ")

@@ -52,6 +52,11 @@ package prices
 // Nothing here forecasts. Candle synthesis and the indicator overlays are
 // technical arithmetic over stored observations; model input, prediction,
 // calibration and the buy/sell policy are untouched.
+//
+// Everything above is about `prices`. A Tehran index or share (IDX:/EQ:, see
+// chart_symbols.go) is not a tick stream — it is one settled session per day
+// from TSETMC — and is served by tehran_candles.go through the same endpoint,
+// the same pagination contract and the same refusal text.
 
 import (
 	"context"
@@ -262,7 +267,13 @@ func (iv candleInterval) Confirmed(start, now time.Time) bool {
 // candleQuery is a validated request. Parsing is separated from the handler so
 // the contract is testable without a database.
 type candleQuery struct {
-	Symbol   string
+	// Symbol is normalized (trimmed, upper-cased) and is what the response
+	// echoes.
+	Symbol string
+	// Source says which store the symbol's rows live in, and Code is the key
+	// into it: the registry code for ticks, the insCode for a Tehran symbol.
+	Source   candleSource
+	Code     string
 	Interval candleInterval
 	Limit    int
 	// Before is the pagination cursor: an EXCLUSIVE upper bound on bucket
@@ -341,16 +352,27 @@ func candleLimitFromDays(days int, iv candleInterval) int {
 	return int(buckets)
 }
 
-// parseCandleQuery validates the query string. Pure function (unit tested):
-// no clock, no database.
+// parseCandleQuery validates the query string against the canonical symbol
+// set. Pure function (unit tested): no clock, no database.
 func parseCandleQuery(q url.Values) (candleQuery, *paramError) {
-	out := candleQuery{Symbol: q.Get("symbol"), Overlays: true}
+	return parseCandleQueryFor(q, knownSymbolsOnly)
+}
+
+// parseCandleQueryFor is parseCandleQuery with the answer to "is this registry
+// code served from `prices`?" supplied by the caller — the handler asks the
+// cached registry, a test passes a set. A Tehran symbol is accepted on its
+// shape alone: whether that index or share exists, and may be served, is the
+// source's answer (404 / 409), not a parameter error.
+func parseCandleQueryFor(q url.Values, served symbolServed) (candleQuery, *paramError) {
+	out := candleQuery{Symbol: normalizeChartSymbol(q.Get("symbol")), Overlays: true}
 	if out.Symbol == "" {
 		out.Symbol = defaultCandleSymbol
 	}
-	if !KnownSymbols[out.Symbol] {
+	src, code, canonical, ok := classifyCandleSymbol(out.Symbol)
+	if !ok || (src == sourceTicks && !served(canonical)) {
 		return out, badParam("unknown symbol", map[string]any{"symbol": out.Symbol})
 	}
+	out.Symbol, out.Source, out.Code = canonical, src, code
 
 	iv, err := ParseCandleInterval(q.Get("interval"))
 	if err != nil {
@@ -1027,7 +1049,8 @@ func candleResponse(q candleQuery, iv candleInterval, cov candleCoverage,
 
 // Candles implements GET /api/v1/market/candles.
 //
-// Query: symbol (default IR_GOLD_18K), interval (default 1d, aliases daily and
+// Query: symbol (default IR_GOLD_18K; a registry code, IDX:<insCode> or
+// EQ:<insCode> — see chart_symbols.go), interval (default 1d, aliases daily and
 // hourly), limit (default 500, 1..2000), before (pagination cursor, RFC3339 or
 // unix seconds, exclusive on bucket start), from/to (explicit window),
 // overlays (default 1; 0 for cheap history pages), days (legacy).
@@ -1037,12 +1060,26 @@ func candleResponse(q candleQuery, iv candleInterval, cov candleCoverage,
 // is snapped outward onto bucket boundaries and echoed as `effective_window`;
 // every bucket returned is whole (see the file header).
 func (h *Handler) Candles(w http.ResponseWriter, r *http.Request) {
-	q, perr := parseCandleQuery(r.URL.Query())
+	ctx := r.Context()
+	lookup := &servedLookup{h: h, ctx: ctx}
+	q, perr := parseCandleQueryFor(r.URL.Query(), lookup.served)
+	if lookup.err != nil {
+		// A registry that could not be read is a server fault, not an unknown
+		// symbol: answering 400 would tell the caller its request was wrong.
+		h.Log.Error("candles_registry", "error", lookup.err, "symbol", r.URL.Query().Get("symbol"))
+		httpserver.Internal(w, "database error")
+		return
+	}
 	if perr != nil {
 		httpserver.BadRequest(w, perr.Message, perr.Details)
 		return
 	}
-	ctx := r.Context()
+	if q.Source != sourceTicks {
+		// A Tehran index or share: settled daily sessions from TSETMC, read
+		// from their own stores (tehran_candles.go). Nothing below applies.
+		h.tehranCandles(w, r, q)
+		return
+	}
 	now := time.Now().UTC()
 	iv := q.Interval
 
