@@ -20,6 +20,7 @@ import (
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/alerts"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/audit"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/auth"
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/bourse"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/config"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/economic"
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/equities"
@@ -144,6 +145,7 @@ func run() error {
 		Economic: &economic.Handler{Pool: pool, Log: logger},
 		Equities: &equities.Handler{Pool: pool, Log: logger},
 		RelValue: &relvalue.Handler{Pool: pool, Log: logger},
+		Bourse:   bourse.NewHandler(pool, logger),
 
 		GlobalLimiter: globalLimiter,
 		LoginLimiter:  loginLimiter,

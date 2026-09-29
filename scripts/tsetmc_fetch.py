@@ -158,8 +158,17 @@ def _curl(url: str, timeout: int = 120) -> bytes:
     thing it objects to is curl's own default User-Agent, which is why one is
     always passed.
     """
+    # Retried, because TSETMC's CDN is intermittently unwell: on 2026-09-29 the
+    # same URL answered 200, 200, 200, 502, 200 two seconds apart, and a run of
+    # ~120 files died on the first one. --retry-all-errors and not plain
+    # --retry, measured rather than assumed: curl 8.7 reports TSETMC's 502 as
+    # exit 56 (a receive error, not an HTTP one) and plain --retry does not
+    # treat that as transient — it gave up after 0 seconds. The cost of
+    # retrying everything is that a genuine 404 takes ~15 s to fail instead of
+    # none, which a manual weekly run can afford.
     proc = subprocess.run(
         ["curl", "--fail", "--location", "--silent", "--show-error",
+         "--retry", "5", "--retry-delay", "3", "--retry-all-errors",
          "--max-time", str(timeout), "--user-agent", USER_AGENT, url],
         capture_output=True,
         check=False,   # the return code is inspected below, with the stderr

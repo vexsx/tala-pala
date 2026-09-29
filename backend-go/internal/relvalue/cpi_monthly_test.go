@@ -333,3 +333,67 @@ func TestDeflateReportsBothRefusals(t *testing.T) {
 			got.Note)
 	}
 }
+
+// --- DeflateMonthly: a whole series in constant prices -----------------------
+
+// jalaliObs is jalaliMonths' input, for the exported entry point that takes
+// observations rather than a built table.
+func jalaliObs(start time.Time, levels ...float64) []economic.Observation {
+	out := make([]economic.Observation, 0, len(levels))
+	s := start
+	for i, v := range levels {
+		end := s.AddDate(0, 0, 29)
+		out = append(out, economic.Observation{RefPeriodStart: s, RefPeriodEnd: end,
+			RefPeriodLabel: labelFor(i), Value: v, Vintage: 1})
+		s = end.AddDate(0, 0, 1)
+	}
+	return out
+}
+
+func TestDeflateMonthly_OnePointPerMonthRebased(t *testing.T) {
+	start := day(2026, time.January, 21)
+	// Prices rise exactly as fast as the CPI: constant in real terms.
+	cpi := jalaliObs(start, 100, 110, 121)
+	var pts []Point
+	v := 1000.0
+	for i := 0; i < 90; i++ {
+		d := start.AddDate(0, 0, i)
+		switch i {
+		case 30:
+			v = 1100
+		case 60:
+			v = 1210
+		}
+		pts = append(pts, Point{Day: d, Value: v})
+	}
+	got := DeflateMonthly(pts, cpi)
+	if got.Reason != "" || len(got.Points) != 3 {
+		t.Fatalf("reason %q, %d points", got.Reason, len(got.Points))
+	}
+	for _, p := range got.Points {
+		if math.Abs(p.Value-100) > 1e-9 {
+			t.Fatalf("%s: %v, want 100 — nominal growth equal to inflation is flat", p.Period, p.Value)
+		}
+	}
+	// Each point sits on the FIRST session inside its own period.
+	if !got.Points[1].Day.Equal(start.AddDate(0, 0, 30)) || got.Points[1].Nominal != 1100 {
+		t.Fatalf("second anchor %+v", got.Points[1])
+	}
+	if !strings.Contains(got.Note, "MONTHLY") {
+		t.Fatal("the note must say the resolution")
+	}
+}
+
+func TestDeflateMonthly_NeverInventsAnAnchor(t *testing.T) {
+	start := day(2026, time.January, 21)
+	cpi := jalaliObs(start, 100, 110, 121)
+	// Sessions only inside the first month: one anchor, not a line.
+	pts := []Point{{Day: start.AddDate(0, 0, 2), Value: 1000}, {Day: start.AddDate(0, 0, 5), Value: 1010}}
+	got := DeflateMonthly(pts, cpi)
+	if got.Reason == "" || len(got.Points) > 1 {
+		t.Fatalf("%+v", got)
+	}
+	if empty := DeflateMonthly(pts, nil); empty.Reason == "" || len(empty.Points) != 0 {
+		t.Fatal("no CPI, no constant prices")
+	}
+}

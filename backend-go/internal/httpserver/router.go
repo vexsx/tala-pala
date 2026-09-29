@@ -117,6 +117,22 @@ type EquityHandlers interface {
 	Stocks(http.ResponseWriter, *http.Request)
 	Bars(http.ResponseWriter, *http.Request)
 	Screen(http.ResponseWriter, *http.Request)
+	Flows(http.ResponseWriter, *http.Request)
+	Relative(http.ResponseWriter, *http.Request)
+}
+
+// BourseHandlers serves the Tehran market as a whole: TSETMC's indices (with
+// the one correction their data needs, applied by prediction-python and
+// verified against the exchange's live figure), the equal- against the
+// cap-weighted index, the total market value, the roster's money flow and the
+// market snapshot. Reads and arithmetic only; nothing forecasts.
+type BourseHandlers interface {
+	Overview(http.ResponseWriter, *http.Request)
+	Indices(http.ResponseWriter, *http.Request)
+	IndexHistory(http.ResponseWriter, *http.Request)
+	Breadth(http.ResponseWriter, *http.Request)
+	MarketValue(http.ResponseWriter, *http.Request)
+	Flows(http.ResponseWriter, *http.Request)
 }
 
 // RelativeValueHandlers serves the numeraire and relative-value engine:
@@ -152,6 +168,7 @@ type Deps struct {
 	Economic     EconomicHandlers
 	Equities     EquityHandlers
 	RelValue     RelativeValueHandlers
+	Bourse       BourseHandlers
 
 	// Limiters are created by the caller so it can Stop() them on shutdown.
 	GlobalLimiter *RateLimiter
@@ -267,6 +284,22 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			// market cap) with the real obstacle, so the page states its
 			// boundary from the API rather than from its own copy.
 			r.Get("/api/v1/stocks/screen", d.Equities.Screen)
+			// A share against its market: its حقیقی/حقوقی money flow, and its
+			// adjusted return beside TEDPIX and its own sector's index, with a
+			// beta measured over matched traded-to-traded spans.
+			r.Get("/api/v1/stocks/{symbol}/flows", d.Equities.Flows)
+			r.Get("/api/v1/stocks/{symbol}/relative", d.Equities.Relative)
+
+			// The market itself (migration 0029). /indices is every index with
+			// its verdict and its standard figures; /history is one index in
+			// points, dollars, gold or constant prices; /breadth is the
+			// equal-weighted index against the cap-weighted one.
+			r.Get("/api/v1/bourse/overview", d.Bourse.Overview)
+			r.Get("/api/v1/bourse/indices", d.Bourse.Indices)
+			r.Get("/api/v1/bourse/indices/{code}/history", d.Bourse.IndexHistory)
+			r.Get("/api/v1/bourse/breadth", d.Bourse.Breadth)
+			r.Get("/api/v1/bourse/market-value", d.Bourse.MarketValue)
+			r.Get("/api/v1/bourse/flows", d.Bourse.Flows)
 
 			// The numeraire and relative-value engine. /markets/numeraires is
 			// registered so a client can discover which units of account this

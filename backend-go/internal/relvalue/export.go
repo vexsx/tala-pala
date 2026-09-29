@@ -38,12 +38,15 @@ package relvalue
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/economic"
 )
 
 // The numeraire keys an external caller may name. They are the same closed
@@ -359,6 +362,112 @@ func (c *Converter) ConvertTomanSeries(points []Point, key string) SeriesConvers
 				"expressed in %s.", conv.MissingSeries, spec.Key)
 	}
 	return out
+}
+
+// --- constant prices ----------------------------------------------------------
+//
+// The MONTHLY deflator, exported for a caller that draws a whole series in
+// constant prices — internal/bourse's "TEDPIX in real terms". It is the same
+// table and the same anchoring rule realReturnMonthly uses for a single
+// real return, so a real index drawn by that package and a real return printed
+// by this one cannot disagree about which session stands for which month.
+
+// SeriesMonthlyCPI is the monthly deflator's code, exported so a caller can
+// name it in a payload without copying the literal.
+const SeriesMonthlyCPI = sciCPISeriesCode
+
+// RealPoint is one Jalali month of a series in constant prices.
+type RealPoint struct {
+	// Day is the ANCHORING observation's own day — the first session inside the
+	// month's reference period — never a day invented for the month.
+	Day time.Time
+	// Period is the publisher's own label, e.g. "1405-05".
+	Period string
+	// Value is rebased: 100 at the first anchored month.
+	Value float64
+	// Nominal is the anchoring observation's own value, before deflation.
+	Nominal float64
+	// CPI is the deflator's value for the period, and Vintage the revision used.
+	CPI     float64
+	Vintage int
+}
+
+// RealSeries is a series deflated month by month, with its account.
+type RealSeries struct {
+	Points     []RealPoint
+	CoverageTo *time.Time
+	Note       string
+	// Reason is non-empty exactly when Points has fewer than two months.
+	Reason string
+}
+
+// DeflateMonthly re-expresses a series in constant prices at MONTHLY
+// resolution: for each covered SCI reference period, the series' first
+// observation inside that period's own Gregorian span, divided by the
+// period's index, rebased to 100 at the first such month. Pure function (unit
+// tested).
+//
+// Monthly and not daily, deliberately. Dividing each DAY by its month's
+// average price level would hold the deflator flat across the month and then
+// step it at every boundary — manufacturing a jump of that month's inflation
+// between two adjacent sessions that did nothing. drawdown.go refuses a
+// real-terms drawdown for exactly that reason, and a real-terms chart drawn
+// daily would be the same artefact in picture form.
+func DeflateMonthly(points []Point, cpi []economic.Observation) RealSeries {
+	table := buildMonthlyCPITable(cpi)
+	if len(table) == 0 {
+		return RealSeries{Points: []RealPoint{}, Reason: "no " + sciCPISeriesCode +
+			" observation is stored at this cutoff, so there is no deflator."}
+	}
+	s := toDailySeries(points)
+	out := RealSeries{Points: []RealPoint{}, CoverageTo: table.coverageTo()}
+	var base float64
+	for _, m := range table {
+		q, _, ok := periodAnchor(s, m)
+		if !ok || q.Close <= 0 {
+			continue
+		}
+		deflated := q.Close / m.Value
+		if base == 0 {
+			base = deflated
+		}
+		v := deflated / base * 100
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			continue
+		}
+		out.Points = append(out.Points, RealPoint{Day: q.Day, Period: m.Label, Value: v,
+			Nominal: q.Close, CPI: m.Value, Vintage: m.Vintage})
+	}
+	last := table[len(table)-1]
+	if len(out.Points) < 2 {
+		out.Reason = fmt.Sprintf(
+			"constant prices need two months that %s covers and the series also has an "+
+				"observation inside; this window has %d. %s coverage ends with %s.",
+			sciCPISeriesCode, len(out.Points), sciCPISeriesCode, last.Label)
+		return out
+	}
+	out.Note = fmt.Sprintf(
+		"Constant prices, MONTHLY: one point per Jalali month, the first session inside "+
+			"each %s reference period divided by that period's index and rebased to 100 at "+
+			"%s (%s). %s is a monthly AVERAGE price level while each point is one "+
+			"session's close, so each point is offset from its deflator by up to about half "+
+			"a month; nothing is interpolated onto days. Coverage ends with %s, so the most "+
+			"recent sessions have no deflator yet and are not shown in constant prices.",
+		sciCPISeriesCode, out.Points[0].Period, dayString(out.Points[0].Day),
+		sciCPISeriesCode, last.Label)
+	return out
+}
+
+// LoadMonthlyCPI reads the monthly deflator point-in-time at `asOf`, through
+// internal/economic's exported rule. A deployment that has never ingested it
+// gets an empty slice and no error: the absence is a degraded response for
+// the caller to state, not a failure.
+func LoadMonthlyCPI(ctx context.Context, pool *pgxpool.Pool, asOf time.Time) ([]economic.Observation, error) {
+	_, obs, err := economic.PointInTime(ctx, pool, sciCPISeriesCode, asOf)
+	if errors.Is(err, economic.ErrSeriesNotFound) {
+		return nil, nil
+	}
+	return obs, err
 }
 
 // --- helpers ------------------------------------------------------------------
