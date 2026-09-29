@@ -4,7 +4,13 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import StockDetail, { haltRuns, toChartPoints } from '../pages/StockDetail'
 import { SettingsProvider } from '../lib/settings'
 import detailSource from '../pages/StockDetail.tsx?raw'
-import type { StockBarsResponse } from '../api/types'
+import type { StockBarsResponse, StockFlowsResponse, StockRelativeResponse } from '../api/types'
+import marketLinksSource from '../components/StockMarketLinks.tsx?raw'
+// Captured from production on 2026-09-29 against fb1b204 (fixtures/README.md).
+// فولاد's year has 103 halted sessions, one of them a 5.5-month stretch across
+// the 2026 closure — the span that once flipped its beta negative.
+import fooladRelative from './fixtures/stock-relative-foolad-1y.json'
+import fooladFlows from './fixtures/stock-flows-foolad-1y.json'
 
 // Captured from production GET /api/v1/stocks/{symbol}/bars on 2026-09-24 —
 // see fixtures/README.md. فولاد's window is 43 halted sessions out of 66, a
@@ -23,8 +29,17 @@ vi.mock('../api/client', async () => {
 })
 const { api } = await import('../api/client')
 
+const FOOLAD_RELATIVE = fooladRelative as StockRelativeResponse
+const FOOLAD_FLOWS = fooladFlows as StockFlowsResponse
+
 function mockApi(payload: StockBarsResponse) {
-  ;(api as unknown as Mock).mockImplementation(() => Promise.resolve(payload))
+  ;(api as unknown as Mock).mockImplementation((path: string) => {
+    // The share-against-market sections are their own requests; they get their
+    // own captured payloads rather than the bars body under the wrong shape.
+    if (path.includes('/relative')) return Promise.resolve(FOOLAD_RELATIVE)
+    if (path.includes('/flows')) return Promise.resolve(FOOLAD_FLOWS)
+    return Promise.resolve(payload)
+  })
 }
 
 async function renderDetail(payload: StockBarsResponse) {
@@ -198,5 +213,57 @@ describe('a refused adjustment offers the raw series rather than a dead end', ()
     await waitFor(() => expect(screen.getByText(/could not be loaded/i)).toBeTruthy())
     expect(screen.getByText(/Show the raw series instead/i)).toBeTruthy()
     expect(document.body.textContent).toMatch(/quietly-raw/i)
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// The share against its market, and who has been buying it
+// ---------------------------------------------------------------------------
+
+describe('against its market', () => {
+  it('states the beta with the spans a halt forced out of it', async () => {
+    await renderDetail(FOOLAD)
+    const beta = await screen.findByTestId('sd-beta')
+    expect(beta.textContent).toContain('1.16')
+    expect(beta.textContent).toContain('correlation 0.77')
+    expect(beta.textContent).toContain('2 span(s) across a halt are left out of the beta')
+  })
+
+  it('compares returns over the same span, in points', async () => {
+    await renderDetail(FOOLAD)
+    const s = await screen.findByTestId('sd-relative-summary')
+    expect(s.textContent).toContain('+96.1%')
+    expect(s.textContent).toContain('+182.6%')
+    expect(s.textContent).toContain('-86.5 pp')
+  })
+
+  it('never bridges a halt in the share line', () => {
+    // The market line may be continuous; the share's must break where it did
+    // not trade. No rendered jsdom output can show a bridged gap.
+    expect(marketLinksSource).toContain('connectNulls={false}')
+    expect(marketLinksSource).not.toContain('connectNulls={true}')
+  })
+})
+
+describe('who has been buying', () => {
+  it('summarises the newest 5, 20 and 60 sessions', async () => {
+    await renderDetail(FOOLAD)
+    const w = await screen.findByTestId('sd-flow-windows')
+    expect(w.textContent).toContain('Last 5 sessions')
+    expect(w.textContent).toContain('Last 60 sessions')
+    expect(w.textContent).toContain('buyer power')
+  })
+
+  it('names the excluded session rather than dropping it silently', async () => {
+    await renderDetail(FOOLAD)
+    const card = await screen.findByTestId('sd-flows')
+    await waitFor(() => expect(card.textContent).toContain('1 session(s) in this window failed a check and are excluded'))
+  })
+
+  it('draws inflow and outflow in a colour-blind-safe pair, not green against red', () => {
+    expect(marketLinksSource).toContain('var(--flow-in)')
+    expect(marketLinksSource).toContain('var(--flow-out)')
+    expect(marketLinksSource).not.toContain('var(--pos)')
   })
 })

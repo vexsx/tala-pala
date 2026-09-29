@@ -1898,3 +1898,368 @@ export interface EconomicObservationsResponse {
   observations: EconomicObservation[]
   count: number
 }
+
+// --- the Tehran market (migration 0029) --------------------------------------
+//
+// /api/v1/bourse/*. Every index value served here is TSETMC's own close after
+// ONE correction — values the exchange stores off by exactly a factor of ten
+// are multiplied back — and every index carries the check that says how many
+// were and whether the corrected history agreed with the exchange's live
+// figure. Levels are index points, not prices; amounts are TOMAN (the API
+// converts TSETMC's rials) unless a field says USD.
+
+/** The same shape as the equity screener's data_age, with the same bound. */
+export type BourseDataAge = StockDataAge
+
+/** An index's verdict — `bourse.checkItem`. */
+export interface BourseIndexCheck {
+  version?: string
+  /** 'validated' | 'refused' | 'never_ingested' */
+  status: string
+  scale_breaks: number
+  rows_rescaled: number
+  first_break: string | null
+  last_break: string | null
+  dropped_nonpositive: number
+  largest_move_pct: number | null
+  largest_move_date: string | null
+  live_value: number | null
+  /** corrected newest / TSETMC's live figure at fetch time. */
+  live_ratio: number | null
+  live_checked_at: string | null
+  refusal_reason?: string
+  computed_at: string | null
+}
+
+export interface BourseIndexMeta {
+  ins_code: string
+  name_fa: string
+  name_en: string
+  /** 'bourse' | 'farabourse' */
+  market: string
+  /** 'headline' | 'market' | 'segment' | 'sector' */
+  kind: string
+  sector_code: string
+  /** 'cap' | 'equal' | 'free_float' | 'unstated' */
+  weighting: string
+  /** 'total' | 'price' | 'unstated' */
+  return_basis: string
+  display_order: number
+  first_date: string | null
+  last_date: string | null
+  value_count: number
+  notes?: string
+  check: BourseIndexCheck
+}
+
+export interface BoursePoint {
+  date: string
+  value: number | null
+}
+
+export interface BourseDrawdown {
+  pct: number | null
+  peak_date: string | null
+  trough_date: string | null
+  recovered_date: string | null
+}
+
+export interface BourseIndexItem extends BourseIndexMeta {
+  last: BoursePoint | null
+  change_1d_pct: number | null
+  last_unchanged: boolean
+  /** Keys '1w' | '1m' | '3m' | '6m' | '1y' | '3y' | '5y'. */
+  returns: Record<string, number | null>
+  return_reasons?: Record<string, string>
+  since_pct?: number | null
+  since_reason?: string
+  dispersion_1y_pct: number | null
+  dispersion_1y_reason?: string
+  sessions_1y: number
+  unchanged_rows_1y: number
+  high_52w: BoursePoint | null
+  low_52w: BoursePoint | null
+  max_drawdown_1y: BourseDrawdown
+  sma200_gap_pct: number | null
+  sma200_reason?: string
+  all_time_high: BoursePoint | null
+  from_all_time_high_pct: number | null
+  days_since_all_time_high: number | null
+  roster_symbols?: string[]
+}
+
+export interface BourseIndicesResponse {
+  items: BourseIndexItem[]
+  count: number
+  since: string | null
+  notes: string[]
+  refused: string[]
+  data_age: BourseDataAge
+}
+
+export interface BourseWindow {
+  period: string
+  from: string | null
+  to: string
+}
+
+export interface BourseHistoryPoint {
+  date: string
+  value: number | null
+  /** The value repeats the previous session exactly: a closed market. */
+  unchanged?: boolean
+  /** TSETMC stored this value off by a factor of ten; shown corrected. */
+  rescaled?: boolean
+  /** The SCI month a constant-price point stands for. */
+  period?: string
+}
+
+export interface BourseHistorySummary {
+  first: BoursePoint | null
+  last: BoursePoint | null
+  return_pct: number | null
+  max_drawdown: BourseDrawdown
+  dispersion_pct: number | null
+  dispersion_reason?: string
+  sessions: number
+  unchanged_sessions: number
+  rescaled_sessions: number
+}
+
+export interface BourseConversion {
+  chain: string[]
+  unit: string
+  carried_forward: number
+  dropped_no_prior_quote: number
+  dropped_nonpositive_quote: number
+}
+
+export interface BourseHistoryResponse {
+  index: BourseIndexMeta
+  /** 'points' | 'usd' | 'gold' | 'real' */
+  unit: string
+  unit_label: string
+  window: BourseWindow
+  points: BourseHistoryPoint[]
+  summary: BourseHistorySummary
+  conversion?: BourseConversion
+  deflator?: { series: string; coverage_to: string | null; note: string }
+  notes: string[]
+  data_age: BourseDataAge
+}
+
+export interface BourseBreadthPoint {
+  date: string
+  cap: number | null
+  equal: number | null
+  /** equal / cap x 100 — 100 at the window's first common session. */
+  ratio: number | null
+  unchanged?: boolean
+}
+
+export interface BourseBreadthResponse {
+  /** 'total' | 'price' */
+  basis: string
+  cap: BourseIndexMeta
+  equal: BourseIndexMeta
+  window: BourseWindow
+  points: BourseBreadthPoint[]
+  summary: {
+    from: string | null
+    to: string | null
+    cap_return_pct: number | null
+    equal_return_pct: number | null
+    spread_pp: number | null
+    sessions_compared: number
+    equal_beat_cap: number
+    cap_beat_equal: number
+    correlation: number | null
+  }
+  notes: string[]
+  data_age: BourseDataAge
+}
+
+export interface BourseMarketValuePoint {
+  date: string
+  bourse_toman: number | null
+  farabourse_toman: number | null
+  total_toman: number | null
+  bourse_usd: number | null
+  farabourse_usd: number | null
+  total_usd: number | null
+}
+
+export interface BourseMarketValueResponse {
+  window: BourseWindow
+  points: BourseMarketValuePoint[]
+  summary: {
+    from: string | null
+    to: string | null
+    total_toman_change_pct: number | null
+    total_usd_change_pct: number | null
+    latest: BourseMarketValuePoint | null
+  }
+  conversion?: BourseConversion
+  notes: string[]
+  data_age: BourseDataAge
+}
+
+export interface BourseSnapshot {
+  market: string
+  activity_at: string
+  age_hours: number | null
+  index_value: number | null
+  index_change: number | null
+  index_change_pct: number | null
+  ew_index_value: number | null
+  ew_index_change: number | null
+  ew_index_change_pct: number | null
+  trade_count: number | null
+  trade_volume: number | null
+  trade_value_toman: number | null
+  market_value_toman: number | null
+  state: string
+  state_title: string
+  collected_at: string
+}
+
+export interface BourseSectorBreadth {
+  sector_code: string
+  sector_fa: string
+  index_ins_code?: string
+  index_name_en?: string
+  down_over_2: number
+  down_under_2: number
+  up_under_2: number
+  up_over_2: number
+  total: number
+  up_share_pct: number | null
+}
+
+export interface BourseHeadline {
+  ins_code: string
+  name_fa: string
+  name_en: string
+  last: BoursePoint | null
+  change_1d_pct: number | null
+  last_unchanged: boolean
+  status: string
+}
+
+export interface BourseOverviewResponse {
+  headline: BourseHeadline[]
+  snapshots: BourseSnapshot[]
+  sectors: BourseSectorBreadth[]
+  sectors_at: string | null
+  sector_totals: {
+    down_over_2: number
+    down_under_2: number
+    up_under_2: number
+    up_over_2: number
+    total: number
+    up_share_pct: number | null
+  }
+  notes: string[]
+  data_age: BourseDataAge
+}
+
+/** حقیقی/حقوقی over a window — `bourse.FlowSummary`. Amounts in toman. */
+export interface FlowSummary {
+  from: string | null
+  to: string | null
+  sessions: number
+  consistent: number
+  excluded: number
+  net_individual_toman: number | null
+  net_individual_pct_of_value: number | null
+  total_value_toman: number | null
+  individual_buy_share_pct: number | null
+  individual_sell_share_pct: number | null
+  buyer_power: number | null
+  inflow_sessions: number
+  outflow_sessions: number
+}
+
+export interface FlowDay {
+  date: string
+  total_value_toman: number | null
+  net_individual_toman: number | null
+  individual_buy_share_pct: number | null
+  individual_sell_share_pct: number | null
+  per_capita_buy_toman: number | null
+  per_capita_sell_toman: number | null
+  buyer_power: number | null
+  consistent: boolean
+  excluded_reason?: string
+}
+
+export interface BourseFlowRosterItem {
+  ins_code: string
+  symbol: string
+  name_fa: string
+  sector_code: string
+  sector_fa: string
+  last_date: string | null
+  /** Keys '1' | '5' | '20' | '60': the newest n stored sessions. */
+  windows: Record<string, FlowSummary>
+}
+
+export interface BourseFlowsResponse {
+  items: BourseFlowRosterItem[]
+  count: number
+  /** The windows summed across the roster — NOT the market. */
+  roster: Record<string, FlowSummary>
+  notes: string[]
+  data_age: BourseDataAge
+}
+
+export interface StockFlowsResponse {
+  symbol: string
+  ins_code: string
+  name_fa: string
+  window: BourseWindow
+  days: FlowDay[]
+  summary: FlowSummary
+  windows: Record<string, FlowSummary>
+  cumulative_net_individual: BoursePoint[]
+  notes: string[]
+  data_age: BourseDataAge
+}
+
+export interface StockBeta {
+  beta: number | null
+  correlation: number | null
+  pairs: number
+  multi_session_spans: number
+  reason?: string
+}
+
+export interface StockRelativeResponse {
+  symbol: string
+  ins_code: string
+  name_fa: string
+  sector_code: string
+  sector_fa: string
+  window: BourseWindow
+  benchmarks: Array<{
+    role: 'market' | 'sector'
+    index: { ins_code: string; name_fa: string; name_en: string; market: string; kind: string; sector_code: string; refusal_reason?: string } | null
+    reason?: string
+  }>
+  points: Array<{ date: string; stock: number | null; market: number | null; sector: number | null }>
+  summary: {
+    from: string | null
+    to: string | null
+    stock_return_pct: number | null
+    market_return_pct: number | null
+    sector_return_pct: number | null
+    excess_vs_market_pp: number | null
+    excess_vs_sector_pp: number | null
+    vs_market: StockBeta
+    vs_sector: StockBeta | null
+    traded_sessions: number
+    halted_sessions: number
+  }
+  notes: string[]
+  data_age: BourseDataAge
+}

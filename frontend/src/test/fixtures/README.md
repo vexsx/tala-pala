@@ -170,3 +170,28 @@ generator injected into `package equities` with `go test -overlay`, calling
 `backend-go/` and no output field is authored. Choosing the inputs (the clock,
 the newest stored bar, the bars themselves) is the whole job; everything the
 fixture then says is the server's.
+
+## Tehran market fixtures
+
+Captured from production on 2026-09-29 against commit `fb1b204`, with a
+throwaway user created and deleted in the same script, exactly as above:
+
+| File | Request |
+|---|---|
+| `bourse-overview.json` | `GET /api/v1/bourse/overview` |
+| `bourse-indices.json` | `GET /api/v1/bourse/indices?since=2026-03-21` (1 Farvardin 1405) |
+| `bourse-history-tedpix-1y.json` | `GET /api/v1/bourse/indices/32097828799138957/history?period=1y&unit=points` |
+| `bourse-history-tedpix-real-max.json` | `…/32097828799138957/history?period=max&unit=real` |
+| `bourse-history-tedpix-usd-1y.json` | `…/32097828799138957/history?period=1y&unit=usd` |
+| `bourse-history-second-market-3m.json` | `…/71704845530629737/history?period=3m&unit=points` |
+| `bourse-breadth-1y.json` | `GET /api/v1/bourse/breadth?period=1y` |
+| `bourse-market-value-1y.json` | `GET /api/v1/bourse/market-value?period=1y` |
+| `bourse-flows.json` | `GET /api/v1/bourse/flows` |
+| `stock-relative-foolad-1y.json` | `GET /api/v1/stocks/فولاد/relative?period=1y` |
+| `stock-flows-foolad-1y.json` | `GET /api/v1/stocks/فولاد/flows?period=1y` |
+
+Why these are captures in particular: TEDPIX's year contains the 50-session
+closure from 2026-02-25, the second-market index carries 31 values TSETMC
+stores off by a factor of ten, and فولاد's year contains the 5.5-month halt
+that once flipped its beta negative. A hand-written payload would have had
+none of the three.

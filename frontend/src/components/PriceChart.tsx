@@ -8,7 +8,7 @@ import {
   XAxis,
   YAxis
 } from 'recharts'
-import { formatCompact, formatCompactToman } from '../lib/format'
+import { formatCompact, formatCompactToman, formatDate } from '../lib/format'
 import { useSettings } from '../lib/settings'
 
 export interface ChartPoint {
@@ -130,4 +130,32 @@ export default function PriceChart({
       </ResponsiveContainer>
     </div>
   )
+}
+
+/**
+ * ChartTip with its label rendered as a date in the reader's calendar.
+ *
+ * Recharts hands a custom tooltip the RAW category value — `labelFormatter` is
+ * applied only by its default tooltip — so a chart whose axis is Jalali would
+ * otherwise print an ISO Gregorian date in the one place a reader looks for
+ * the exact day.
+ */
+export function datedTip(
+  calendar: 'jalali' | 'gregorian',
+  format?: (v: number) => string
+): (props: { active?: boolean; payload?: unknown; label?: string | number }) => JSX.Element | null {
+  return function DatedTip(props) {
+    const label =
+      props.label === undefined || props.label === null || props.label === ''
+        ? props.label
+        : formatDate(String(props.label), calendar)
+    return (
+      <ChartTip
+        active={props.active}
+        payload={props.payload as ChartTipItem[] | undefined}
+        label={label}
+        format={format}
+      />
+    )
+  }
 }

@@ -13,6 +13,8 @@ import { useApi } from '../hooks/useApi'
 import { useSettings } from '../lib/settings'
 import { ChartTip } from '../components/PriceChart'
 import Loading from '../components/Loading'
+import ErrorBoundary from '../components/ErrorBoundary'
+import { StockFlows, StockRelative } from '../components/StockMarketLinks'
 import { formatCompact, formatDate, formatGrouped, formatPct } from '../lib/format'
 import type { StockBar, StockBarsResponse } from '../api/types'
 
@@ -317,6 +319,18 @@ export default function StockDetail() {
           )}
         </div>
       </div>
+
+      {/*
+       * The share against its market, and who has been buying it, over the
+       * SAME window as the chart above: one control row scopes everything on
+       * the page, so the three can never describe different stretches of time.
+       */}
+      <ErrorBoundary>
+        <StockRelative symbol={data.symbol} period={win} calendar={calendar} />
+      </ErrorBoundary>
+      <ErrorBoundary>
+        <StockFlows symbol={data.symbol} period={win} calendar={calendar} />
+      </ErrorBoundary>
 
       <div className="card">
         <div className="card-title">The corporate-action chain</div>
