@@ -432,3 +432,17 @@ func TestChangePctIsAgainstThePreviousClose(t *testing.T) {
 		t.Fatal("no value, no percentage")
 	}
 }
+
+func TestDataAgeFollowsTEDPIXNotADormantIndex(t *testing.T) {
+	st := &indexStore{series: map[string][]IndexPoint{
+		TEDPIX:              {{Day: day("2026-09-28"), Value: 1}},
+		"61848754958448778": {{Day: day("2026-09-29"), Value: 1}},
+	}}
+	if got := dayString(*st.newestSession()); got != "2026-09-28" {
+		t.Fatalf("newest %s, want TEDPIX's 2026-09-28", got)
+	}
+	delete(st.series, TEDPIX)
+	if got := dayString(*st.newestSession()); got != "2026-09-29" {
+		t.Fatalf("without TEDPIX the newest series decides, got %s", got)
+	}
+}

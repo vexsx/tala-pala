@@ -219,9 +219,20 @@ func markUnchanged(s []IndexPoint) {
 	}
 }
 
-// newestSession is the newest stored session across the servable series, or
-// nil when there is none. It drives data_age.
+// newestSession is TEDPIX's newest stored session, or — when TEDPIX is not
+// served — the newest across the servable series; nil when there is none. It
+// drives data_age.
+//
+// TEDPIX first, because it is the one index that settles every session the
+// market opens. A dormant sector index can carry a row dated later than the
+// market's last settled session (four did, mid-session on 2026-09-29, before
+// the ingest learned to store settled sessions only), and "the data is current
+// to today" must not rest on the least-traded series in the store.
 func (s *indexStore) newestSession() *time.Time {
+	if pts := s.series[TEDPIX]; len(pts) > 0 {
+		d := pts[len(pts)-1].Day
+		return &d
+	}
 	var newest *time.Time
 	for _, pts := range s.series {
 		if len(pts) == 0 {

@@ -70,13 +70,13 @@ func TestBetaIsMeasuredOverMatchedSpans(t *testing.T) {
 	}
 	b := matchedBeta(traded, market)
 	if b.Beta == nil || math.Abs(*b.Beta-2) > 1e-4 {
-		t.Fatalf("beta %v, want 2 — the halt must be ONE span on both sides", b.Beta)
+		t.Fatalf("beta %v, want 2", b.Beta)
 	}
 	if b.Correlation == nil || math.Abs(*b.Correlation-1) > 1e-9 {
 		t.Fatalf("correlation %v", b.Correlation)
 	}
-	if b.LongSpans != 1 {
-		t.Fatalf("long spans %d, want the one halt", b.LongSpans)
+	if b.MultiSessionSpans != 1 || b.Pairs != 48 {
+		t.Fatalf("pairs %d, multi-session spans %d; want 48 and the one halt", b.Pairs, b.MultiSessionSpans)
 	}
 }
 
@@ -102,6 +102,57 @@ func TestPairingHaltedDaysAsZerosWouldHaveBrokenTheBeta(t *testing.T) {
 	}
 	if naive := cov / vm; math.Abs(naive-2) < 0.05 {
 		t.Fatalf("the naive beta %.3f happens to be right, so this test proves nothing", naive)
+	}
+}
+
+// The production case, reduced: a share that tracks its market session by
+// session, except for ONE long halt across which the market rallied and the
+// share fell. Regressing that span with the daily ones is what put فولاد's
+// correlation with TEDPIX at -0.09.
+func TestOneLongHaltDoesNotDecideTheBeta(t *testing.T) {
+	var market []bourse.IndexPoint
+	var traded []relSession
+	m, s := 1000.0, 100.0
+	d := mday("2025-01-04")
+	for i := 0; i < 80; i++ {
+		d = d.AddDate(0, 0, 1)
+		step := 0.01
+		if i%2 == 1 {
+			step = -0.008
+		}
+		m *= 1 + step
+		market = append(market, bourse.IndexPoint{Day: d, Value: m})
+		switch {
+		case i < 40:
+			s *= 1 + step
+			traded = append(traded, relSession{Day: d, Adjusted: s, Traded: true})
+		case i == 79:
+			s *= 0.915 // -8.5% across the halt, while the market rose
+			traded = append(traded, relSession{Day: d, Adjusted: s, Traded: true})
+		}
+	}
+	b := matchedBeta(traded, market)
+	if b.MultiSessionSpans != 1 {
+		t.Fatalf("multi-session spans %d", b.MultiSessionSpans)
+	}
+	if b.Correlation == nil || *b.Correlation < 0.99 {
+		t.Fatalf("correlation %v: the single long span must not decide it", b.Correlation)
+	}
+}
+
+func TestAClosureIsOneSessionOfMarketMovement(t *testing.T) {
+	idx := []bourse.IndexPoint{
+		{Day: mday("2026-02-24"), Value: 100},
+		{Day: mday("2026-02-25"), Value: 101},
+		{Day: mday("2026-02-28"), Value: 101, Unchanged: true},
+		{Day: mday("2026-03-01"), Value: 101, Unchanged: true},
+		{Day: mday("2026-03-02"), Value: 103},
+	}
+	if n := marketSessionsBetween(idx, mday("2026-02-25"), mday("2026-03-02")); n != 1 {
+		t.Fatalf("sessions %d, want 1: the repeated rows are the market being shut", n)
+	}
+	if n := marketSessionsBetween(idx, mday("2026-02-24"), mday("2026-03-02")); n != 2 {
+		t.Fatalf("sessions %d, want 2", n)
 	}
 }
 

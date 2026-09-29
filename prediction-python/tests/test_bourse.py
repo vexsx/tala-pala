@@ -651,3 +651,32 @@ def test_the_ingest_endpoint_refuses_an_empty_body(client):
         "/internal/bourse/ingest", json={}, headers={"X-Internal-Token": TEST_TOKEN}
     )
     assert resp.status_code == 400
+
+
+# --- only settled sessions are stored ------------------------------------------
+
+
+def test_the_settled_cutoff_is_the_tehran_date_until_mid_afternoon():
+    from app.bourse.ingest import settled_cutoff
+
+    # 11:39 Tehran, session open: today is not settled.
+    assert settled_cutoff(datetime(2026, 9, 29, 8, 9, tzinfo=timezone.utc)) == date(2026, 9, 29)
+    # 16:00 Tehran, long after the 12:30 close: today is.
+    assert settled_cutoff(datetime(2026, 9, 29, 12, 30, tzinfo=timezone.utc)) == date(2026, 9, 30)
+    # 02:00 Tehran is still the Tehran date, not the UTC one.
+    assert settled_cutoff(datetime(2026, 9, 28, 22, 30, tzinfo=timezone.utc)) == date(2026, 9, 29)
+
+
+def test_a_row_dated_today_mid_session_is_not_stored(engine):
+    """Four dormant sector indices carried a row dated 2026-09-29 while that
+    session was still open; the furniture fixture is one of them."""
+    _register_index(engine, FURNITURE, kind="sector")
+    payload = load_fixture_json_gz("tsetmc_index_furniture.json.gz")
+    mid_session = datetime(2026, 9, 29, 8, 20, tzinfo=timezone.utc)
+    report = ingest_index_history(engine, payload, {}, now=mid_session)
+    assert report["unsettled_skipped"] == 1
+    assert report["last_date"] == "2026-09-28"
+    after_close = datetime(2026, 9, 29, 13, 0, tzinfo=timezone.utc)
+    again = ingest_index_history(engine, payload, {}, now=after_close)
+    assert again["unsettled_skipped"] == 0 and again["values_inserted"] == 1
+    assert again["last_date"] == "2026-09-29"

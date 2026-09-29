@@ -50,6 +50,7 @@ from ..db import (
 )
 from .parse import (
     CLIENT_FIELDS,
+    TEHRAN,
     LiveIndex,
     MarketParseError,
     parse_client_types,
@@ -74,6 +75,27 @@ MIN_PLAUSIBLE_BYTES = 200
 # INSERT per row with RETURNING, which is what insert_ignore does, would be a
 # quarter of a million round trips.
 BULK_BATCH = 2000
+
+
+# A session is SETTLED once the exchange has closed and published its final
+# figures.  Most TSETMC histories only ever carry settled sessions — fetched at
+# 11:09 Tehran on 2026-09-29, TEDPIX's newest row was 2026-09-28 — but four
+# dormant sector indices (medical instruments, transport equipment, furniture,
+# industrial contracting) carried a row dated 2026-09-29 in the middle of that
+# session.  Stored, such a row is an unsettled value under a settled contract,
+# and the next fetch would have to either accept a revision or fail the index.
+# So a row dated on the fetch's own Tehran date is stored only when the fetch
+# ran after SETTLED_AFTER_HOUR, well clear of the 12:30 close; anything later
+# than that date is never stored.
+SETTLED_AFTER_HOUR = 15
+
+
+def settled_cutoff(now: datetime) -> date:
+    """The first trade date that is NOT yet settled at ``now``.  Pure."""
+    local = ensure_utc(now).astimezone(TEHRAN)
+    if local.hour >= SETTLED_AFTER_HOUR:
+        return date.fromordinal(local.date().toordinal() + 1)
+    return local.date()
 
 
 class MarketIngestFailed(RuntimeError):
@@ -177,6 +199,11 @@ def ingest_index_history(
     history = parse_index_history(payload)
     code = history.ins_code
     t = market_index_values
+    cutoff = settled_cutoff(collected_at)
+    settled = [v for v in history.values if v.trade_date < cutoff]
+    unsettled = len(history.values) - len(settled)
+    if not settled:
+        raise MarketParseError(f"index {code}: no settled session in the payload")
 
     with engine.begin() as conn:
         registry = conn.execute(
@@ -199,7 +226,7 @@ def ingest_index_history(
         conflicts: list[str] = []
         restated_scale = 0
         pending: list[dict[str, Any]] = []
-        for v in history.values:
+        for v in settled:
             existing = stored.get(v.trade_date)
             if existing is None:
                 pending.append(
@@ -294,7 +321,8 @@ def ingest_index_history(
         "status": result.status,
         "values_total": len(history.values),
         "values_inserted": int(after) - int(before),
-        "values_existing": len(history.values) - len(pending),
+        "values_existing": len(settled) - len(pending),
+        "unsettled_skipped": unsettled,
         "restated_by_power_of_ten": restated_scale,
         "dropped_nonpositive": history.dropped_nonpositive,
         "scale_breaks": result.scale_breaks,
@@ -364,13 +392,18 @@ def ingest_market_values(
     collected_at = ensure_utc(now) or utcnow()
     parsed = parse_market_values(payload, market)
     t = market_values
+    cutoff = settled_cutoff(collected_at)
+    values = [(d, v) for d, v in parsed.values if d < cutoff]
+    unsettled = len(parsed.values) - len(values)
+    if not values:
+        raise MarketParseError(f"{market} market value: no settled session in the payload")
 
     # The decimal-shift defect is corrected for INDICES because it was measured
     # there.  It was not measured here (1,615 bourse and 1,610 Farabourse rows,
     # largest step -10.0% and +28.2%), so there is no correction machinery for
     # it — and if it ever appears, the series is refused rather than stored
     # with a tenfold cliff in it.
-    for (d0, v0), (d1, v1) in zip(parsed.values, parsed.values[1:]):
+    for (d0, v0), (d1, v1) in zip(values, values[1:]):
         r = v1 / v0
         if r >= 10 ** 0.9 or r <= 10 ** -0.9:
             raise MarketParseError(
@@ -388,7 +421,7 @@ def ingest_market_values(
         }
         conflicts = [
             f"{d.isoformat()}: stored {stored[d]!r}, payload {v!r}"
-            for d, v in parsed.values
+            for d, v in values
             if d in stored and not _close_enough(stored[d], v)
         ]
         if conflicts:
@@ -399,7 +432,7 @@ def ingest_market_values(
             )
         pending = [
             {"market": market, "trade_date": d, "market_cap": v, "collected_at": collected_at}
-            for d, v in parsed.values
+            for d, v in values
             if d not in stored
         ]
         before = len(stored)
@@ -411,9 +444,10 @@ def ingest_market_values(
         "market": market,
         "values_total": len(parsed.values),
         "values_inserted": int(after) - before,
+        "unsettled_skipped": unsettled,
         "dropped_nonpositive": parsed.dropped_nonpositive,
-        "first_date": parsed.values[0][0].isoformat(),
-        "last_date": parsed.values[-1][0].isoformat(),
+        "first_date": values[0][0].isoformat(),
+        "last_date": values[-1][0].isoformat(),
     }
 
 
@@ -428,6 +462,11 @@ def ingest_client_flows(
     code = parsed.ins_code
     t = equity_client_flows
     columns = [c for c, _, _ in CLIENT_FIELDS]
+    cutoff = settled_cutoff(collected_at)
+    rows = [r for r in parsed.rows if r["trade_date"] < cutoff]
+    unsettled = len(parsed.rows) - len(rows)
+    if not rows:
+        raise MarketParseError(f"client types of {code}: no settled session in the payload")
 
     with engine.begin() as conn:
         instrument = conn.execute(
@@ -448,7 +487,7 @@ def ingest_client_flows(
         }
         conflicts: list[str] = []
         pending: list[dict[str, Any]] = []
-        for row in parsed.rows:
+        for row in rows:
             existing = stored.get(row["trade_date"])
             if existing is None:
                 pending.append({"ins_code": code, **row, "collected_at": collected_at})
@@ -474,8 +513,9 @@ def ingest_client_flows(
         "symbol": instrument.symbol_fa,
         "sessions_total": len(parsed.rows),
         "sessions_inserted": int(after) - before,
-        "first_date": parsed.rows[0]["trade_date"].isoformat(),
-        "last_date": parsed.rows[-1]["trade_date"].isoformat(),
+        "unsettled_skipped": unsettled,
+        "first_date": rows[0]["trade_date"].isoformat(),
+        "last_date": rows[-1]["trade_date"].isoformat(),
     }
 
 
@@ -627,7 +667,9 @@ def ingest_market_files(
 
 
 __all__ = [
+    "SETTLED_AFTER_HOUR",
     "MarketIngestFailed",
+    "settled_cutoff",
     "index_roster",
     "ingest_client_flows",
     "ingest_index_history",

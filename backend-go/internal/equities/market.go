@@ -13,13 +13,23 @@ package equities
 //
 // HOW A HALT IS PAIRED. A halted session carries the reference price in
 // final_close and no trade, so it is not a return (see screen.go). A return is
-// therefore taken from one TRADED session to the next, and the index return
-// it is compared with is taken over EXACTLY the same span — the index value in
-// force on each of the two days. A share halted for three weeks contributes
-// one observation spanning three weeks on both sides, never twenty zeros on
-// its own side against twenty real moves on the market's. That is the whole
-// difference between a beta and a number that merely looks like one for a
-// market where halts are routine (شپنا carries 879 of them).
+// therefore taken from one TRADED session to the next, and the index return it
+// is compared with is taken over EXACTLY the same span — the index value in
+// force on each of the two days — never twenty zeros on the share's side
+// against twenty real moves on the market's.
+//
+// AND WHY ONLY SINGLE-SESSION SPANS ENTER THE BETA. The first version
+// regressed every such span, and production answered with فولاد's one-year
+// correlation to TEDPIX at -0.09 — for the heaviest metals share in the index.
+// One pair did it: فولاد did not trade from 2026-02-25 to 2026-08-08, across
+// the market's closure and months beyond it, so a single observation set its
+// -8.5% against the market's +48.6%. A return over sixty market sessions has
+// roughly sixty times the variance of a one-session return, and in an
+// ordinary regression that one point outweighs every other. So beta and
+// correlation use only spans in which the share traded on CONSECUTIVE market
+// sessions, and every longer span is counted and reported instead. The
+// window's total return still spans everything; only the regression is
+// restricted.
 
 import (
 	"errors"
@@ -222,12 +232,14 @@ type relPoint struct {
 type betaBlock struct {
 	Beta        *float64 `json:"beta"`
 	Correlation *float64 `json:"correlation"`
-	// Pairs is how many traded-to-traded spans were compared; LongSpans how
-	// many of them crossed more than seven calendar days (a halt), each of
-	// which is ONE observation on both sides.
-	Pairs     int    `json:"pairs"`
-	LongSpans int    `json:"long_spans"`
-	Reason    string `json:"reason,omitempty"`
+	// Pairs is how many single-session spans the regression used.
+	Pairs int `json:"pairs"`
+	// MultiSessionSpans counts traded-to-traded spans that crossed more than
+	// one market session (the share was halted, or sat in a queue without a
+	// trade, in between). They are excluded from the regression; see the
+	// file comment for the measurement that made this the rule.
+	MultiSessionSpans int    `json:"multi_session_spans"`
+	Reason            string `json:"reason,omitempty"`
 }
 
 type benchmarkItem struct {
@@ -268,8 +280,23 @@ type relativeResponse struct {
 // decimal point, and it is withheld with the count rather than printed.
 const minBetaPairs = 20
 
-// matchedBeta regresses the share's traded-to-traded returns on the index's
-// returns over the SAME spans. Pure (unit tested).
+// marketSessionsBetween counts the index's SESSIONS in (a, b]: points that
+// changed. A closed market's repeated rows are not sessions, so a span across
+// the Nowruz or 2026 closure that the share traded on either side of is still
+// one session of market movement.
+func marketSessionsBetween(index []bourse.IndexPoint, a, b time.Time) int {
+	lo := sort.Search(len(index), func(i int) bool { return index[i].Day.After(a) })
+	n := 0
+	for i := lo; i < len(index) && !index[i].Day.After(b); i++ {
+		if !index[i].Unchanged {
+			n++
+		}
+	}
+	return n
+}
+
+// matchedBeta regresses the share's single-session returns on the index's
+// returns over the same sessions. Pure (unit tested).
 func matchedBeta(traded []relSession, index []bourse.IndexPoint) betaBlock {
 	var rs, rm []float64
 	out := betaBlock{}
@@ -280,17 +307,18 @@ func matchedBeta(traded []relSession, index []bourse.IndexPoint) betaBlock {
 		if !okA || !okB || ia.Value <= 0 || a.Adjusted <= 0 {
 			continue
 		}
+		if marketSessionsBetween(index, a.Day, b.Day) != 1 {
+			out.MultiSessionSpans++
+			continue
+		}
 		rs = append(rs, b.Adjusted/a.Adjusted-1)
 		rm = append(rm, ib.Value/ia.Value-1)
-		if b.Day.Sub(a.Day) > 7*24*time.Hour {
-			out.LongSpans++
-		}
 	}
 	out.Pairs = len(rs)
 	if len(rs) < minBetaPairs {
 		out.Reason = fmt.Sprintf(
-			"a beta needs at least %d traded-to-traded spans and this window has %d",
-			minBetaPairs, len(rs))
+			"a beta needs at least %d single-session spans and this window has %d "+
+				"(%d longer spans are excluded)", minBetaPairs, len(rs), out.MultiSessionSpans)
 		return out
 	}
 	mm, ms := 0.0, 0.0
@@ -306,7 +334,7 @@ func matchedBeta(traded []relSession, index []bourse.IndexPoint) betaBlock {
 		vm += (rm[i] - mm) * (rm[i] - mm)
 	}
 	if vm == 0 {
-		out.Reason = "the index did not move over these spans, so there is nothing to regress on"
+		out.Reason = "the index did not move over these sessions, so there is nothing to regress on"
 		return out
 	}
 	b := cov / vm
@@ -575,10 +603,11 @@ func (h *Handler) Relative(w http.ResponseWriter, r *http.Request) {
 				"sector is the bourse index for the share's own TSETMC sector. All three are " +
 				"rebased to 100 at the share's first traded session in the window, and a " +
 				"session the share did not trade is a gap in its line.",
-			"Beta and correlation compare the share's return from one traded session to the " +
-				"next with the index's return over exactly the same span, so a halt is one " +
-				"observation on both sides and never a run of zeros on one. They describe how " +
-				"the share moved with its market in this window, not a cause and not a forecast.",
+			"Beta and correlation use the sessions in which the share traded on consecutive " +
+				"market sessions, each against the index's move over the same session. A span " +
+				"across a halt is left out of them and counted, because one multi-month span " +
+				"would otherwise outweigh every daily one. They describe how the share moved " +
+				"with its market in this window, not a cause and not a forecast.",
 		},
 	}
 	if from != nil && sum.From != nil && *sum.From != dateString(*from) {
