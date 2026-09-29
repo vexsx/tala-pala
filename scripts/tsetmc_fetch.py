@@ -572,21 +572,32 @@ def _rec_date(value: Any) -> date:
         raise FetchError(f"date {value} is not a calendar date") from exc
 
 
-def check_client_types(payload: dict, ins_code: str) -> list[dict]:
+def check_client_types(payload: dict, ins_code: str,
+                       ships_from: Optional[date] = None) -> tuple[list[dict], list[date]]:
     """The shape checks that replace the old 5,000-byte floor for this loop.
 
     A new listing's history is a few hundred bytes and a secondary board's a
     few KB, so a size floor refuses real payloads; what matters is that every
     row is an object for the share asked for, with a real date, and no
-    session twice. Returns the rows, possibly none.
+    session twice. Returns the rows, possibly none, and the dates dropped.
 
     The repeat check is the ingest's own (it refuses a history with two rows
     for one session) made HERE because trimming keys rows by date: a repeat
     that reached trim_client_types would be collapsed to one row silently,
     and the service would never see the evidence it refuses on.
+
+    ``ships_from`` is the floor of a share outside the roster: nothing dated
+    before it is ever shipped. A session repeated THERE is dropped — both
+    rows, since which is true is still not this script's to decide — and
+    named, instead of failing the share: the first market-wide run
+    (2026-09-29) lost كمرجان and ودي entirely to 2010-03-17 appearing twice,
+    sixteen years before anything of theirs would have been stored. A repeat
+    on or after the floor, or anywhere in a roster share's history (which
+    ships whole), still fails the share.
     """
     rows = payload["clientType"]
     seen: set[date] = set()
+    repeated: set[date] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise FetchError(f"{ins_code}: a clientType row is not an object")
@@ -597,12 +608,17 @@ def check_client_types(payload: dict, ins_code: str) -> list[dict]:
             )
         session = _rec_date(row.get("recDate"))
         if session in seen:
-            raise FetchError(
-                f"{ins_code}: the history carries {session.isoformat()} twice; one session "
-                "is one row, and which of the two is true is not this script's to decide"
-            )
+            if ships_from is None or session >= ships_from:
+                raise FetchError(
+                    f"{ins_code}: the history carries {session.isoformat()} twice; one "
+                    "session is one row, and which of the two is true is not this "
+                    "script's to decide"
+                )
+            repeated.add(session)
         seen.add(session)
-    return rows
+    if repeated:
+        rows = [row for row in rows if _rec_date(row.get("recDate")) not in repeated]
+    return rows, sorted(repeated)
 
 
 def trim_client_types(
@@ -807,15 +823,20 @@ def download_share_flows(
     counts = Counter()
     started = time.monotonic()
     for index, (code, ins_id, symbol) in enumerate(shares, 1):
+        held = state.get(code) or {}
         try:
             blob, payload = fetch_json(CLIENT_TYPE_PATH.format(ins_code=code), "clientType")
-            rows = check_client_types(payload, code)
+            rows, dropped = check_client_types(
+                payload, code, ships_from=None if held.get("roster") else floor)
         except FetchError as exc:
             failures.add("flows", f"{code} {symbol}", str(exc))
             continue
+        if dropped:
+            print(f"  NOTICE {code} {symbol}: TSETMC repeats "
+                  f"{', '.join(d.isoformat() for d in dropped)} in its history, before the "
+                  "floor; those rows are dropped and never shipped")
         # The untrimmed history is the evidence; kept locally, compressed.
         (evidence_dir / f"clienttype-{code}.json.gz").write_bytes(gzip.compress(blob, 6))
-        held = state.get(code) or {}
         stored_count = int(held.get("flow_count") or 0)
         if not rows and stored_count:
             # The honest answer for a listing that never traded, and a bad
@@ -912,6 +933,25 @@ def download_funds(funds: list[dict], funds_dir: Path, failures: Failures) -> li
 # --- the server side -----------------------------------------------------------
 
 
+def _adopt_command(container_dir: str) -> str:
+    """Give the copied run to the service's own user, inside the container.
+
+    `docker compose cp` keeps the host's owner and modes. This script makes
+    its subdirectories (shares/, shares/flows/, shares/days/, funds/) mode 700
+    so a run's payloads are private on the machine that fetched them, and on
+    the host they belong to the SSH user (uid 1000) — so inside the container
+    they arrived as 700 directories of uid 1000, which the service (goldpred,
+    uid 999) can neither list nor read, nor later remove. The first
+    market-wide run on 2026-09-29 answered 400 on every shares chunk and
+    FileNotFoundError on every fund for exactly this reason; the top-level
+    bar and index files were 644 and ingested, which is why only the new
+    parts failed. The run directory itself is made by the service user
+    (mkdir above), so its owner is the owner everything is given to.
+    """
+    quoted = shlex.quote(container_dir)
+    return f'chown -R "$(stat -c %u:%g {quoted})" {quoted}'
+
+
 def _post_ingest(host: str, url: str, body: dict, remote_dir: str,
                  container_dir: str, copy_first: bool) -> dict:
     """Copy the run directory into the prediction container (once) and POST an
@@ -943,6 +983,8 @@ def _post_ingest(host: str, url: str, body: dict, remote_dir: str,
             f"sh -c {shlex.quote('mkdir -p ' + shlex.quote(container_dir))} && "
             f"sudo docker compose cp {shlex.quote(remote_dir + '/.')} "
             f"prediction-service:{shlex.quote(container_dir)} && "
+            f"sudo docker compose exec -T -u 0 prediction-service "
+            f"sh -c {shlex.quote(_adopt_command(container_dir))} && "
         )
     remote = _remote_token_prelude() + copy + (
         # -e TOKEN="$TOKEN" again: the inner command is shlex-quoted so the host
@@ -968,7 +1010,8 @@ CONTAINER_DIR_RE = re.compile(r"\A/tmp/tsetmc-[0-9]{8}T[0-9]{6}Z\Z")
 def _remove_container_copy(host: str, container_dir: str) -> None:
     """Remove this run's copy from the prediction container. The name is the
     one run() generated from the wall clock, checked again here because it
-    goes into a root shell's ``rm -rf``."""
+    goes into an ``rm -rf``. It runs as the service user, which owns the copy
+    once :func:`_adopt_command` has run."""
     if not CONTAINER_DIR_RE.match(container_dir):
         raise RemoteError(f"refusing to remove {container_dir!r}: not a run copy this "
                           "script made")

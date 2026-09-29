@@ -1428,6 +1428,29 @@ def test_a_history_that_repeats_a_session_is_refused_not_collapsed(fetch):
         fetch.check_client_types(doubled, FOOLAD3)
 
 
+def test_a_repeat_before_the_floor_drops_that_session_and_keeps_the_share(fetch):
+    """كمرجان and ودي repeat 2010-03-17 in TSETMC's history; nothing of a
+    non-roster share before the 2025 floor ever ships, so the ambiguous
+    session is dropped (both rows) and the share is kept. A repeat on or after
+    the floor, or a roster share's (it ships whole), still fails."""
+    base = load_fixture_json("tsetmc_clienttype_board3_foolad3.json")
+    doubled = copy.deepcopy(base)
+    twin = copy.deepcopy(doubled["clientType"][3])
+    doubled["clientType"].insert(4, twin)
+    repeated_on = fetch._rec_date(twin["recDate"])
+
+    after = repeated_on + timedelta(days=1)
+    rows, dropped = fetch.check_client_types(doubled, FOOLAD3, ships_from=after)
+    assert dropped == [repeated_on]
+    assert len(rows) == len(base["clientType"]) - 1
+    assert repeated_on not in {fetch._rec_date(r["recDate"]) for r in rows}
+
+    with pytest.raises(fetch.FetchError, match="twice"):
+        fetch.check_client_types(doubled, FOOLAD3, ships_from=repeated_on)
+    rows, dropped = fetch.check_client_types(base, FOOLAD3, ships_from=after)
+    assert dropped == [] and rows == base["clientType"]
+
+
 def test_a_market_watch_listing_a_share_twice_is_refused_as_the_ingest_refuses_it(fetch):
     """The ingest refuses such a watch. Shipped anyway, the share's flow file
     would be named twice in the manifest, which the service refuses — every
@@ -1514,8 +1537,8 @@ def test_the_scripts_share_rule_is_the_ingests(fetch):
 
 def test_client_type_shape_checks_replace_the_size_floor(fetch):
     board3 = load_fixture_json("tsetmc_clienttype_board3_foolad3.json")
-    assert len(fetch.check_client_types(board3, FOOLAD3)) == 31  # 9.6 KB, once refused
-    assert fetch.check_client_types({"clientType": []}, FOOLAD3) == []
+    assert len(fetch.check_client_types(board3, FOOLAD3)[0]) == 31  # 9.6 KB, once refused
+    assert fetch.check_client_types({"clientType": []}, FOOLAD3) == ([], [])
     with pytest.raises(fetch.FetchError, match="another's code"):
         fetch.check_client_types(board3, FOOLAD)
     broken = copy.deepcopy(board3)
@@ -1622,6 +1645,30 @@ def test_only_a_run_copy_is_ever_removed_from_the_container(fetch, monkeypatch):
         with pytest.raises(fetch.RemoteError):
             fetch._remove_container_copy("h", bad)
     assert len(commands) == 1
+
+
+def test_the_copy_is_handed_to_the_service_user_before_any_ingest_reads_it(fetch, monkeypatch):
+    """docker compose cp keeps the host's uid 1000 and the 700 subdirectories;
+    the service runs as uid 999. Measured on the first market-wide run
+    (2026-09-29): every shares chunk answered 400 and every fund file was
+    'not found' until the copy was chowned to the run directory's owner."""
+    commands = []
+    monkeypatch.setattr(fetch, "_ssh", lambda host, command, capture=False:
+                        commands.append(command) or b'{"ok": true}')
+    fetch._post_ingest("h", "http://x/ingest", {"paths": []}, "/opt/r", "/tmp/tsetmc-20260929T160517Z",
+                       copy_first=True)
+    command = commands[0]
+    cp = command.index("docker compose cp")
+    adopt = command.index("exec -T -u 0 prediction-service")
+    post = command.index("-e TOKEN=")
+    assert cp < adopt < post
+    assert fetch._adopt_command("/tmp/tsetmc-20260929T160517Z") == (
+        'chown -R "$(stat -c %u:%g /tmp/tsetmc-20260929T160517Z)" /tmp/tsetmc-20260929T160517Z')
+
+    commands.clear()
+    fetch._post_ingest("h", "http://x/ingest", {"paths": []}, "/opt/r", "/tmp/tsetmc-20260929T160517Z",
+                       copy_first=False)
+    assert "docker compose cp" not in commands[0] and "-u 0" not in commands[0]
 
 
 def test_the_pacer_spaces_request_starts(fetch, monkeypatch):
