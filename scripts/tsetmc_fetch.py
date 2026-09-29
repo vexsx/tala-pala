@@ -68,10 +68,11 @@ roster's:
       does (so a restatement is still caught), and for a share outside the
       roster never earlier than the floor the server states (2025-03-21);
   (c) GetInstrmentsHistoryInDay for every market session since that floor
-      that the server has not ingested, plus the newest two it has — the
-      sessions being the dates on which at least 200 shares have a flow row
-      in the histories just downloaded, which is the market's own calendar
-      rather than one this script would have to maintain;
+      that the server has not ingested, plus the newest two it has and any
+      it has that shares joined the universe after (the server names them) —
+      the sessions being the dates on which at least 200 shares have a flow
+      row in the histories just downloaded, which is the market's own
+      calendar rather than one this script would have to maintain;
   (d) the whole daily list of every commodity fund the server's fund roster
       names (GetClosingPriceDailyList/{insCode}/0).
 
@@ -560,10 +561,16 @@ def check_client_types(payload: dict, ins_code: str) -> list[dict]:
 
     A new listing's history is a few hundred bytes and a secondary board's a
     few KB, so a size floor refuses real payloads; what matters is that every
-    row is an object for the share asked for, with a real date. Returns the
-    rows, possibly none.
+    row is an object for the share asked for, with a real date, and no
+    session twice. Returns the rows, possibly none.
+
+    The repeat check is the ingest's own (it refuses a history with two rows
+    for one session) made HERE because trimming keys rows by date: a repeat
+    that reached trim_client_types would be collapsed to one row silently,
+    and the service would never see the evidence it refuses on.
     """
     rows = payload["clientType"]
+    seen: set[date] = set()
     for row in rows:
         if not isinstance(row, dict):
             raise FetchError(f"{ins_code}: a clientType row is not an object")
@@ -572,7 +579,13 @@ def check_client_types(payload: dict, ins_code: str) -> list[dict]:
                 f"{ins_code}: a clientType row carries insCode {row.get('insCode')!r}. "
                 "Refusing to ship one share's flows under another's code."
             )
-        _rec_date(row.get("recDate"))
+        session = _rec_date(row.get("recDate"))
+        if session in seen:
+            raise FetchError(
+                f"{ins_code}: the history carries {session.isoformat()} twice; one session "
+                "is one row, and which of the two is true is not this script's to decide"
+            )
+        seen.add(session)
     return rows
 
 
@@ -591,9 +604,11 @@ def trim_client_types(
     - Something stored: every row NEWER than the newest stored one, plus the
       ``overlap`` newest rows at or before it — which the server compares and
       never writes, so a restated recent session still fails the share.
-    - For the roster (``floor`` None), also every row OLDER than the oldest
-      stored one: a share that joins the roster after being floored gets the
-      history the roster is meant to keep.
+    - Also every row OLDER than the oldest stored one — for the roster
+      (``floor`` None) all of them, so a share that joins the roster after
+      being floored gets the history the roster keeps; for any other share
+      those from the floor on, so a run whose --flows-since was later than the
+      server's floor leaves no stretch between the two missing for good.
 
     Returns the rows newest-first, as TSETMC serves them, or None when there is
     nothing the server does not already have.
@@ -603,11 +618,10 @@ def trim_client_types(
         keep = [(d, r) for d, r in dated if floor is None or d >= floor]
         return [r for _, r in reversed(keep)] or None
     newer = [(d, r) for d, r in dated if d > last_stored]
-    older = (
-        [(d, r) for d, r in dated if first_stored is not None and d < first_stored]
-        if floor is None
-        else []
-    )
+    older = [
+        (d, r) for d, r in dated
+        if first_stored is not None and d < first_stored and (floor is None or d >= floor)
+    ]
     if not newer and not older:
         return None
     upto = [(d, r) for d, r in dated if d <= last_stored]
@@ -646,12 +660,15 @@ def market_sessions(
 
 
 def day_files_to_fetch(
-    sessions: Iterable[date], stored: Iterable[date], overlap: int = DAY_OVERLAP
+    sessions: Iterable[date], stored: Iterable[date], overlap: int = DAY_OVERLAP,
+    recheck: Iterable[date] = (),
 ) -> list[date]:
     """The sessions whose day file the server lacks, plus its ``overlap``
-    newest stored ones (compared, never written). Pure."""
+    newest stored ones (compared, never written), plus the stored ones the
+    server asks for again (``recheck``: ingested before some of their shares
+    were in the universe, see app.bourse.shares.share_state). Pure."""
     stored_set = set(stored)
-    wanted = {d for d in sessions if d not in stored_set}
+    wanted = {d for d in sessions if d not in stored_set} | set(recheck)
     if overlap > 0:
         wanted |= set(sorted(stored_set)[-overlap:])
     return sorted(wanted)
@@ -659,8 +676,13 @@ def day_files_to_fetch(
 
 def share_codes(market_watch: dict) -> list[tuple[str, str, str]]:
     """(insCode, insID, symbol) for every SHARE in a market watch. The prefix
-    rule is the ingest's; the full parse is the ingest's too."""
+    rule is the ingest's; the full parse is the ingest's too, and so is the
+    refusal of a watch that lists one share twice: shipped anyway, that share's
+    flow file would be named twice in the manifest, which the service refuses
+    for every chunk of the flows part — the whole market's money flow for the
+    run, for one repeated row."""
     out: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
     for row in market_watch.get("marketwatch") or []:
         if not isinstance(row, dict):
             continue
@@ -670,6 +692,9 @@ def share_codes(market_watch: dict) -> list[tuple[str, str, str]]:
         code = str(row.get("insCode") or "").strip()
         if not INS_CODE_RE.match(code):
             raise FetchError(f"market-watch share {ins_id} carries insCode {code!r}")
+        if code in seen:
+            raise FetchError(f"the market watch lists share insCode {code} twice")
+        seen.add(code)
         out.append((code, ins_id, str(row.get("lva") or "").strip()))
     return out
 
@@ -757,14 +782,21 @@ def download_share_flows(
             continue
         # The untrimmed history is the evidence; kept locally, compressed.
         (evidence_dir / f"clienttype-{code}.json.gz").write_bytes(gzip.compress(blob, 6))
+        held = state.get(code) or {}
+        stored_count = int(held.get("flow_count") or 0)
+        if not rows and stored_count:
+            # The honest answer for a listing that never traded, and a bad
+            # response for a share the server already holds sessions of.
+            failures.add("flows", f"{code} {symbol}",
+                         f"{code}: TSETMC served an empty money-flow history for a share "
+                         f"the server holds {stored_count} session(s) of; nothing shipped")
+            continue
         if not rows:
             counts["empty"] += 1
             print(f"  NOTICE {code} {symbol} ({ins_id}): TSETMC serves no money-flow rows "
                   "for it — a listing that has not traded yet.")
             continue
         dates[code] = [_rec_date(r["recDate"]) for r in rows]
-        held = state.get(code) or {}
-        stored_count = int(held.get("flow_count") or 0)
         trimmed = trim_client_types(
             rows,
             last_stored=date.fromisoformat(held["flow_last_date"]) if stored_count else None,
@@ -829,6 +861,11 @@ def download_funds(funds: list[dict], funds_dir: Path, failures: Failures) -> li
                 raise FetchError(f"{code}: the daily list carries another instrument's rows")
         except FetchError as exc:
             failures.add("fund", label, str(exc))
+            continue
+        if not rows and int(fund.get("close_count") or 0):
+            failures.add("fund", label,
+                         f"{code}: TSETMC served an empty daily list for a fund the server "
+                         f"holds {fund['close_count']} close(s) of; nothing shipped")
             continue
         if not rows:
             print(f"  NOTICE fund {label}: TSETMC serves no daily rows for it.")
@@ -1234,6 +1271,9 @@ def run(args: argparse.Namespace) -> int:
             print(f"market     : {len(shares)} share(s) in the market watch; "
                   f"{sum(1 for c, _, _ in shares if c not in by_code)} new to the server")
         stored_sessions = [date.fromisoformat(d) for d in state.get("session_dates") or []]
+        # Stored days ingested before some of their shares were in the
+        # universe: fetched again so those shares get their session rows.
+        recheck = [date.fromisoformat(d) for d in state.get("session_dates_incomplete") or []]
         if args.dry_run and shares:
             roster_n = sum(1 for c, _, _ in shares if (by_code.get(c) or {}).get("roster"))
             new_n = sum(1 for c, _, _ in shares if not (by_code.get(c) or {}).get("flow_count"))
@@ -1243,8 +1283,9 @@ def run(args: argparse.Namespace) -> int:
                   "overlap rows)")
             print(f"would fetch: the day file of every session since {floor} on which "
                   f">= {SESSION_MIN_SHARES} shares traded, minus the {len(stored_sessions)} "
-                  f"stored, plus the newest {DAY_OVERLAP} stored — the calendar comes from "
-                  "those histories, so it is known only after they are downloaded")
+                  f"stored, plus the newest {DAY_OVERLAP} stored and the {len(recheck)} the "
+                  "server asks for again — the calendar comes from those histories, so it is "
+                  "known only after they are downloaded")
             print(f"estimate   : ~{len(shares) * max(args.delay, 0.4) / 60:.0f} minutes "
                   "for the histories alone at this --delay")
         elif shares:
@@ -1261,9 +1302,12 @@ def run(args: argparse.Namespace) -> int:
                 cutoff = settled_cutoff(datetime.now(timezone.utc))
                 sessions = market_sessions(dates, floor=floor, before=cutoff,
                                            min_shares=SESSION_MIN_SHARES)
-                to_fetch = day_files_to_fetch(sessions, stored_sessions, overlap=DAY_OVERLAP)
+                to_fetch = day_files_to_fetch(sessions, stored_sessions, overlap=DAY_OVERLAP,
+                                              recheck=recheck)
             print(f"sessions   : {len(sessions)} market session(s) since {floor}; "
-                  f"fetching {len(to_fetch)} day file(s)")
+                  f"fetching {len(to_fetch)} day file(s)"
+                  + (f", {len(recheck)} of them stored before some of their shares were "
+                     "in the universe" if recheck and not args.ins_code else ""))
             day_started = time.monotonic()
             day_names = download_day_files(to_fetch, days_dir, failures)
             timings["day files"] = time.monotonic() - day_started
@@ -1345,13 +1389,20 @@ def run(args: argparse.Namespace) -> int:
         # and `wget --post-data` puts its argument in argv, which cannot carry
         # that. The files go in with `docker compose cp`, the same way the SCI
         # workbook does, and the body stays a few hundred bytes.
-        report = post(INGEST_URL, {"paths": [inside(p) for p in bar_files]})
-        _print_bars_report(report)
+        #
         # A pass in which every payload failed answers 502 and wget exits
-        # non-zero, so this is reached only on a full or partial success; a
-        # partial one is still worth a non-zero exit so a caller notices.
-        if report.get("failed"):
-            exit_code = 1
+        # non-zero. That is one failed item of this run, not its end: the
+        # market, the whole market's money flow and the funds after it are
+        # independent of the bars, so it is reported and the run goes on. A
+        # partial success is still worth a non-zero exit so a caller notices.
+        try:
+            report = post(INGEST_URL, {"paths": [inside(p) for p in bar_files]})
+        except RemoteError as exc:
+            failures.add("ingest bars", "all", str(exc))
+        else:
+            _print_bars_report(report)
+            if report.get("failed"):
+                exit_code = 1
 
     if do_market:
         body = {
@@ -1365,10 +1416,14 @@ def run(args: argparse.Namespace) -> int:
                           "farabourse": inside(market_files["overview-2.json"])},
             "sector_summary": inside(market_files["sectors.json"]),
         }
-        report = post(MARKET_INGEST_URL, body)
-        _print_market_report(report)
-        if report.get("failed"):
-            exit_code = 1
+        try:
+            report = post(MARKET_INGEST_URL, body)
+        except RemoteError as exc:  # every market item failed; see the bars above
+            failures.add("ingest market", "all", str(exc))
+        else:
+            _print_market_report(report)
+            if report.get("failed"):
+                exit_code = 1
 
     contradictions: list[tuple[str, str, str]] = []
     if manifest_ready:

@@ -685,8 +685,9 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
     def bourse_share_state() -> dict:
         """What the market-wide fetch needs to ship only what is new
         (migration 0030): every share's stored flow coverage and roster flag,
-        the sessions whose day file is ingested, and the date floor non-roster
-        shares are fetched from.
+        the sessions whose day file is ingested (and those of them to fetch
+        again because shares joined the universe after they were ingested),
+        and the date floor non-roster shares are fetched from.
         """
         from .bourse.shares import share_state
 

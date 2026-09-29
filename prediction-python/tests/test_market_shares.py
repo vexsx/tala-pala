@@ -86,6 +86,7 @@ from app.bourse.parse import (
     SHARE_MARKETS,
     MarketParseError,
     exact_code,
+    parse_client_types,
     parse_day_file,
     parse_market_watch,
     parse_session_row,
@@ -751,6 +752,64 @@ def test_session_coverage_is_recomputed_from_the_table(engine):
     assert _share(engine, SDPT)["session_count"] == 1
 
 
+def test_a_day_ingested_before_its_shares_joined_the_universe_is_asked_for_again(engine):
+    """A day file stores only the shares market_shares carries when it is
+    ingested, and a recorded day is never fetched again. Ingested while the
+    universe was short — here only the roster's فولاد, as after a first run
+    whose market-watch ingest failed — the other shares' session rows for that
+    day would be missing for good. The state names such a day until a
+    re-ingest has seen it against the universe as it now stands."""
+    _seed_sectors(engine)
+    with engine.begin() as conn:
+        conn.execute(market_shares.insert().values(
+            ins_code=FOOLAD, symbol_fa="فولاد", market="bourse", board="main",
+            company_code="IRO1FOLD", sector_code="27", listed=False,
+            first_seen_at=CAPTURED - timedelta(days=1)))
+    day = load_fixture_json("tsetmc_day_20260928_subset.json")
+    first, _ = ingest_day_file(engine, day, date(2026, 9, 28), now=CAPTURED)
+    assert first["rows_inserted"] == 1
+    assert share_state(engine)["session_dates_incomplete"] == []
+    later = CAPTURED + timedelta(hours=1)
+    ingest_universe(engine, load_fixture_json("tsetmc_market_watch_subset.json"), now=later)
+    _flows_for_20260928(engine)
+    state = share_state(engine)
+    assert state["session_dates"] == ["2026-09-28"]
+    assert state["session_dates_incomplete"] == ["2026-09-28"]
+    again, inserted = ingest_day_file(engine, day, date(2026, 9, 28),
+                                      now=later + timedelta(hours=1))
+    assert again["rows_inserted"] == len(inserted) == 14
+    assert share_state(engine)["session_dates_incomplete"] == []
+
+
+def test_a_recheck_that_finds_nothing_new_is_not_asked_for_on_every_run(engine):
+    """A share that joined the universe after a day was ingested, with a traded
+    flow row that day, which TSETMC's day file does not carry: one re-ingest
+    checks the day against the grown universe, and the state stops naming it
+    rather than asking for the same file on every run."""
+    _universe(engine)
+    day = load_fixture_json("tsetmc_day_20260928_subset.json")
+    ingest_day_file(engine, day, date(2026, 9, 28), now=CAPTURED)
+    later = CAPTURED + timedelta(hours=1)
+    ghost = "12345678"
+    with engine.begin() as conn:
+        conn.execute(market_shares.insert().values(
+            ins_code=ghost, symbol_fa="نبود", market="bourse", board="main",
+            first_seen_at=later))
+    flows = _newest(FOOLAD)
+    for row in flows["clientType"]:
+        row["insCode"] = ghost
+    ingest_client_flows(engine, flows, now=CAPTURED)
+    assert share_state(engine)["session_dates_incomplete"] == ["2026-09-28"]
+    again, inserted = ingest_day_file(engine, day, date(2026, 9, 28),
+                                      now=later + timedelta(hours=1))
+    assert again["rows_inserted"] == 0 and not inserted
+    assert again["file_record"] == "rechecked"
+    assert share_state(engine)["session_dates_incomplete"] == []
+    # And with nothing new since, a re-ingest is what it always was.
+    third, _ = ingest_day_file(engine, day, date(2026, 9, 28), now=later + timedelta(hours=2))
+    assert third["file_record"] == "unchanged"
+
+
 # --- the manifest -------------------------------------------------------------------------
 
 
@@ -1076,6 +1135,85 @@ def test_trim_backfills_a_share_that_joined_the_roster(fetch):
                                             for d in _days(date(2025, 3, 1), 20)}
 
 
+def test_trim_fills_a_non_roster_share_back_to_the_floor(fetch):
+    """A run with --flows-since later than the server's floor stores a share
+    from that later date only. The next run at the server's floor ships the
+    sessions in between — and nothing before the floor — rather than leaving
+    that stretch missing for every share outside the roster for good."""
+    rows = _rows(_days(date(2025, 3, 1), 60))  # 2025-03-01 .. 2025-04-29
+    kept = fetch.trim_client_types(rows, last_stored=date(2025, 4, 29),
+                                   first_stored=date(2025, 4, 10), overlap=0,
+                                   floor=date(2025, 3, 21))
+    assert {r["recDate"] for r in kept} == {int(d.strftime("%Y%m%d"))
+                                            for d in _days(date(2025, 3, 21), 20)}
+    # Stored from the floor already: nothing older is owed, so nothing ships.
+    assert fetch.trim_client_types(rows, last_stored=date(2025, 4, 29),
+                                   first_stored=date(2025, 3, 21), overlap=0,
+                                   floor=date(2025, 3, 21)) is None
+
+
+def test_a_history_that_repeats_a_session_is_refused_not_collapsed(fetch):
+    """The ingest refuses a history with two rows for one session. Trimming
+    keys rows by date, so a duplicate that reached it would be collapsed to
+    one row silently and the ingest would never see it; the fetch refuses it
+    first, for that share only."""
+    doubled = copy.deepcopy(load_fixture_json("tsetmc_clienttype_board3_foolad3.json"))
+    twin = copy.deepcopy(doubled["clientType"][3])
+    twin["buy_I_Value"] += 1_000
+    doubled["clientType"].insert(4, twin)
+    with pytest.raises(MarketParseError):
+        parse_client_types(doubled)
+    with pytest.raises(fetch.FetchError, match="twice"):
+        fetch.check_client_types(doubled, FOOLAD3)
+
+
+def test_a_market_watch_listing_a_share_twice_is_refused_as_the_ingest_refuses_it(fetch):
+    """The ingest refuses such a watch. Shipped anyway, the share's flow file
+    would be named twice in the manifest, which the service refuses — every
+    chunk of the flows part, i.e. the whole market's money flow for the run."""
+    payload = load_fixture_json("tsetmc_market_watch_subset.json")
+    twice = copy.deepcopy(payload)
+    twice["marketwatch"].append(
+        copy.deepcopy(next(r for r in payload["marketwatch"] if r["insCode"] == SDPT)))
+    with pytest.raises(MarketParseError, match="twice"):
+        parse_market_watch(twice)
+    with pytest.raises(fetch.FetchError, match="twice"):
+        fetch.share_codes(twice)
+
+
+def test_an_empty_history_for_a_share_the_server_holds_is_a_failure(fetch, tmp_path,
+                                                                    monkeypatch, capsys):
+    """An empty list is the honest answer for a listing that never traded, and
+    a bad response for a share with 3,850 stored sessions: the first is a
+    notice, the second a failure that makes the run exit 1."""
+    monkeypatch.setattr(fetch, "_curl", lambda url, timeout=120: b'{"clientType": []}')
+    for name in ("flows", "evidence"):
+        (tmp_path / name).mkdir()
+    failures = fetch.Failures()
+    held = {FOOLAD: {"roster": True, "flow_count": 3850, "flow_first_date": "2008-11-26",
+                     "flow_last_date": "2026-09-28"}}
+    written, dates, counts = fetch.download_share_flows(
+        [(FOOLAD, "IRO1FOLD0001", "فولاد"), (MOMS, "IRO5MOMS0001", "مهرمام")], held,
+        date(2025, 3, 21), tmp_path / "flows", tmp_path / "evidence", failures)
+    assert written == [] and dates == {} and counts["empty"] == 1
+    assert [(kind, key.split()[0]) for kind, key, _ in failures.items] == [("flows", FOOLAD)]
+    out = capsys.readouterr().out
+    assert f"NOTICE {MOMS}" in out and f"NOTICE {FOOLAD}" not in out
+
+
+def test_an_empty_daily_list_for_a_fund_with_stored_closes_is_a_failure(fetch, tmp_path,
+                                                                        monkeypatch):
+    monkeypatch.setattr(fetch, "_curl",
+                        lambda url, timeout=120: b'{"closingPriceDaily": []}')
+    failures = fetch.Failures()
+    written = fetch.download_funds(
+        [{"ins_code": SILVER, "symbol_fa": "سیلور", "close_count": 158},
+         {"ins_code": "33761569293467411", "symbol_fa": "سیمین", "close_count": 0}],
+        tmp_path, failures)
+    assert written == []
+    assert [(kind, key.split()[0]) for kind, key, _ in failures.items] == [("fund", SILVER)]
+
+
 def test_the_session_calendar_is_read_off_the_histories(fetch):
     busy = {str(i): [date(2026, 9, 27), date(2026, 9, 28)] for i in range(250)}
     busy.update({str(1000 + i): [date(2026, 9, 25)] for i in range(10)})  # a Friday blip
@@ -1090,6 +1228,10 @@ def test_the_day_files_to_fetch_are_the_missing_ones_plus_two(fetch):
     assert fetch.day_files_to_fetch(sessions, stored) == [
         date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 26), date(2026, 9, 27)]
     assert fetch.day_files_to_fetch([], []) == []
+    # A stored day the server says was ingested before some of its shares
+    # were in the universe is fetched again.
+    assert fetch.day_files_to_fetch(stored, stored, recheck=[date(2026, 9, 20)]) == [
+        date(2026, 9, 20), date(2026, 9, 22), date(2026, 9, 23)]
 
 
 def test_the_script_settles_sessions_exactly_as_the_ingest_does(fetch):
@@ -1386,3 +1528,55 @@ def test_no_shares_is_the_0029_roster_path(fetch, wired, engine, tmp_path, monke
     urls = [url for url, _ in wired.posts]
     assert "bourse/shares/ingest" not in urls and "bourse/ingest" in urls
     assert _share(engine, FOOLAD)["flow_count"] == 125
+
+
+def test_a_failed_market_ingest_does_not_cost_the_shares_or_the_funds(fetch, wired, engine,
+                                                                      tmp_path, monkeypatch,
+                                                                      capsys):
+    """/internal/bourse/ingest answering 502 — every index, value and snapshot
+    failed — is one failed item of the run, not its end: the universe, every
+    share's flows, the day file and the funds are still ingested, the failure
+    is named, and the exit is 1."""
+    monkeypatch.setattr(fetch, "_curl", _tsetmc(fetch))
+    through = fetch._post_ingest
+
+    def market_down(host, url, body, remote_dir, container_dir, copy_first):
+        if url == fetch.MARKET_INGEST_URL:
+            raise fetch.RemoteError("ssh command failed on test (exit 1): wget: server "
+                                    "returned error: HTTP/1.1 502 Bad Gateway")
+        return through(host, url, body, remote_dir, container_dir, copy_first)
+
+    monkeypatch.setattr(fetch, "_post_ingest", market_down)
+    assert fetch.run(_args(tmp_path)) == 1
+    out = capsys.readouterr().out
+    assert "[ingest market]" in out and "502 Bad Gateway" in out
+    assert _count(engine, market_shares) == 15
+    assert _count(engine, market_share_sessions) == 15
+    assert _count(engine, prices, prices.c.symbol == "IR_SILVER_FUND_SILVER") == 158
+
+
+def test_a_day_the_server_calls_incomplete_is_fetched_again(fetch, wired, engine, tmp_path,
+                                                            monkeypatch):
+    """Without the overlap re-fetch, a stored day is fetched again only when
+    the server's state names it: here a share first seen after the day was
+    ingested, with a traded flow row that day and no session row."""
+    monkeypatch.setattr(fetch, "_curl", _tsetmc(fetch))
+    assert fetch.run(_args(tmp_path)) == 0
+    monkeypatch.setattr(fetch, "DAY_OVERLAP", 0)
+    wired.posts.clear()
+    assert fetch.run(_args(tmp_path)) == 0
+    assert os.listdir(tmp_path / "out" / "shares" / "days") == []
+    # The run ingests at the wall clock, so the story is told relative to it.
+    ingested = datetime.now(timezone.utc) - timedelta(hours=2)
+    with engine.begin() as conn:
+        conn.execute(market_session_files.update().values(ingested_at=ingested))
+        conn.execute(market_shares.insert().values(
+            ins_code="12345678", symbol_fa="نبود", market="bourse", board="main",
+            first_seen_at=ingested + timedelta(hours=1)))
+    flows = _newest(FOOLAD)
+    for row in flows["clientType"]:
+        row["insCode"] = "12345678"
+    ingest_client_flows(engine, flows, now=CAPTURED)
+    assert fetch.run(_args(tmp_path)) == 0
+    assert os.listdir(tmp_path / "out" / "shares" / "days") == ["day-20260928.json"]
+    assert share_state(engine)["session_dates_incomplete"] == []

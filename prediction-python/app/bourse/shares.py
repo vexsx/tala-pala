@@ -11,7 +11,8 @@ WHAT ARRIVES, AND HOW
     flows/flow-<insCode>.json  GetClientTypeHistory, TRIMMED to what is new plus
                                an overlap of what is stored
     days/day-<yyyymmdd>.json   GetInstrmentsHistoryInDay, one per session not
-                               yet stored (plus the newest two that are)
+                               yet stored (plus the newest two that are, and
+                               any that shares joined the universe after)
     manifest.json              names all of the above
 
 copies the directory in, and posts ``POST /internal/bourse/shares/ingest``
@@ -140,6 +141,40 @@ def _chunks(items: list, size: int = _IN_CHUNK) -> Iterable[list]:
 # --- state, for the fetch ----------------------------------------------------
 
 
+def _incomplete_session_dates(conn: Connection) -> list[date]:
+    """Ingested sessions that some share is still owed a row for.
+
+    A day file stores only the shares ``market_shares`` carries at the time,
+    and the fetch never asks again for a day it is told is ingested (bar the
+    newest two).  So a day ingested while the universe was short — a first
+    run whose market-watch ingest failed and left only the seeded roster, or
+    a share absent from the watch that day — would lack those shares' rows
+    for good.  Such a day is one where a share first seen AFTER the file was
+    ingested has a traded flow row and no session row.  Re-ingesting it
+    stores what the file carries for them and moves ``ingested_at`` past
+    their ``first_seen_at`` (:func:`ingest_day_file`), so a share the file
+    genuinely does not list is checked once, not asked for on every run.
+    """
+    d, f, m, s = market_session_files, equity_client_flows, market_shares, market_share_sessions
+    stored = select(s.c.ins_code).where(
+        and_(s.c.ins_code == f.c.ins_code, s.c.trade_date == f.c.trade_date)
+    )
+    stmt = (
+        select(d.c.trade_date)
+        .select_from(
+            d.join(f, f.c.trade_date == d.c.trade_date).join(m, m.c.ins_code == f.c.ins_code)
+        )
+        .where(
+            m.c.first_seen_at > d.c.ingested_at,
+            f.c.buy_i_value + f.c.buy_n_value > 0,
+            ~stored.exists(),
+        )
+        .distinct()
+        .order_by(d.c.trade_date)
+    )
+    return list(conn.execute(stmt).scalars())
+
+
 def share_state(bind: Engine) -> dict[str, Any]:
     """What the fetch needs to ship only what is new.
 
@@ -147,7 +182,8 @@ def share_state(bind: Engine) -> dict[str, Any]:
     enabled ``equity_instruments`` row), because the roster keeps its full
     history while every other share is floored at FLOW_FLOOR.  Plus the
     sessions whose day file is already ingested, so the fetch asks only for
-    the others.
+    the others, and those of them to ask for again because shares joined the
+    universe after they were ingested (:func:`_incomplete_session_dates`).
     """
     s = market_shares
     with bind.connect() as conn:
@@ -165,6 +201,7 @@ def share_state(bind: Engine) -> dict[str, Any]:
         sessions = conn.execute(
             select(market_session_files.c.trade_date).order_by(market_session_files.c.trade_date)
         ).scalars().all()
+        incomplete = _incomplete_session_dates(conn)
 
     def iso(value: Optional[date]) -> Optional[str]:
         return value.isoformat() if value else None
@@ -188,6 +225,7 @@ def share_state(bind: Engine) -> dict[str, Any]:
         "items": items,
         "count": len(items),
         "session_dates": [d.isoformat() for d in sessions],
+        "session_dates_incomplete": [d.isoformat() for d in incomplete],
     }
 
 
@@ -479,6 +517,20 @@ def ingest_day_file(
                 .values(ingested_at=at, **record)
             )
             file_state = "updated"
+        elif conn.execute(
+            select(market_shares.c.ins_code)
+            .where(market_shares.c.first_seen_at > old_file["ingested_at"])
+            .limit(1)
+        ).first() is not None:
+            # Nothing new in the file, but it has now been read against shares
+            # that joined the universe after it was last ingested: record that,
+            # or share_state would name this day again on every run.
+            conn.execute(
+                update(market_session_files)
+                .where(market_session_files.c.trade_date == trade_date)
+                .values(ingested_at=at)
+            )
+            file_state = "rechecked"
         else:
             file_state = "unchanged"
 
