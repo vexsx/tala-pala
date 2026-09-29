@@ -28,17 +28,28 @@ The payloads, as measured on 2026-09-29:
 ``GetSectorsSummary``      ``{"sectorSummeries": [{cSecVal, lSecVal, c1..c4}]}``
                            — sic, TSETMC's spelling; cSecVal carries a trailing
                            space ("01 ").
+``GetMarketWatch``         ``{"marketwatch": [{insCode, insID, lva, lvc, csv,
+                           ...}]}`` — every instrument, 3,786 rows; insCode a
+                           STRING here.  yVal/flow/cGrValCot come and go
+                           between responses, so nothing reads them.
+``GetStaticData``          ``{"staticData": [{id, code, type, name, ...}]}`` —
+                           ``code`` an int, ``name`` space-padded to 150.
+``GetInstrmentsHistoryInDay/<d>``  ``{"closingPriceDailyHistoryWithInstDetails":
+                           [{insCode, pClosing, priceYesterday, qTotCap, ...}]}``
+                           — traded instruments only; ``dEven`` is 0 on every
+                           row; insCode a bare JSON NUMBER, most above 2^53.
 =========================  =====================================================
 """
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from ..equities.adjust import BarParseError, fold_name, parse_deven
+from ..equities.adjust import BarParseError, fold_name, fold_symbol, parse_deven
 
 # Tehran has kept UTC+03:30 without daylight saving since 2022, and kept DST
 # before that; the zone database knows both, so a snapshot from any year lands
@@ -96,6 +107,35 @@ def _code(value: Any, what: str) -> str:
     number on another.  Digits only, as everywhere else in this repo."""
     text = str(value if value is not None else "").strip()
     if not text.isdigit():
+        raise MarketParseError(f"{what} insCode {value!r} is not a plain number")
+    return text
+
+
+_INS_CODE_RE = re.compile(r"\A[0-9]{1,20}\Z")
+
+
+def exact_code(value: Any, what: str) -> str:
+    """An insCode exactly as served: a digit string, or a JSON INTEGER.
+
+    Never a float.  GetInstrmentsHistoryInDay serves insCode as a bare JSON
+    number and 2,012 of the 2,290 on 2026-09-28 exceed 2^53, where a float
+    has already rounded away the last digits — فولاد's 46348559193224090
+    becomes 46348559193224088, another instrument's name or nobody's.  Python's json
+    keeps an integer literal exact, so an int here is the served digits and a
+    float means something upstream already went through a double.
+    """
+    if isinstance(value, bool) or isinstance(value, float):
+        raise MarketParseError(
+            f"{what} insCode {value!r} arrived as a {type(value).__name__}; an insCode "
+            "above 2^53 does not survive a float, so only digits or an integer are accepted"
+        )
+    if isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value.strip()
+    else:
+        raise MarketParseError(f"{what} insCode {value!r} is not a plain number")
+    if not _INS_CODE_RE.match(text):
         raise MarketParseError(f"{what} insCode {value!r} is not a plain number")
     return text
 
@@ -381,3 +421,179 @@ def parse_sector_summary(payload: Any) -> list[dict[str, Any]]:
         )
     _ascending_unique(out, lambda r: r["sector_code"], "sector summary")
     return out
+
+
+# --- the share universe (migration 0030) --------------------------------------
+
+
+# insID prefix -> market.  Measured on GetMarketWatch 2026-09-29: IRO1 648
+# rows, IRO3 354, IRO7 150, IRO5 10 — and IRO5 checked with GetInstrumentInfo
+# (خگلپا: the Farabourse's نوآفرین growth market, 1.8 billion shares
+# outstanding, sector 34), so it is a company, not a fund or a bond.  Options
+# (IRO9/IROF), bonds (IRB*), funds (IRT*) and rights (IRR*) carry their
+# underlying's or issuer's `csv`, and letting one in would book its turnover
+# to that sector.
+SHARE_MARKETS = {"IRO1": "bourse", "IRO3": "farabourse", "IRO7": "paye", "IRO5": "sme"}
+# insID[8:] -> board.  Every board is its own insCode and its own order book.
+SHARE_BOARDS = {"0001": "main", "0002": "block", "0003": "secondary"}
+_INS_ID_RE = re.compile(r"\AIR[A-Z0-9]{10}\Z")
+_SECTOR_RE = re.compile(r"\A[0-9]{2}\Z")
+
+
+@dataclass(frozen=True)
+class ListedShare:
+    ins_code: str
+    ins_id: str        # the market-watch insID, e.g. IRO1FOLD0001 — NOT the ISIN
+    symbol_fa: str     # fold_symbol(lva)
+    name_fa: str       # fold_name(lvc)
+    market: str        # a SHARE_MARKETS value
+    board: str         # a SHARE_BOARDS value, else 'other'
+    company_code: str  # insID[:8]
+    sector_code: str   # csv.strip(); '' when TSETMC served no two-digit code
+
+
+@dataclass(frozen=True)
+class MarketWatch:
+    shares: list[ListedShare]
+    rows_total: int  # every instrument in the payload, shares or not
+
+
+def parse_market_watch(payload: Any) -> MarketWatch:
+    """Parse ``GetMarketWatch`` down to the SHARES it lists.
+
+    Classified by insID and nothing else: yVal/flow/cGrValCot are absent from
+    some responses to the very same URL.  A row with a share prefix must carry
+    everything a share row needs — a shape change there is refused, not
+    skipped, because skipping would mark every such share delisted.
+    """
+    rows = _list_field(payload, "marketwatch")
+    shares: list[ListedShare] = []
+    seen: set[str] = set()
+    for r in rows:
+        if not isinstance(r, dict):
+            raise MarketParseError("a marketwatch row is not an object")
+        ins_id = str(r.get("insID") or "").strip()
+        market = SHARE_MARKETS.get(ins_id[:4])
+        if market is None:
+            continue
+        if not _INS_ID_RE.match(ins_id):
+            raise MarketParseError(f"market-watch insID {ins_id!r} is not a 12-character id")
+        code = exact_code(r.get("insCode"), f"market-watch row {ins_id}")
+        if code in seen:
+            raise MarketParseError(f"the market watch lists insCode {code} twice")
+        seen.add(code)
+        symbol = fold_symbol(r.get("lva"))
+        if not symbol:
+            raise MarketParseError(f"market-watch row {ins_id} ({code}) carries no symbol")
+        csv = str(r.get("csv") or "").strip()
+        shares.append(
+            ListedShare(
+                ins_code=code,
+                ins_id=ins_id,
+                symbol_fa=symbol,
+                name_fa=fold_name(r.get("lvc")),
+                market=market,
+                board=SHARE_BOARDS.get(ins_id[8:], "other"),
+                company_code=ins_id[:8],
+                sector_code=csv if _SECTOR_RE.match(csv) else "",
+            )
+        )
+    if not shares:
+        raise MarketParseError(
+            f"the market watch's {len(rows)} rows include no share (insID IRO1/IRO3/IRO5/"
+            "IRO7); the response is not the market watch this was written against"
+        )
+    return MarketWatch(shares=shares, rows_total=len(rows))
+
+
+def parse_static_sectors(payload: Any) -> dict[str, str]:
+    """``GetStaticData``'s industrial groups as {two-digit code: folded name}.
+
+    ``code`` is an int (1 for "01"), zero-padded here to match the market
+    watch's ``csv``; the name is space-padded to 150 characters and stripped.
+    """
+    out: dict[str, str] = {}
+    for r in _list_field(payload, "staticData"):
+        if not isinstance(r, dict):
+            raise MarketParseError("a staticData row is not an object")
+        if r.get("type") != "IndustrialGroup":
+            continue
+        raw = r.get("code")
+        if isinstance(raw, bool) or not isinstance(raw, int) or not 0 <= raw <= 99:
+            raise MarketParseError(f"industrial group code {raw!r} is not an integer 0..99")
+        code = f"{raw:02d}"
+        if code in out:
+            raise MarketParseError(f"industrial group {code} is listed twice")
+        out[code] = fold_name(r.get("name"))
+    if not out:
+        raise MarketParseError("staticData carries no IndustrialGroup rows")
+    return out
+
+
+# --- one market session (GetInstrmentsHistoryInDay) ---------------------------
+
+
+DAY_FILE_FIELD = "closingPriceDailyHistoryWithInstDetails"
+
+
+def parse_day_file(payload: Any) -> dict[str, dict]:
+    """Index a day file's rows by exact insCode, WITHOUT reading their values.
+
+    Every row's insCode is validated — a float among them means the file went
+    through a double somewhere and none of its codes can be trusted — but the
+    prices are read only for the rows that are stored (:func:`parse_session_row`),
+    so a malformed bond row cannot cost the day its shares.  The file carries
+    no date of its own (``dEven`` is 0 on every row); the caller supplies it.
+    """
+    out: dict[str, dict] = {}
+    for r in _list_field(payload, DAY_FILE_FIELD):
+        if not isinstance(r, dict):
+            raise MarketParseError("a day-file row is not an object")
+        code = exact_code(r.get("insCode"), "day-file")
+        if code in out:
+            raise MarketParseError(
+                f"the day file carries insCode {code} twice; one session is one row"
+            )
+        out[code] = r
+    return out
+
+
+def parse_session_row(row: dict) -> dict[str, Any]:
+    """One share's session from a day-file row, or MarketParseError naming why
+    it cannot be stored — the table's CHECKs, stated before the database has
+    to state them for the whole day."""
+    close = _num(row, "pClosing")
+    if close <= 0:
+        raise MarketParseError(f"pClosing={close!r} is not a closing price")
+    # MEASURED, and the reason this column is worth storing: priceYesterday
+    # here is TSETMC's corporate-action-ADJUSTED reference, not the previous
+    # session's close.  On فولاد's ex-dates the day file says 3,982 on
+    # 2025-03-12 (previous close 5,530) and 4,800 on 2024-07-22 (previous
+    # close 5,200) — exactly GetClosingPriceDailyList's priceYesterday for
+    # those sessions (tests/test_market_shares.py pins the first).  So
+    # close / price_yesterday over a share's traded sessions chains into a
+    # return a capital increase does not break, without the share's bars.
+    reference = _num(row, "priceYesterday")
+    if reference <= 0:
+        raise MarketParseError(
+            f"priceYesterday={reference!r}: no reference price (a first session has none)"
+        )
+    last_trade: Optional[float] = None
+    if row.get("pDrCotVal") is not None:
+        last_trade = _num(row, "pDrCotVal")
+        if last_trade < 0:
+            raise MarketParseError(f"pDrCotVal={last_trade!r} is negative")
+        # 0 is TSETMC's "not stated"; the column is NULL for that, not zero.
+        last_trade = last_trade or None
+    value = _num(row, "qTotCap")
+    volume = _num(row, "qTotTran5J")
+    if value < 0 or volume < 0:
+        raise MarketParseError(f"a negative value or volume ({value!r}, {volume!r})")
+    return {
+        "close": close,
+        "last_trade": last_trade,
+        "price_yesterday": reference,
+        "value": value,
+        "volume": volume,
+        "trades": _count(row, "zTotTran"),
+    }

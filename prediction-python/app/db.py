@@ -816,14 +816,16 @@ market_values = Table(
 )
 
 # حقیقی (I, individuals) / حقوقی (N, institutions), per instrument per session,
-# exactly as served.  Values in RIALS.
+# exactly as served.  Values in RIALS.  Since 0030 the key is the market-wide
+# share mirror, not the roster, and RESTRICT: a churning universe must never
+# cascade history away.
 equity_client_flows = Table(
     "equity_client_flows",
     metadata,
     Column(
         "ins_code",
         Text,
-        ForeignKey("equity_instruments.ins_code", ondelete="CASCADE"),
+        ForeignKey("market_shares.ins_code", ondelete="RESTRICT"),
         primary_key=True,
     ),
     Column("trade_date", Date, primary_key=True),
@@ -851,6 +853,9 @@ equity_client_flows = Table(
         "AND sell_i_value >= 0 AND sell_n_value >= 0",
         name="equity_client_flows_amounts",
     ),
+    # 0030: the primary key serves one share's history; a market window scans
+    # a date.
+    Index("idx_equity_client_flows_date", "trade_date"),
 )
 
 market_snapshots = Table(
@@ -890,6 +895,121 @@ sector_breadth_snapshots = Table(
         "AND up_over_2 >= 0",
         name="sector_breadth_snapshots_counts",
     ),
+)
+
+
+# --- tables mirroring database/migrations/0030_market_flows.up.sql ----------
+#
+# The whole market, share by share: a MIRROR of TSETMC's share listing (the
+# one registry an ingest may insert into, because it mirrors rather than
+# curates), the sector vocabulary it rolls up into, the exchange's own session
+# row per share, and the commodity funds whose settled closes go into
+# ``prices``.  0030's header records the measurements behind every rule.  The
+# ``~`` regex CHECKs on the codes are Postgres-only and are not mirrored; the
+# ingest validates the same shapes before it writes.
+
+market_sectors = Table(
+    "market_sectors",
+    metadata,
+    Column("sector_code", Text, primary_key=True),
+    # TSETMC's own name, folded; refreshed by every market-watch ingest.
+    Column("name_fa", Text, nullable=False, server_default=""),
+    # This system's translation, seeded by 0030.  Never invented by an ingest.
+    Column("name_en", Text, nullable=False, server_default=""),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+)
+
+market_shares = Table(
+    "market_shares",
+    metadata,
+    Column("ins_code", Text, primary_key=True),
+    # The market-watch insID (IRO1FOLD0001), NOT the ISIN.
+    Column("ins_id", Text, nullable=False, server_default=""),
+    # fold_symbol(lva).  Not unique: boards share a root, symbols get re-used.
+    Column("symbol_fa", Text, nullable=False),
+    Column("name_fa", Text, nullable=False, server_default=""),
+    Column("market", Text, nullable=False),
+    Column("board", Text, nullable=False),
+    Column("company_code", Text, nullable=False, server_default=""),
+    Column("sector_code", Text, nullable=False, server_default=""),
+    # Present in the newest market watch ingested.  Rows are never deleted.
+    Column("listed", Boolean, nullable=False, server_default=text("TRUE")),
+    Column("first_seen_at", _TS, nullable=False, server_default=func.now()),
+    Column("last_seen_at", _TS, nullable=False, server_default=func.now()),
+    # Coverage, from the tables, never from a payload.
+    Column("flow_first_date", Date),
+    Column("flow_last_date", Date),
+    Column("flow_count", Integer, nullable=False, server_default=text("0")),
+    Column("session_last_date", Date),
+    Column("session_count", Integer, nullable=False, server_default=text("0")),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("market IN ('bourse','farabourse','paye','sme')"),
+    CheckConstraint("board IN ('main','block','secondary','other')"),
+    Index("idx_market_shares_sector", "sector_code"),
+    Index("idx_market_shares_company", "company_code"),
+)
+
+# One row per share per TRADED session from GetInstrmentsHistoryInDay, in
+# RIALS, never overwritten.  price_yesterday is TSETMC's ADJUSTED reference.
+market_share_sessions = Table(
+    "market_share_sessions",
+    metadata,
+    Column(
+        "ins_code",
+        Text,
+        ForeignKey("market_shares.ins_code", ondelete="RESTRICT"),
+        primary_key=True,
+    ),
+    Column("trade_date", Date, primary_key=True),
+    Column("close", _NUM, nullable=False),
+    Column("last_trade", _NUM),
+    Column("price_yesterday", _NUM, nullable=False),
+    Column("value", _NUM, nullable=False),
+    Column("volume", _NUM, nullable=False),
+    Column("trades", BigInteger, nullable=False),
+    Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("close > 0"),
+    CheckConstraint("last_trade > 0"),
+    CheckConstraint("price_yesterday > 0"),
+    CheckConstraint("value >= 0"),
+    CheckConstraint("volume >= 0"),
+    CheckConstraint("trades >= 0"),
+    Index("idx_market_share_sessions_date", "trade_date"),
+)
+
+market_session_files = Table(
+    "market_session_files",
+    metadata,
+    Column("trade_date", Date, primary_key=True),
+    Column("rows_total", Integer, nullable=False),
+    Column("rows_shares", Integer, nullable=False),
+    Column("ingested_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("rows_total >= 0"),
+    CheckConstraint("rows_shares >= 0"),
+)
+
+commodity_funds = Table(
+    "commodity_funds",
+    metadata,
+    Column("ins_code", Text, primary_key=True),
+    Column(
+        "instrument_code",
+        Text,
+        ForeignKey("instruments.code", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    ),
+    Column("symbol_fa", Text, nullable=False),
+    Column("name_fa", Text, nullable=False, server_default=""),
+    Column("underlying", Text, nullable=False),
+    Column("enabled", Boolean, nullable=False, server_default=text("TRUE")),
+    # Coverage of its tsetmc_cdn closes in ``prices``, from that table.
+    Column("first_close", Date),
+    Column("last_close", Date),
+    Column("close_count", Integer, nullable=False, server_default=text("0")),
+    Column("notes", Text, nullable=False, server_default=""),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("underlying IN ('gold','silver','saffron')"),
 )
 
 

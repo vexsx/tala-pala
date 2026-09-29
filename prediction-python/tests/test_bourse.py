@@ -73,6 +73,7 @@ from app.db import (
     market_index_checks,
     market_index_values,
     market_indices,
+    market_shares,
     market_snapshots,
     market_values,
     sector_breadth_snapshots,
@@ -109,11 +110,20 @@ def _register_index(engine, code, name="شاخص", market="bourse", kind="headli
 
 
 def _register_foolad(engine):
+    """The roster row, and the universe row migration 0030 seeds from it: since
+    0030 the money flow's key is market_shares, which carries the roster."""
     with engine.begin() as conn:
         conn.execute(
             equity_instruments.insert().values(
                 ins_code=FOOLAD, symbol_fa="فولاد", name_fa="فولاد مبارکه اصفهان",
                 market="bourse",
+            )
+        )
+        conn.execute(
+            market_shares.insert().values(
+                ins_code=FOOLAD, symbol_fa="فولاد", name_fa="فولاد مبارکه اصفهان",
+                market="bourse", board="main", company_code="IRO1FOLD", sector_code="27",
+                listed=False,
             )
         )
 
@@ -534,9 +544,13 @@ def test_client_flows_ingest_for_a_roster_symbol(engine):
     assert row["buy_i_value"] + row["buy_n_value"] != row["sell_i_value"] + row["sell_n_value"]
 
 
-def test_client_flows_for_a_symbol_outside_the_roster_are_refused(engine):
-    with pytest.raises(MarketParseError, match="not in equity_instruments"):
+def test_client_flows_for_a_share_outside_the_universe_are_refused(engine):
+    """The key moved from the roster to market_shares in 0030; a share neither
+    carries is still refused, by an explicit lookup (SQLite enforces no FK)."""
+    with pytest.raises(MarketParseError, match="not in market_shares"):
         ingest_client_flows(engine, load_fixture_json("tsetmc_clienttype_foolad_trimmed.json"))
+    with engine.connect() as conn:
+        assert conn.execute(select(func.count()).select_from(equity_client_flows)).scalar() == 0
 
 
 def test_the_snapshot_and_the_sector_breadth_share_one_time(engine):

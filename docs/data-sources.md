@@ -86,3 +86,29 @@ The CDN answers intermittently with HTTP 502 (the same URL: 200, 200, 200, 502,
 with `--retry-all-errors`. Only settled sessions are stored: a row dated on the
 fetch's own Tehran day is kept only when the fetch ran after 15:00.
 
+### The whole market's money flow and the commodity funds (since migration 0030)
+
+The same run now fetches every listed share, not only the roster, and the
+commodity funds' closes. Ingested through `POST /internal/bourse/shares/ingest`
+(a manifest, in `universe` / `flows` / `sessions` parts, the last two in
+offset/limit chunks) and `POST /internal/bourse/funds/ingest`. Measured
+2026-09-29:
+
+| Endpoint | What it gives | Measured |
+|---|---|---|
+| `ClosingPrice/GetMarketWatch?…&showTraded=false` | Every instrument: `insCode` (string), `insID`, symbol `lva`, name `lvc`, sector `csv` | 3,786 rows, 2.25 MB (333 KB gzipped). Shares are picked by `insID` prefix — IRO1 bourse 648, IRO3 Farabourse 354, IRO7 پایه 150, IRO5 نوآفرین 10 (checked with GetInstrumentInfo: companies) — never by `yVal`/`flow`/`cGrValCot`, which were absent from five responses in a row. `insID[8:]` is the board (0001 main, 0002 block, 0003 secondary); `insID[:8]` the company; `insID` is not the ISIN. `csv` has a trailing space, and on options/bonds/funds it is the underlying's or issuer's sector — which is why they are excluded. |
+| `StaticData/GetStaticData` | TSETMC's industrial-group names (`type: IndustrialGroup`, integer `code`) | 66 groups covering 52 of the 53 `csv` codes; 84 (one IRO5 share) has no name anywhere, so none is invented. |
+| `ClientType/GetClientTypeHistory/{insCode}` | Every session of one share's حقیقی/حقوقی flow, whole history, newest first | The only per-share history TSETMC has: there is no market-wide client-type endpoint by date (`GetClientTypeAll/{date}` 404s; `GetClientTypeAll` is today's volumes only, no values). The single-date form `…/{insCode}/{dEven}` answers HTTP 500 with an empty body for a date without a session, so it is not the incremental path. The whole history is fetched (`--compressed`: فولاد 260 KB instead of 1.32 MB) and trimmed before shipping to what the server lacks plus 10 overlap rows; a share outside the roster ships nothing before 2025-03-21. |
+| `ClosingPrice/GetInstrmentsHistoryInDay/{yyyymmdd}` | One whole session: every TRADED instrument's `pClosing`, `pDrCotVal`, `priceYesterday`, `qTotCap`, `qTotTran5J`, `zTotTran` | 2,290 rows (919 KB, 180 KB gzipped) for 2026-09-28; a Friday gives an empty list. `dEven` is 0 on every row, so the date is the requested one and the ingest cross-checks it against the stored flows. `insCode` is a bare JSON number and 2,012 of 2,290 exceed 2^53 — never parse it through a double. Its value equals the flow history's buy total exactly (8 of 8 instruments compared), and its `priceYesterday` is TSETMC's corporate-action-ADJUSTED reference (فولاد: 3,982 on the 2025-03-12 ex-date against a previous close of 5,530; 4,800 on 2024-07-22 against 5,200). Fetched for every session with ≥200 shares' flow rows since 2025-03-21 that is not stored, plus the newest two that are. |
+| `ClosingPrice/GetClosingPriceDailyList/{insCode}/0` (funds) | A commodity fund's whole settled history | عیار, طلا, کهربا (TSETMC sub-sector 6822, gold-based), سیلور, سیمین (6823, silver-based). All list at 10,000 rials; over 5,846 session pairs the reference equals the previous close except twice, by one rial — no splits. 190 zero-trade rows are carry-forwards and are not stored. Stored in `prices` as toman (÷10), source `tsetmc_cdn`, stamped 23:00 UTC on the session date (funds trade until 18:00 Tehran). سافرون is NOT ingested: TSETMC classes it only as an agricultural commodity fund (6824), never as saffron. |
+
+A full refresh is ~1,500 requests (~1,160 histories, ~305 day files the first
+time, the rest a few dozen), paced at no more than three a second: expect
+**about 15 minutes for the first run and about 9 for a weekly one**. A failed
+download costs its share or its date, not the run; the script prints each
+failure, each contradiction with stored data (nothing is ever overwritten), the
+delisted shares and the timings, and exits 1 if anything failed.
+`--no-shares` restores the roster-only money flow, `--flows-since` moves the
+floor for non-roster shares and day files, and `--dry-run` shows what the bulk
+loop would fetch without fetching it.
+

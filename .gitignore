@@ -6,7 +6,10 @@ nginx/certs/
 backups/
 *.dump
 # scripts/tsetmc_fetch.py's default download directory: ~60 MB of TSETMC
-# payloads per run, archived on the server under backups/tsetmc/, never here.
+# payloads per run, plus since 0030 the market's trimmed money flow and day
+# files (~300 MB on the first run, ~10 MB on a weekly one) and ~80 MB of
+# gzipped untrimmed histories under evidence/. Archived on the server under
+# backups/tsetmc/, never here.
 tsetmc-bars/
 
 # Python

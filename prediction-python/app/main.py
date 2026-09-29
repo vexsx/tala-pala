@@ -148,6 +148,31 @@ class MarketIngestRequest(BaseModel):
     sector_summary: Optional[str] = None
 
 
+class ShareIngestRequest(BaseModel):
+    """One part (or one chunk of a part) of a fetch run's market-wide payloads.
+
+    ``manifest`` is the run's manifest.json inside this container; it names
+    the files, and every name in it is pattern-checked and resolved inside its
+    own directory. ``part`` is ``universe`` (the market watch and the sector
+    names), ``flows`` (one client-type history per share) or ``sessions``
+    (one whole-market day file per session); the last two are ingested
+    ``offset``..``offset+limit`` at a time, because ~1,150 histories are
+    neither one synchronous call nor one argv.
+    """
+
+    manifest: str
+    part: str
+    offset: int = 0
+    limit: int = 200
+
+
+class FundIngestRequest(BaseModel):
+    """Commodity-fund daily lists (GetClosingPriceDailyList), already in this
+    container. The insCode is read from each payload, never its file name."""
+
+    paths: list[str] = Field(default_factory=list)
+
+
 class BacktestRequest(BaseModel):
     horizon: str = "1d"
     fee_pct: float = 0.5
@@ -641,6 +666,93 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
 
         try:
             report = ingest_market_files(engine, body.model_dump())
+        except (ValueError, MarketParseError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except MarketIngestFailed as exc:
+            registry.record_failure(engine, "tsetmc_cdn", str(exc))
+            return JSONResponse(
+                status_code=502,
+                content=exc.report
+                | {"error": {"code": "upstream_failed", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        registry.record_success(engine, "tsetmc_cdn")
+        return report
+
+    @app.get("/internal/bourse/shares/state")
+    def bourse_share_state() -> dict:
+        """What the market-wide fetch needs to ship only what is new
+        (migration 0030): every share's stored flow coverage and roster flag,
+        the sessions whose day file is ingested, and the date floor non-roster
+        shares are fetched from.
+        """
+        from .bourse.shares import share_state
+
+        return share_state(engine)
+
+    @app.post("/internal/bourse/shares/ingest")
+    def bourse_share_ingest(body: ShareIngestRequest) -> dict:
+        """Ingest one part of a run's market-wide payloads: the share universe
+        (a mirror of TSETMC's listing — inserted, updated, marked unlisted,
+        never deleted), every share's حقیقی/حقوقی flow, and the whole-market
+        day files.
+
+        Same contract as /internal/bourse/ingest: each share's flows and each
+        session's file in its own transaction, failures in ``errors``, 502
+        only when every item in the call failed, and a payload that
+        contradicts a stored row fails its item rather than overwriting it.
+        A malformed manifest, an unknown part or an offset past the end is a
+        statement about the CALL and answers 400.
+        """
+        from .bourse.ingest import MarketIngestFailed
+        from .bourse.parse import MarketParseError
+        from .bourse.shares import ingest_share_manifest
+
+        try:
+            report = ingest_share_manifest(
+                engine, body.manifest, body.part, offset=body.offset, limit=body.limit
+            )
+        except (ValueError, MarketParseError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except MarketIngestFailed as exc:
+            registry.record_failure(engine, "tsetmc_cdn", str(exc))
+            return JSONResponse(
+                status_code=502,
+                content=exc.report
+                | {"error": {"code": "upstream_failed", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        registry.record_success(engine, "tsetmc_cdn")
+        return report
+
+    @app.get("/internal/bourse/funds/roster")
+    def bourse_fund_roster(include_disabled: bool = False) -> dict:
+        """The commodity funds whose settled closes this deployment ingests
+        (migration 0030 seeds five). Read by scripts/tsetmc_fetch.py, so
+        adding a fund is an INSERT, like every other TSETMC roster.
+        """
+        from .bourse.funds import fund_roster
+
+        items = fund_roster(engine, include_disabled=include_disabled)
+        return {"items": items, "count": len(items)}
+
+    @app.post("/internal/bourse/funds/ingest")
+    def bourse_fund_ingest(body: FundIngestRequest) -> dict:
+        """Ingest commodity-fund daily lists into ``prices`` as toman closes
+        (source ``tsetmc_cdn``, stamped 23:00 UTC on the session date,
+        traded sessions only, never overwritten). Same 400/502/health-row
+        contract as /internal/bourse/ingest.
+        """
+        from .bourse.funds import ingest_fund_files
+        from .bourse.ingest import MarketIngestFailed
+        from .bourse.parse import MarketParseError
+
+        try:
+            report = ingest_fund_files(engine, body.paths)
         except (ValueError, MarketParseError) as exc:
             return JSONResponse(
                 status_code=400,

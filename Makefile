@@ -91,9 +91,15 @@ export-portfolio: ## Export portfolio CSV: make export-portfolio TOKEN=<jwt> [OU
 #   make refresh-cpi ARGS="--host ubuntu@1.2.3.4"
 
 # refresh-equities also fetches the market itself since migration 0029 — all 71
-# indices, total market value, the roster's money flow and the live snapshot —
-# in the same run; ARGS="--bars-only" restores the bars-only behaviour.
-refresh-equities: ## Refresh Tehran equities AND the market's indices from TSETMC — run OFF the server (ARGS=...)
+# indices, total market value and the live snapshot — and since 0030 the whole
+# market's money flow: the market watch and sector names, every listed share's
+# حقیقی/حقوقی history (trimmed to what the server lacks; non-roster shares from
+# 2025-03-21), the day file of every market session not yet stored, and the
+# commodity funds' daily closes. ~1,500 requests at <= 3/s: expect ~15 minutes
+# for the first run and ~9 for a weekly one. ARGS="--bars-only" restores the
+# bars-only behaviour, "--no-shares" the 0029 roster-only money flow, and
+# "--dry-run" prints what the bulk loop would fetch without fetching it.
+refresh-equities: ## Refresh Tehran equities, the market, every share's money flow and the commodity funds from TSETMC — run OFF the server (ARGS=...)
 	python3 scripts/tsetmc_fetch.py $(ARGS)
 
 refresh-cpi: ## Refresh SCI CPI from amar.org.ir — run OFF the server (ARGS=...)

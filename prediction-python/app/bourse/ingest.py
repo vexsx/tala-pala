@@ -8,7 +8,11 @@ transaction; a failure is collected into the report, never raised through the
 run.  One truncated file costs one item.
 
 *Nothing is invented.*  An index or instrument the registry does not carry is
-refused — this never creates a registry row from a payload.
+refused — this never creates a registry row from a payload.  The one
+registry that IS written from a payload is 0030's ``market_shares``, because
+it is a mirror of TSETMC's listing rather than a curated roster; that lives in
+:mod:`app.bourse.shares`, and money flow is refused for any insCode it does
+not carry.
 
 *A stored value is never overwritten.*  TSETMC does not revise a settled
 session, so a payload that disagrees with a stored row fails that item and
@@ -38,11 +42,11 @@ from sqlalchemy.engine import Connection, Engine
 from ..db import (
     ensure_utc,
     equity_client_flows,
-    equity_instruments,
     insert_ignore,
     market_index_checks,
     market_index_values,
     market_indices,
+    market_shares,
     market_snapshots,
     market_values,
     sector_breadth_snapshots,
@@ -486,11 +490,32 @@ def ingest_market_values(
 # --- money flow --------------------------------------------------------------
 
 
+class FlowContradiction(MarketParseError):
+    """A client-type payload disagrees with a stored session.  Its own type so
+    a report can tell "TSETMC said something different" from "the file was
+    bad" without matching on message text."""
+
+
 def ingest_client_flows(
-    engine: Engine, payload: Any, now: Optional[datetime] = None
+    engine: Engine, payload: Any, now: Optional[datetime] = None, ins_code: str = ""
 ) -> dict[str, Any]:
+    """Ingest one share's حقیقی/حقوقی history, for ANY share in ``market_shares``.
+
+    0029 accepted only the roster; since 0030 the key is the market-wide
+    mirror, so the roster (which 0030 seeded into it) and every other listed
+    share go through this one function against one table.  ``ins_code``, when
+    given, is the share the caller believes the payload is for — a file named
+    for one share and carrying another's rows is refused here, because after
+    the transfer it is invisible.
+
+    Only the stored rows from the payload's first settled date onward are read
+    for the overlap comparison: a fetch ships a trimmed history (its overlap
+    plus what is new), and re-reading all of فولاد's 3,850 stored sessions to
+    compare ten would be most of the work.  The share's coverage columns are
+    recomputed from the table in the same transaction.
+    """
     collected_at = ensure_utc(now) or utcnow()
-    parsed = parse_client_types(payload)
+    parsed = parse_client_types(payload, ins_code)
     code = parsed.ins_code
     t = equity_client_flows
     columns = [c for c, _, _ in CLIENT_FIELDS]
@@ -501,20 +526,29 @@ def ingest_client_flows(
         raise MarketParseError(f"client types of {code}: no settled session in the payload")
 
     with engine.begin() as conn:
-        instrument = conn.execute(
-            select(equity_instruments.c.symbol_fa).where(
-                equity_instruments.c.ins_code == code
-            )
+        share = conn.execute(
+            select(
+                market_shares.c.symbol_fa,
+                market_shares.c.flow_first_date,
+                market_shares.c.flow_last_date,
+                market_shares.c.flow_count,
+            ).where(market_shares.c.ins_code == code)
         ).first()
-        if instrument is None:
+        if share is None:
+            # Checked explicitly rather than left to the foreign key: SQLite,
+            # which the tests run on, does not enforce one, and "not in the
+            # mirror" deserves a sentence rather than an IntegrityError.
             raise MarketParseError(
-                f"insCode {code} is not in equity_instruments; money flow is stored only "
-                "for the roster. Add the instrument with an INSERT, then ingest."
+                f"insCode {code} is not in market_shares; money flow is stored only for "
+                "shares TSETMC's market watch lists (migration 0030 seeded the roster "
+                "into it). Ingest a market watch that lists it, then its flows."
             )
         stored = {
             r["trade_date"]: r
             for r in conn.execute(
-                select(t.c.trade_date, *[t.c[c] for c in columns]).where(t.c.ins_code == code)
+                select(t.c.trade_date, *[t.c[c] for c in columns]).where(
+                    and_(t.c.ins_code == code, t.c.trade_date >= rows[0]["trade_date"])
+                )
             ).mappings()
         }
         conflicts: list[str] = []
@@ -530,21 +564,37 @@ def ingest_client_flows(
             if differing:
                 conflicts.append(f"{row['trade_date'].isoformat()} ({', '.join(differing[:3])})")
         if conflicts:
-            raise MarketParseError(
-                f"{instrument.symbol_fa} ({code}): the client-type payload contradicts "
+            raise FlowContradiction(
+                f"{share.symbol_fa} ({code}): the client-type payload contradicts "
                 f"{len(conflicts)} stored session(s): {'; '.join(conflicts[:3])}. Nothing is "
                 "overwritten; delete the rows deliberately if TSETMC genuinely restated them."
             )
-        before = len(stored)
-        _bulk_insert_ignore(conn, t, pending)
-        after = conn.execute(
+        before = conn.execute(
             select(func.count()).select_from(t).where(t.c.ins_code == code)
         ).scalar_one()
+        _bulk_insert_ignore(conn, t, pending)
+        first, last, after = conn.execute(
+            select(func.min(t.c.trade_date), func.max(t.c.trade_date), func.count())
+            .select_from(t)
+            .where(t.c.ins_code == code)
+        ).one()
+        if (first, last, after) != (share.flow_first_date, share.flow_last_date, share.flow_count):
+            conn.execute(
+                update(market_shares)
+                .where(market_shares.c.ins_code == code)
+                .values(
+                    flow_first_date=first,
+                    flow_last_date=last,
+                    flow_count=int(after),
+                    updated_at=collected_at,
+                )
+            )
     return {
         "ins_code": code,
-        "symbol": instrument.symbol_fa,
+        "symbol": share.symbol_fa,
         "sessions_total": len(parsed.rows),
-        "sessions_inserted": int(after) - before,
+        "sessions_inserted": int(after) - int(before),
+        "sessions_existing": len(rows) - len(pending),
         "unsettled_skipped": unsettled,
         "first_date": rows[0]["trade_date"].isoformat(),
         "last_date": rows[-1]["trade_date"].isoformat(),
@@ -700,6 +750,7 @@ def ingest_market_files(
 
 __all__ = [
     "SETTLED_AFTER_HOUR",
+    "FlowContradiction",
     "MarketIngestFailed",
     "settled_cutoff",
     "index_roster",
