@@ -115,15 +115,36 @@ offset/limit chunks) and `POST /internal/bourse/funds/ingest`. Measured
 | `StaticData/GetStaticData` | TSETMC's industrial-group names (`type: IndustrialGroup`, integer `code`) | 66 groups covering 52 of the 53 `csv` codes; 84 (one IRO5 share) has no name anywhere, so none is invented. |
 | `ClientType/GetClientTypeHistory/{insCode}` | Every session of one share's حقیقی/حقوقی flow, whole history, newest first | The only per-share history TSETMC has: there is no market-wide client-type endpoint by date (`GetClientTypeAll/{date}` 404s; `GetClientTypeAll` is today's volumes only, no values). The single-date form `…/{insCode}/{dEven}` answers HTTP 500 with an empty body for a date without a session, so it is not the incremental path. The whole history is fetched (`--compressed`: فولاد 260 KB instead of 1.32 MB) and trimmed before shipping to what the server lacks plus 10 overlap rows; a share outside the roster ships nothing before 2025-03-21. |
 | `ClosingPrice/GetInstrmentsHistoryInDay/{yyyymmdd}` | One whole session: every TRADED instrument's `pClosing`, `pDrCotVal`, `priceYesterday`, `qTotCap`, `qTotTran5J`, `zTotTran` | 2,290 rows (919 KB, 180 KB gzipped) for 2026-09-28; a Friday gives an empty list. `dEven` is 0 on every row, so the date is the requested one and the ingest cross-checks it against the stored flows. `insCode` is a bare JSON number and 2,012 of 2,290 exceed 2^53 — never parse it through a double. Its value equals the flow history's buy total exactly (8 of 8 instruments compared), and its `priceYesterday` is TSETMC's corporate-action-ADJUSTED reference (فولاد: 3,982 on the 2025-03-12 ex-date against a previous close of 5,530; 4,800 on 2024-07-22 against 5,200). Fetched for every session with ≥200 shares' flow rows since 2025-03-21 that is not stored, plus the newest two that are, plus any stored day that shares joined the universe after (it could only store the shares known then; `GET /internal/bourse/shares/state` names those days as `session_dates_incomplete`). |
-| `ClosingPrice/GetClosingPriceDailyList/{insCode}/0` (funds) | A commodity fund's whole settled history | عیار, طلا, کهربا (TSETMC sub-sector 6822, gold-based), سیلور, سیمین (6823, silver-based). All list at 10,000 rials; over 5,846 session pairs the reference equals the previous close except twice, by one rial — no splits. 190 zero-trade rows are carry-forwards and are not stored. Stored in `prices` as toman (÷10), source `tsetmc_cdn`, stamped 23:00 UTC on the session date (funds trade until 18:00 Tehran). سافرون is NOT ingested: TSETMC classes it only as an agricultural commodity fund (6824), never as saffron. |
+| `ClosingPrice/GetClosingPriceDailyList/{insCode}/0` (funds) | A commodity fund's whole settled history | عیار, طلا, کهربا (TSETMC sub-sector 6822, gold-based), سیلور, سیمین (6823, silver-based). All list at 10,000 rials; over 5,846 session pairs of one CDN copy the reference equals the previous close except twice, by one rial — no splits (the other copy lacks 2023-03-27, see below). 190 zero-trade rows are carry-forwards and are not stored. Stored in `prices` as toman (÷10), source `tsetmc_cdn`, stamped 23:00 UTC on the session date (funds trade until 18:00 Tehran), and only for sessions before the first day a live source (BrsApi's `tse_funds`, from 2026-07-21 for عیار and طلا) observed the fund: a settled close beside the live last trade on the same day would be two different numbers for one day's price. سافرون is NOT ingested: TSETMC classes it only as an agricultural commodity fund (6824), never as saffron. |
 
 A full refresh is ~1,500 requests (~1,160 histories, ~305 day files the first
-time, the rest a few dozen), paced at no more than three a second: expect
-**about 15 minutes for the first run and about 9 for a weekly one**. A failed
-download costs its share or its date, not the run; the script prints each
-failure, each contradiction with stored data (nothing is ever overwritten), the
-delisted shares and the timings, and exits 1 if anything failed.
-`--no-shares` restores the roster-only money flow, `--flows-since` moves the
-floor for non-roster shares and day files, and `--dry-run` shows what the bulk
-loop would fetch without fetching it.
+time, the rest a few dozen), started 0.5 s apart (`--delay`; never closer than
+a third of a second): expect **about 20 minutes for the first run and about 12
+for a weekly one**. A failed download costs its share or its date, not the run;
+the script prints each failure (every per-item error of every ingest call,
+the bars, the market and the sector names included), each contradiction, the
+delisted shares and the timings, and exits 1 if anything failed. The run's
+copy inside the prediction container is removed once the ingest calls are
+done; the archive under `backups/tsetmc/<run>` is kept. `--no-shares` restores
+the roster-only money flow, `--flows-since` moves the floor for non-roster
+shares and day files, and `--dry-run` reads the server's state, downloads only
+the small payloads (the market-level files and the market watch) and prints
+what the bulk loop would fetch, without fetching it.
+
+**TSETMC serves two copies of its history.** Fetched five minutes apart on
+2026-09-29 (three runs), the CDN answered two versions of the same data: one
+printed every index to six significant digits and the other to one decimal
+(64 of 71 index histories differ on 8–437 dates, all within a relative 1e-5
+or a tenth of a point); one lacked the whole 2023-03-27 session in every
+daily list; four roster bars (2021-12-15, 2022-03-26), Tala's 2021-12-15
+close (ten rials) and two rows of the 2026-09-28 day file differed by a
+trade or two; three indices differed by 0.12–0.72% on one date each. So:
+index values are compared to within the two print formats; a stored row the
+current copy states differently is **kept** (never overwritten) and listed
+under RESTATED at the end of the run, which does not fail it; new rows are
+stored beside it; and only a payload unlike MOST of what it overlaps (at
+least four rows compared) fails its item. A fund list that skips a session
+TEDPIX records is a gap in that copy, not a restated reference. A corporate
+action detected across the missing session is retired as soon as the other
+copy stores it, because the actions are derived over the stored bars.
 

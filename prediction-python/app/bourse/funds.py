@@ -25,11 +25,35 @@ WHAT A ROW HERE IS
 * **Unadjusted, and checked to be safe that way.**  Across the five funds'
   5,846 consecutive session pairs TSETMC's reference price equals the previous
   close on all but two, and those two differ by exactly one rial.  A fund
-  whose reference ever restates beyond rounding (a unit split, a restated
-  close on a halt) is REFUSED rather than stored with a step in it that no
-  price made.
+  whose reference restates beyond rounding (a unit split, a restated close on
+  a halt) is REFUSED rather than stored with a step in it that no price made.
+  Only the pairs a run would WRITE are checked — a new close against its
+  neighbours — and a pair the served list could not have chained is not a
+  restatement: one of TSETMC's two CDN copies omits the whole 2023-03-27
+  session, so its 2023-03-28 reference (77,041, AYAR) is the missing
+  session's close, not the 2023-03-26 one it follows (75,820).  A pair that
+  skips a session TEDPIX records is therefore reported as a gap in the
+  served copy and not judged.  (Measured 2026-09-29: the copy with the
+  session and the copy without it were served five minutes apart, and the
+  second refused all three gold funds.)  That copy is also inconsistent with
+  itself once: Tala's 2021-12-15 close is 93,433 there and the next session
+  opens on 93,443, the close the other copy has.  A first ingest from that
+  copy refuses Tala for it — ten rials is not the exchange's rounding — and
+  the other copy stores it on a later run, after which the difference is a
+  reported restatement like any other.
+* **Not written into the live era.**  AYAR and TALA have BrsApi's intraday
+  mirror (provider ``tse_funds``) from 2026-07-21.  A daily close written into
+  a day that holds those observations is a second, different-source row for
+  the same day — TSETMC's official close differs from the last trade by a
+  median 0.32% and up to 7.2% on عیار — which changes what the day's close
+  reads as and fakes a provider disagreement.  So, exactly as
+  :mod:`app.jobs.tgju_backfill` does, only sessions strictly before the UTC
+  day of the symbol's first observation from ANY other source are written.
 * **Never overwritten.**  A close that disagrees with the stored one for the
-  same session fails that fund and writes nothing for it.
+  same session keeps the stored value and is reported as restated (TSETMC's
+  two copies differ on Tala's 2021-12-15 close by ten rials); only a list that
+  disagrees with most of what is stored fails the fund
+  (app.bourse.ingest.restatement_is_systematic).
 
 Each close also gets a ``raw_observations`` row holding the rial number TSETMC
 served, the audit trail for the division, exactly as the TGJU backfill keeps.
@@ -37,8 +61,9 @@ served, the audit trail for the division, exactly as the TGJU backfill keeps.
 from __future__ import annotations
 
 import logging
+from bisect import bisect_left, bisect_right
 from datetime import date, datetime
-from typing import Any, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.engine import Engine
@@ -47,12 +72,14 @@ from ..core.normalize import rial_to_toman
 from ..db import commodity_funds, ensure_utc, prices, raw_observations, utcnow
 from ..equities.adjust import Bar, parse_daily_list
 from ..jobs.tgju_backfill import close_stamp
+from ..db import market_index_values
 from .ingest import (
     PROVIDER_CODE,
+    RESTATED_EXAMPLES,
     MarketIngestFailed,
     _bulk_insert_ignore,
-    _close_enough,
     read_payload_file,
+    restatement_is_systematic,
 )
 from .parse import MarketParseError
 
@@ -73,6 +100,11 @@ RAW_UNIT = "IRR/unit"
 ROUNDING_RIALS = 1.0
 ROUNDING_RELATIVE = 1e-4
 
+# The exchange's session calendar a served list is checked against: TEDPIX,
+# the index every market-level fetch ingests first (backend-go
+# internal/bourse/bourse.go names the same code).
+TEDPIX = "32097828799138957"
+
 
 class FundRestated(MarketParseError):
     """TSETMC restated a fund's reference price: unadjusted closes across that
@@ -80,28 +112,99 @@ class FundRestated(MarketParseError):
 
 
 class FundContradiction(MarketParseError):
-    """A fund's served close disagrees with the stored one for a session."""
+    """A fund's served list disagrees with most of the stored closes it
+    overlaps: not a restatement of that fund's history."""
 
 
 def _rounding_apart(left: float, right: float) -> bool:
     return abs(left - right) <= max(ROUNDING_RIALS, ROUNDING_RELATIVE * max(abs(left), abs(right)))
 
 
-def reference_restatements(bars: Sequence[Bar]) -> list[tuple[date, float, float]]:
+def _between(sessions: Sequence[date], after: date, before: date) -> list[date]:
+    """Market sessions strictly between two dates; ``sessions`` ascending."""
+    lo = bisect_right(sessions, after)
+    hi = bisect_left(sessions, before)
+    return list(sessions[lo:hi])
+
+
+def reference_restatements(
+    bars: Sequence[Bar],
+    only: Optional[Iterable[date]] = None,
+    sessions: Optional[Sequence[date]] = None,
+) -> list[tuple[date, float, float]]:
     """Every session whose reference TSETMC restated, as (date, before, after).
 
     Pure.  Both of TSETMC's signals (see app.equities.adjust): a reference that
     differs from the previous close, and a zero-trade row whose own close
     differs from its reference.
+
+    ``only``, when given, limits the check to pairs with a session in it on
+    either side — the sessions a run would write.  ``sessions``, when given, is
+    the exchange's calendar (ascending): a pair that skips one of its sessions
+    was not served consecutively, and its reference is the skipped session's
+    close, so it is not judged here (:func:`served_gaps` names it).
     """
+    wanted = set(only) if only is not None else None
     out: list[tuple[date, float, float]] = []
     for prev, bar in zip(bars, bars[1:]):
+        if wanted is not None and bar.trade_date not in wanted and prev.trade_date not in wanted:
+            continue
+        if sessions and _between(sessions, prev.trade_date, bar.trade_date):
+            continue
         if not _rounding_apart(bar.price_yesterday, prev.final_close):
             out.append((bar.trade_date, prev.final_close, bar.price_yesterday))
     for bar in bars:
+        if wanted is not None and bar.trade_date not in wanted:
+            continue
         if not bar.traded and not _rounding_apart(bar.final_close, bar.price_yesterday):
             out.append((bar.trade_date, bar.price_yesterday, bar.final_close))
     return sorted(out)
+
+
+def served_gaps(
+    bars: Sequence[Bar], sessions: Sequence[date], only: Optional[Iterable[date]] = None
+) -> list[date]:
+    """The exchange sessions a served daily list skips between its first and
+    last row, ascending.  Pure.  A fund's list carries a row for every session
+    it was listed through (a zero-trade carry row when nothing traded), so a
+    skipped session is a gap in the copy served — or one of the few dates
+    TEDPIX carries that no daily list does (2024-08-07 and 2025-02-08 are
+    absent from all nineteen roster shares' lists too).  Reported, not
+    judged.  ``only`` limits it to the pairs :func:`reference_restatements`
+    would have judged, so a weekly run names the gaps next to what it writes
+    and not the same old ones every time."""
+    wanted = set(only) if only is not None else None
+    missing: list[date] = []
+    for prev, bar in zip(bars, bars[1:]):
+        if wanted is not None and bar.trade_date not in wanted and prev.trade_date not in wanted:
+            continue
+        missing.extend(_between(sessions, prev.trade_date, bar.trade_date))
+    return missing
+
+
+def _market_sessions(conn, first: date, last: date) -> list[date]:
+    """TEDPIX's stored sessions in [first, last], ascending; empty when no
+    index is stored, in which case every pair is judged (the strict rule)."""
+    t = market_index_values
+    return list(
+        conn.execute(
+            select(t.c.trade_date)
+            .where(and_(t.c.ins_code == TEDPIX, t.c.trade_date >= first, t.c.trade_date <= last))
+            .order_by(t.c.trade_date)
+        ).scalars()
+    )
+
+
+def _live_era_start(conn, symbol: str) -> Optional[datetime]:
+    """The first observation of ``symbol`` from any source but this one, of
+    any quality — the rule and the reasoning of tgju_backfill.LiveAnchor.cutoff:
+    the hazard is caused by the row existing, not by it being good."""
+    first = conn.execute(
+        select(func.min(prices.c.observed_at)).where(
+            and_(prices.c.symbol == symbol, prices.c.source != SOURCE)
+        )
+    ).scalar()
+    return ensure_utc(first) if first is not None else None
 
 
 def fund_roster(bind: Engine, include_disabled: bool = False) -> list[dict[str, Any]]:
@@ -150,20 +253,14 @@ def ingest_fund_closes(
             raise MarketParseError(f"{fund.symbol_fa} ({code}) is disabled in commodity_funds")
         symbol = fund.instrument_code
 
-        restated = reference_restatements(bars)
-        if restated:
-            shown = "; ".join(f"{d.isoformat()}: {a:,.0f} -> {b:,.0f}" for d, a, b in restated[:3])
-            raise FundRestated(
-                f"{fund.symbol_fa} ({code}): TSETMC restated the reference price on "
-                f"{len(restated)} session(s) ({shown}). Closes on either side of a "
-                "restatement are not comparable unadjusted, and this series stores them "
-                "unadjusted; nothing was written for this fund."
-            )
-
         traded = [b for b in bars if b.traded]
         carries = len(bars) - len(traded)
         settled = [b for b in traded if close_stamp(b.trade_date) <= at]
         unsettled = len(traded) - len(settled)
+        live_from = _live_era_start(conn, symbol)
+        live_day = live_from.date() if live_from is not None else None
+        in_live_era = [b for b in settled if live_day is not None and b.trade_date >= live_day]
+        settled = [b for b in settled if live_day is None or b.trade_date < live_day]
 
         stored = {
             ensure_utc(r.observed_at): float(r.value)
@@ -173,7 +270,8 @@ def ingest_fund_closes(
                 )
             )
         }
-        conflicts: list[str] = []
+        restated: list[dict[str, Any]] = []
+        new_bars: list[Bar] = []
         price_rows: list[dict[str, Any]] = []
         raw_rows: list[dict[str, Any]] = []
         for bar in settled:
@@ -181,9 +279,14 @@ def ingest_fund_closes(
             value = rial_to_toman(bar.final_close)
             old = stored.get(stamp)
             if old is not None:
-                if not _close_enough(old, value):
-                    conflicts.append(f"{bar.trade_date.isoformat()}: stored {old!r}, served {value!r}")
+                # One rial of the exchange's rounding is the same close in
+                # TSETMC's two copies (33,216 against 33,215 on عیار).
+                if not _rounding_apart(old * 10, bar.final_close):
+                    restated.append({
+                        "date": bar.trade_date.isoformat(), "stored": old, "served": value,
+                    })
                 continue
+            new_bars.append(bar)
             price_rows.append({
                 "symbol": symbol, "value": value, "currency": CURRENCY, "unit": UNIT,
                 "source": SOURCE, "observed_at": stamp, "collected_at": at, "quality": "ok",
@@ -205,11 +308,44 @@ def ingest_fund_closes(
                 "observed_at": stamp, "collected_at": at, "quality": "ok",
                 "dedupe_key": f"{PROVIDER_CODE}|{symbol}|close|{bar.trade_date.isoformat()}",
             })
-        if conflicts:
+        compared = len(settled) - len(new_bars)
+        if restatement_is_systematic(len(restated), compared):
+            shown = "; ".join(
+                f"{r['date']}: stored {r['stored']!r}, served {r['served']!r}" for r in restated[:3]
+            )
             raise FundContradiction(
-                f"{fund.symbol_fa} ({code}): the daily list contradicts {len(conflicts)} stored "
-                f"close(s) ({'; '.join(conflicts[:3])}). Nothing is overwritten; delete the "
-                "rows deliberately if TSETMC genuinely restated them."
+                f"{fund.symbol_fa} ({code}): the daily list contradicts {len(restated)} of the "
+                f"{compared} stored close(s) it overlaps ({shown}). That is not a restatement "
+                "of this fund's history but a different one; nothing was written. Delete the "
+                "rows deliberately if TSETMC genuinely changed them all."
+            )
+
+        # Restatements are judged only where this run WRITES: a new close
+        # against its neighbours, and the carry rows since the newest stored
+        # close. Re-judging the whole history on every run refused a fund for
+        # good the first time a copy of it was served with a session missing.
+        newest_stored = max(stored).date() if stored else None
+        judged = {b.trade_date for b in new_bars} | {
+            b.trade_date for b in bars
+            if not b.traded and (newest_stored is None or b.trade_date > newest_stored)
+        }
+        sessions = _market_sessions(conn, bars[0].trade_date, bars[-1].trade_date)
+        restatements = reference_restatements(bars, only=judged, sessions=sessions)
+        if restatements:
+            shown = "; ".join(
+                f"{d.isoformat()}: {a:,.0f} -> {b:,.0f}" for d, a, b in restatements[:3]
+            )
+            raise FundRestated(
+                f"{fund.symbol_fa} ({code}): TSETMC restated the reference price on "
+                f"{len(restatements)} session(s) this run would write ({shown}). Closes on "
+                "either side of a restatement are not comparable unadjusted, and this series "
+                "stores them unadjusted; nothing was written for this fund."
+            )
+        gaps = served_gaps(bars, sessions, only=judged)
+        if restated:
+            log.warning(
+                "fund %s: %d stored close(s) differ from TSETMC's current copy and were "
+                "kept; first %s", fund.symbol_fa, len(restated), restated[0],
             )
         before = len(stored)
         _bulk_insert_ignore(conn, prices, price_rows)
@@ -239,8 +375,17 @@ def ingest_fund_closes(
         "sessions_total": len(bars),
         "closes_inserted": int(count) - before,
         "closes_existing": len(settled) - len(price_rows),
+        "restated": len(restated),
+        "restated_examples": restated[:RESTATED_EXAMPLES],
         "carry_forward_skipped": carries,
         "unsettled_skipped": unsettled,
+        # Sessions on or after the first observation of another source: left
+        # to that source (module docstring).
+        "live_era_skipped": len(in_live_era),
+        "live_era_from": live_from.isoformat() if live_from is not None else None,
+        # Exchange sessions the served list skips: a gap in TSETMC's copy.
+        "served_gaps": len(gaps),
+        "served_gap_examples": [d.isoformat() for d in gaps[:RESTATED_EXAMPLES]],
         "first_date": first_day.isoformat() if first_day else None,
         "last_date": last_day.isoformat() if last_day else None,
         "last_close": rial_to_toman(newest.final_close) if newest else None,
@@ -294,4 +439,5 @@ __all__ = [
     "ingest_fund_closes",
     "ingest_fund_files",
     "reference_restatements",
+    "served_gaps",
 ]

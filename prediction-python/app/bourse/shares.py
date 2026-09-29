@@ -34,11 +34,16 @@ own transaction and its own entry in the report.
 inserts into, because it mirrors TSETMC's listing rather than curating one.
 A share TSETMC stops listing is marked ``listed = FALSE`` and never deleted —
 its history is still true, and the foreign keys into it RESTRICT — and a
-market watch that would delist more than half of what is listed is refused
-as a truncated response rather than believed.
+market watch that would delist more than half of what is listed — in the
+whole universe, or in any one market — is refused as a truncated response
+rather than believed.
 
 *A stored session is never overwritten.*  A day file that disagrees with a
-stored row fails THAT DAY, names the shares, and writes nothing for it.
+stored row keeps the stored row and names the share as restated; its rows for
+shares not yet stored that day are written (TSETMC's two CDN copies differed
+by one trade on two shares of 2026-09-28, which used to fail the whole day on
+every other run — app.bourse.ingest.restatement_is_systematic).  A file that
+disagrees with most of what is stored fails THAT DAY and writes nothing.
 
 *The day file's date is checked, not assumed.*  TSETMC's file carries no date
 (``dEven`` is 0 on every row), so the date is the one the fetch requested and
@@ -74,11 +79,13 @@ from ..db import (
 from ..equities.adjust import BarParseError, parse_deven
 from .ingest import (
     PROVIDER_CODE,
+    RESTATED_EXAMPLES,
     MarketIngestFailed,
     _bulk_insert_ignore,
     _close_enough,
     ingest_client_flows,
     read_payload_file,
+    restatement_is_systematic,
     settled_cutoff,
 )
 from .parse import (
@@ -103,6 +110,13 @@ FLOW_FLOOR = date(2025, 3, 21)
 # test, a fresh database) is never refused for ordinary churn.
 MAX_DELIST_FRACTION = 0.5
 DELIST_GUARD_MIN = 50
+# The same fraction is applied to each MARKET on its own: a watch missing the
+# whole Farabourse (354 of the 1,162 shares on 2026-09-29, 30%) passes the
+# universe-wide test above and would otherwise mark every one of them
+# unlisted until the next run.  The per-market guard needs at least
+# DELIST_GUARD_MARKET_MIN delistings in that market, so ordinary churn on the
+# ten-share SME board (or a small test universe) is never refused.
+DELIST_GUARD_MARKET_MIN = 5
 
 # The day-file date check.  At least DATE_CHECK_MIN shares must have a flow
 # row to compare against before a verdict is reached, and a share "agrees"
@@ -126,7 +140,8 @@ _IN_CHUNK = 500
 
 
 class SessionContradiction(MarketParseError):
-    """A day file disagrees with stored session rows; the whole day fails."""
+    """A day file disagrees with most of the stored session rows it overlaps;
+    the whole day fails."""
 
 
 class WrongSessionFile(MarketParseError):
@@ -303,6 +318,17 @@ def ingest_universe(
                 "rows). That is a truncated or partial response, not the market; nothing "
                 "was changed."
             )
+        held_by_market = Counter(existing[code].market for code in listed_before)
+        gone_by_market = Counter(existing[code].market for code in delisted)
+        for market, gone in sorted(gone_by_market.items()):
+            held = held_by_market[market]
+            if gone >= DELIST_GUARD_MARKET_MIN and gone > MAX_DELIST_FRACTION * held:
+                raise MarketParseError(
+                    f"this market watch would delist {gone} of the {held} listed {market} "
+                    f"shares (it lists {len(watch.shares)} shares in {watch.rows_total} "
+                    "rows). A whole market missing from the watch is a truncated or partial "
+                    "response, not a delisting; nothing was changed."
+                )
 
         inserts: list[dict[str, Any]] = []
         changes: list[dict[str, Any]] = []
@@ -470,7 +496,7 @@ def ingest_day_file(
                 select(t.c.ins_code, *[t.c[c] for c in columns]).where(t.c.trade_date == trade_date)
             ).mappings()
         }
-        conflicts: list[str] = []
+        restated: list[dict[str, Any]] = []
         pending: list[dict[str, Any]] = []
         for code, row in sessions.items():
             old = stored.get(code)
@@ -486,13 +512,20 @@ def ingest_day_file(
                 or (row[c] is not None and not _close_enough(float(old[c]), float(row[c])))
             ]
             if differing:
-                conflicts.append(f"{code} ({', '.join(differing[:3])})")
-        if conflicts:
+                restated.append({"ins_code": code, "fields": differing[:3]})
+        compared = len(sessions) - len(pending)
+        if restatement_is_systematic(len(restated), compared):
+            shown = "; ".join(f"{r['ins_code']} ({', '.join(r['fields'])})" for r in restated[:3])
             raise SessionContradiction(
-                f"day file for {trade_date.isoformat()} contradicts {len(conflicts)} stored "
-                f"session row(s): {'; '.join(conflicts[:3])}. A settled session is not "
-                "revised; nothing was written for this date. Delete the rows deliberately "
-                "if TSETMC genuinely restated them."
+                f"day file for {trade_date.isoformat()} contradicts {len(restated)} of the "
+                f"{compared} stored session row(s) it overlaps: {shown}. That is not a "
+                "restatement of this session but a different one; nothing was written for "
+                "this date. Delete the rows deliberately if TSETMC genuinely changed them."
+            )
+        if restated:
+            log.warning(
+                "day file %s: %d stored session row(s) differ from TSETMC's current copy "
+                "and were kept; first %s", trade_date.isoformat(), len(restated), restated[0],
             )
         before = len(stored)
         _bulk_insert_ignore(conn, t, pending)
@@ -540,6 +573,8 @@ def ingest_day_file(
         "rows_shares": len(sessions),
         "rows_inserted": inserted,
         "rows_existing": len(sessions) - len(pending),
+        "rows_restated": len(restated),
+        "restated_examples": restated[:RESTATED_EXAMPLES],
         "rows_invalid": len(invalid),
         "invalid_examples": invalid[:5],
         "date_check": date_check,

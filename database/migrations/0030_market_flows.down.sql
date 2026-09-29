@@ -9,6 +9,16 @@ DELETE FROM raw_observations
 WHERE provider_code = 'tsetmc_cdn' AND dedupe_key LIKE 'tsetmc_cdn|%|close|%';
 DELETE FROM prices WHERE source = 'tsetmc_cdn';
 
+-- 0029's index notes, where 0030 reworded them.
+UPDATE market_indices SET notes =
+  'Stored at one tenth of its value from 2026-08-16 onward (history 1,315,840 against a live 13,310,356 on 2026-09-29); corrected by scale_exp.'
+WHERE ins_code = '71704845530629737'
+  AND notes LIKE 'One of the two copies of this history TSETMC''s CDN serves%';
+UPDATE market_indices SET notes =
+  'Carries 9 decimal-shift steps, most of them in January-February 2026 alternating between scales day to day; corrected by scale_exp.'
+WHERE ins_code = '69932667409721265'
+  AND notes LIKE 'One of the two copies of this history TSETMC''s CDN serves%';
+
 DROP TABLE IF EXISTS commodity_funds;
 DELETE FROM instruments WHERE code IN ('IR_SILVER_FUND_SILVER','IR_SILVER_FUND_SIMIN');
 UPDATE instruments SET notes = '' WHERE code IN ('IR_GOLD_FUND_AYAR','IR_GOLD_FUND_TALA');

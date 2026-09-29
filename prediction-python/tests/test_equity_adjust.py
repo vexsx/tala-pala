@@ -602,24 +602,117 @@ def test_re_ingest_is_idempotent(seeded, payload):
         ).scalar() == 1
 
 
-def test_a_payload_that_contradicts_a_stored_bar_is_refused(seeded, payload):
-    """TSETMC does not revise a settled session, so a disagreement is not a revision."""
-    ingest_payload(seeded, payload, ins_code=FOOLAD)
+def test_a_restated_bar_is_kept_reported_and_does_not_block_new_sessions(seeded, payload):
+    """TSETMC's CDN served two copies of these histories five minutes apart on
+    2026-09-29, disagreeing on four roster bars by a trade or two. The stored
+    bar is kept and named; the payload's NEW sessions are still stored."""
+    rows = copy.deepcopy(payload["closingPriceDaily"])
+    newest = max(r["dEven"] for r in rows)
+    ingest_payload(seeded, {"closingPriceDaily": [r for r in rows if r["dEven"] != newest]},
+                   ins_code=FOOLAD)
 
     tampered = copy.deepcopy(payload)
     for row in tampered["closingPriceDaily"]:
-        if row["dEven"] == 20260909:
-            row["pClosing"] = 9999.0
+        if row["dEven"] == 20211215:
+            row["qTotTran5J"] += 1_000  # one more trade in the other copy
+    report = ingest_payload(seeded, tampered, ins_code=FOOLAD)
 
-    with pytest.raises(BarParseError, match="contradicts"):
-        ingest_payload(seeded, tampered, ins_code=FOOLAD)
+    assert report["bars_inserted"] == 1  # the newest session, stored anyway
+    assert report["bars_restated"] == 1
+    [example] = report["restated_examples"]
+    assert example["date"] == "2021-12-15"
+    assert example["served"]["volume"] == example["stored"]["volume"] + 1_000
+    with seeded.connect() as conn:
+        kept = conn.execute(
+            select(equity_bars.c.volume).where(equity_bars.c.trade_date == date(2021, 12, 15))
+        ).scalar()
+    assert int(kept) == example["stored"]["volume"]  # never overwritten
 
+
+def test_a_payload_disagreeing_with_most_of_the_store_is_refused(seeded, payload):
+    """A unit change, or some other series: not a restatement of this one."""
+    ingest_payload(seeded, payload, ins_code=FOOLAD)
+    tenfold = copy.deepcopy(payload)
+    for row in tenfold["closingPriceDaily"]:
+        row["pClosing"] *= 10
+        row["priceYesterday"] *= 10
+    with pytest.raises(BarParseError, match="not a restatement of this history"):
+        ingest_payload(seeded, tenfold, ins_code=FOOLAD)
     with seeded.connect() as conn:
         newest = conn.execute(
             select(equity_bars.c.final_close)
             .where(equity_bars.c.trade_date == date(2026, 9, 9))
         ).scalar()
     assert float(newest) == 2881.0  # untouched
+
+
+def _drop_session(payload, deven):
+    """The copy of a history TSETMC's CDN served without one session."""
+    short = copy.deepcopy(payload)
+    short["closingPriceDaily"] = [r for r in short["closingPriceDaily"] if r["dEven"] != deven]
+    return short
+
+
+def test_a_copy_missing_a_session_leaves_no_phantom_action_once_the_session_arrives(
+    seeded, payload
+):
+    """MEASURED 2026-09-29: one CDN copy lacked 2023-03-27 for every roster
+    share. Detected over that copy, 2023-03-28's reference (the missing
+    session's close) against 2023-03-26's close read as a corporate action —
+    اخابر ×1.0627 — and when the other copy stored the 2023-03-27 bar the
+    action stayed, rescaling every adjusted price before it. The actions are
+    now derived over the STORED bars, so the arriving session retires it."""
+    rows = sorted(payload["closingPriceDaily"], key=lambda r: r["dEven"])
+    # A traded session whose close moved, so dropping it leaves a reference
+    # that disagrees with the close before it.
+    gap = next(r for i, r in enumerate(rows[1:-1], 1)
+               if r["qTotTran5J"] > 0 and r["dEven"] > 20230101
+               and r["pClosing"] != rows[i - 1]["pClosing"]
+               and rows[i + 1]["priceYesterday"] == r["pClosing"])
+    gap_day = date(gap["dEven"] // 10000, gap["dEven"] // 100 % 100, gap["dEven"] % 100)
+
+    first = ingest_payload(seeded, _drop_session(payload, gap["dEven"]), ins_code=FOOLAD)
+    assert first["actions_inserted"] == 32  # the 31 real ones and a phantom
+
+    second = ingest_payload(seeded, payload, ins_code=FOOLAD)
+    assert second["bars_inserted"] == 1  # the session, in the middle of the history
+    assert second["actions_retired"] == 1
+    [retired] = second["retired_examples"]
+    assert date.fromisoformat(retired["prev_trade_date"]) < gap_day
+    assert second["status"] == "validated"
+
+    # The store now says exactly what one ingest of the complete copy says.
+    with seeded.connect() as conn:
+        stored = conn.execute(
+            select(corporate_actions.c.effective_date, corporate_actions.c.cumulative_factor)
+            .order_by(corporate_actions.c.effective_date)
+        ).all()
+    expected = adjust(parse_daily_list(payload, ins_code=FOOLAD)).actions
+    assert [r.effective_date for r in stored] == [a.effective_date for a in expected]
+    for row, action in zip(stored, expected):
+        assert float(row.cumulative_factor) == pytest.approx(action.cumulative_factor, rel=1e-12)
+
+
+def test_a_session_stored_between_an_actions_bars_supersedes_its_evidence(seeded, payload):
+    """A real action measured across a missing session is measured again from
+    the session that now precedes it."""
+    series = adjust(parse_daily_list(payload, ins_code=FOOLAD))
+    action = next(a for a in series.actions if a.effective_date.year >= 2015)
+    before = action.prev_trade_date
+    deven = before.year * 10000 + before.month * 100 + before.day
+    ingest_payload(seeded, _drop_session(payload, deven), ins_code=FOOLAD)
+    report = ingest_payload(seeded, payload, ins_code=FOOLAD)
+    assert report["actions_superseded"] == 1
+    [example] = report["superseded_examples"]
+    assert example["effective_date"] == action.effective_date.isoformat()
+    assert example["now_measured_from"] == before.isoformat()
+    with seeded.connect() as conn:
+        row = conn.execute(
+            select(corporate_actions.c.prev_trade_date, corporate_actions.c.ratio)
+            .where(corporate_actions.c.effective_date == action.effective_date)
+        ).one()
+    assert row.prev_trade_date == before
+    assert float(row.ratio) == pytest.approx(action.ratio, rel=1e-12)
 
 
 def test_an_ins_code_outside_the_roster_is_refused(engine, payload):

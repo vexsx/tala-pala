@@ -95,10 +95,11 @@ export-portfolio: ## Export portfolio CSV: make export-portfolio TOKEN=<jwt> [OU
 # market's money flow: the market watch and sector names, every listed share's
 # حقیقی/حقوقی history (trimmed to what the server lacks; non-roster shares from
 # 2025-03-21), the day file of every market session not yet stored, and the
-# commodity funds' daily closes. ~1,500 requests at <= 3/s: expect ~15 minutes
-# for the first run and ~9 for a weekly one. ARGS="--bars-only" restores the
-# bars-only behaviour, "--no-shares" the 0029 roster-only money flow, and
-# "--dry-run" prints what the bulk loop would fetch without fetching it.
+# commodity funds' daily closes. ~1,500 requests started 0.5 s apart: expect
+# ~20 minutes for the first run and ~12 for a weekly one. ARGS="--bars-only"
+# restores the bars-only behaviour, "--no-shares" the 0029 roster-only money
+# flow, and "--dry-run" downloads only the small payloads and prints what the
+# bulk loop would fetch without fetching it.
 refresh-equities: ## Refresh Tehran equities, the market, every share's money flow and the commodity funds from TSETMC — run OFF the server (ARGS=...)
 	python3 scripts/tsetmc_fetch.py $(ARGS)
 

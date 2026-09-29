@@ -14,13 +14,12 @@ it is a mirror of TSETMC's listing rather than a curated roster; that lives in
 :mod:`app.bourse.shares`, and money flow is refused for any insCode it does
 not carry.
 
-*A stored value is never overwritten.*  TSETMC does not revise a settled
-session, so a payload that disagrees with a stored row fails that item and
-names the dates.  There is exactly ONE exception, and it is narrow: an index
-value restated by an exact power of ten is TSETMC repairing (or re-breaking)
-the decimal-shift defect this package corrects for.  It changes no corrected
-value, so it is accepted, the stored raw value is kept, and the report counts
-it.
+*A stored value is never overwritten.*  A payload that disagrees with a
+stored row keeps the stored row, and the disagreement is COUNTED and named in
+the report (see :func:`restatement_is_systematic` for why it no longer fails
+the item, and when it still does).  An index value restated by a power of ten
+is TSETMC repairing (or re-breaking) the decimal-shift defect this package
+corrects for: it changes no corrected value, and is counted apart.
 
 *The correction is recomputed, the value is not.*  ``scale_exp`` is derived
 from the whole stored series on every ingest, so a new session that shifts the
@@ -115,6 +114,11 @@ class MarketIngestFailed(RuntimeError):
         self.report = report
 
 
+class IndexContradiction(MarketParseError):
+    """An index payload disagrees with most of the stored values it overlaps:
+    not a restatement of that series (see restatement_is_systematic)."""
+
+
 # --- helpers -----------------------------------------------------------------
 
 
@@ -125,14 +129,71 @@ def _close_enough(left: float, right: float) -> bool:
     return abs(left - right) <= 1e-12 * scale
 
 
+# TSETMC SERVES TWO COPIES OF ITS HISTORY, AND THEY PRINT AN INDEX DIFFERENTLY.
+# Measured 2026-09-29: GetIndexB2History fetched at 12:26 and again at 12:31
+# UTC disagreed on 64 of the 71 indices, on 8 to 437 dates each.  One copy
+# prints a value to six significant digits, the other to one decimal —
+# 3,654,230.0 against 3,654,237.6, 1,027,040.0 against 1,027,044.3, 148.3
+# against 148.4 — so the two differ by less than a relative 1e-5 (six digits
+# truncated) or a tenth of a point (one decimal).  That is one value printed
+# twice, and it is compared as one.  Across the 71 histories of three runs
+# that day (512,838 date pairs) it leaves 231 power-of-ten stretches
+# (accepted, below) and exactly three restatements, one date each: -0.72% on
+# 2023-08-12, -0.51% on 2023-08-29 and -0.12% on 2024-01-17 (reported, below).
+INDEX_PRINT_RELATIVE = 1e-5
+INDEX_PRINT_ABSOLUTE = 0.1
+
+
+def _same_index_print(left: float, right: float) -> bool:
+    """Whether two index values are one value in TSETMC's two print formats."""
+    limit = max(INDEX_PRINT_ABSOLUTE, INDEX_PRINT_RELATIVE * max(abs(left), abs(right)))
+    # The float of 148.4 - 148.3 is 0.10000000000000853: a hair of slack so a
+    # difference of exactly one printed tenth is not refused on binary noise.
+    return abs(left - right) <= limit * (1 + 1e-9)
+
+
 def _power_of_ten_apart(stored: float, served: float) -> bool:
-    """True when two values differ by exactly 10^k, k in 1..3 either way."""
+    """True when two values differ by 10^k, k in 1..3 either way, to within
+    the print tolerance: the copy without the decimal-shift stretch prints
+    10,060,226.2 where the stretched one printed 1,006,020.0."""
     if stored <= 0 or served <= 0:
         return False
     k = round(math.log10(served / stored))
     if k == 0 or abs(k) > 3:
         return False
-    return _close_enough(served, stored * 10 ** k)
+    return _same_index_print(served, stored * 10 ** k)
+
+
+# A RESTATEMENT IS REPORTED; IT NO LONGER STOPS THE ITEM.  The rule used to be
+# that a payload disagreeing with ANY stored row failed that index, share, day
+# or fund, on the ground that TSETMC does not revise a settled session.  It
+# does — or rather its CDN answers with two copies that disagree, minutes
+# apart (measured 2026-09-29, three runs): 4 roster bars on 2021-12-15 and
+# 2022-03-26 by a trade or two, the 2026-09-28 day file by one trade on two
+# shares, Tala's close on 2021-12-15 by ten rials, one copy lacking the whole
+# 2023-03-27 session.  Failing the item made every weekly run fail whichever
+# items the other copy happened to answer for, and failing a share's flows on
+# its ten-row overlap stalled it FOR GOOD: the same ten rows are re-sent every
+# week, so nothing newer was ever stored until a person deleted a row.
+#
+# So a row that disagrees keeps the stored value (never overwritten), is
+# counted and named in the report, and the rows that are NEW are stored.  What
+# still fails the item is a disagreement that is systematic rather than a
+# restatement — more than half of the stored rows it overlaps, when at least
+# SYSTEMATIC_MIN_COMPARED were compared: a unit change, or a file that is not
+# the series it claims to be.  (The insCode inside every payload is checked
+# against the one asked for before any of this, and a day file's date against
+# the stored flows, so "some other series" is already refused upstream.)
+SYSTEMATIC_FRACTION = 0.5
+SYSTEMATIC_MIN_COMPARED = 4
+# Examples of restated rows carried in a report; the count is exact.
+RESTATED_EXAMPLES = 5
+
+
+def restatement_is_systematic(restated: int, compared: int) -> bool:
+    """Whether ``restated`` of ``compared`` overlapping rows is too many to
+    be a restatement of this series.  Pure."""
+    return compared >= SYSTEMATIC_MIN_COMPARED and restated > SYSTEMATIC_FRACTION * compared
 
 
 def _bulk_insert_ignore(conn: Connection, table, rows: Sequence[dict]) -> None:
@@ -232,8 +293,9 @@ def ingest_index_history(
                 select(t.c.trade_date, t.c.close, t.c.scale_exp).where(t.c.ins_code == code)
             )
         }
-        conflicts: list[str] = []
+        restated: list[dict[str, Any]] = []
         restated_scale = 0
+        compared = 0
         pending: list[dict[str, Any]] = []
         for v in settled:
             existing = stored.get(v.trade_date)
@@ -250,23 +312,32 @@ def ingest_index_history(
                     }
                 )
                 continue
+            compared += 1
             old = float(existing.close)
-            if _close_enough(old, v.close):
+            if _same_index_print(old, v.close):
                 continue
             if _power_of_ten_apart(old, v.close):
                 restated_scale += 1
                 continue
-            conflicts.append(
-                f"{v.trade_date.isoformat()}: stored {old!r}, payload {v.close!r}"
+            restated.append(
+                {"date": v.trade_date.isoformat(), "stored": old, "served": v.close}
             )
-        if conflicts:
-            more = "" if len(conflicts) <= 3 else f" and {len(conflicts) - 3} more"
-            raise MarketParseError(
-                f"index {code}: the payload contradicts {len(conflicts)} stored value(s) "
-                f"({'; '.join(conflicts[:3])}{more}). A settled index value is not "
-                "revised, and the only restatement accepted is an exact power of ten. "
-                "If TSETMC genuinely restated this index, delete its rows from "
-                "market_index_values and re-run the fetch; nothing is overwritten here."
+        if restatement_is_systematic(len(restated), compared):
+            shown = "; ".join(
+                f"{r['date']}: stored {r['stored']!r}, payload {r['served']!r}"
+                for r in restated[:3]
+            )
+            raise IndexContradiction(
+                f"index {code}: the payload contradicts {len(restated)} of the {compared} "
+                f"stored value(s) it overlaps ({shown}). That is not a restatement of "
+                "this series but a different one; nothing was written. If TSETMC "
+                "genuinely changed the whole series, delete its rows from "
+                "market_index_values and re-run the fetch."
+            )
+        if restated:
+            log.warning(
+                "index %s: %d stored value(s) differ from TSETMC's current copy and were "
+                "kept; first %s", code, len(restated), restated[0],
             )
 
         # The merged series — every stored value plus every new one — is what
@@ -333,6 +404,10 @@ def ingest_index_history(
         "values_existing": len(settled) - len(pending),
         "unsettled_skipped": unsettled,
         "restated_by_power_of_ten": restated_scale,
+        # Stored values TSETMC's copy now disagrees with beyond its print
+        # formats: kept as stored, and named here.
+        "restated": len(restated),
+        "restated_examples": restated[:RESTATED_EXAMPLES],
         "dropped_nonpositive": history.dropped_nonpositive,
         "scale_breaks": result.scale_breaks,
         "rows_rescaled": result.rows_rescaled,
@@ -491,9 +566,10 @@ def ingest_market_values(
 
 
 class FlowContradiction(MarketParseError):
-    """A client-type payload disagrees with a stored session.  Its own type so
-    a report can tell "TSETMC said something different" from "the file was
-    bad" without matching on message text."""
+    """A client-type payload disagrees with most of the stored sessions it
+    overlaps (restatement_is_systematic).  Its own type so a report can tell
+    "TSETMC said something different" from "the file was bad" without
+    matching on message text."""
 
 
 def ingest_client_flows(
@@ -511,8 +587,11 @@ def ingest_client_flows(
     Only the stored rows from the payload's first settled date onward are read
     for the overlap comparison: a fetch ships a trimmed history (its overlap
     plus what is new), and re-reading all of فولاد's 3,850 stored sessions to
-    compare ten would be most of the work.  The share's coverage columns are
-    recomputed from the table in the same transaction.
+    compare ten would be most of the work.  An overlap row TSETMC now states
+    differently keeps its stored value and is reported as restated; the new
+    rows are stored beside it (module docstring, restatement_is_systematic).
+    The share's coverage columns are recomputed from the table in the same
+    transaction.
     """
     collected_at = ensure_utc(now) or utcnow()
     parsed = parse_client_types(payload, ins_code)
@@ -551,7 +630,7 @@ def ingest_client_flows(
                 )
             ).mappings()
         }
-        conflicts: list[str] = []
+        restated: list[dict[str, Any]] = []
         pending: list[dict[str, Any]] = []
         for row in rows:
             existing = stored.get(row["trade_date"])
@@ -562,12 +641,23 @@ def ingest_client_flows(
                 c for c in columns if not _close_enough(float(existing[c]), float(row[c]))
             ]
             if differing:
-                conflicts.append(f"{row['trade_date'].isoformat()} ({', '.join(differing[:3])})")
-        if conflicts:
+                restated.append(
+                    {"date": row["trade_date"].isoformat(), "fields": differing[:3]}
+                )
+        compared = len(rows) - len(pending)
+        if restatement_is_systematic(len(restated), compared):
+            shown = "; ".join(f"{r['date']} ({', '.join(r['fields'])})" for r in restated[:3])
             raise FlowContradiction(
                 f"{share.symbol_fa} ({code}): the client-type payload contradicts "
-                f"{len(conflicts)} stored session(s): {'; '.join(conflicts[:3])}. Nothing is "
-                "overwritten; delete the rows deliberately if TSETMC genuinely restated them."
+                f"{len(restated)} of the {compared} stored session(s) it overlaps: {shown}. "
+                "That is not a restatement of this share's history but a different one; "
+                "nothing was written. Delete the rows deliberately if TSETMC genuinely "
+                "changed them all."
+            )
+        if restated:
+            log.warning(
+                "flows %s (%s): %d stored session(s) differ from TSETMC's current copy and "
+                "were kept; first %s", share.symbol_fa, code, len(restated), restated[0],
             )
         before = conn.execute(
             select(func.count()).select_from(t).where(t.c.ins_code == code)
@@ -595,6 +685,8 @@ def ingest_client_flows(
         "sessions_total": len(parsed.rows),
         "sessions_inserted": int(after) - int(before),
         "sessions_existing": len(rows) - len(pending),
+        "restated": len(restated),
+        "restated_examples": restated[:RESTATED_EXAMPLES],
         "unsettled_skipped": unsettled,
         "first_date": rows[0]["trade_date"].isoformat(),
         "last_date": rows[-1]["trade_date"].isoformat(),
@@ -751,7 +843,9 @@ def ingest_market_files(
 __all__ = [
     "SETTLED_AFTER_HOUR",
     "FlowContradiction",
+    "IndexContradiction",
     "MarketIngestFailed",
+    "restatement_is_systematic",
     "settled_cutoff",
     "index_roster",
     "ingest_client_flows",

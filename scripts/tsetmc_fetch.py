@@ -82,12 +82,26 @@ ingest. --no-shares skips (a)-(c) and fetches the roster's money flow the
 0029 way instead.
 
 About 1,160 histories and, on the first run, ~305 day files (TEDPIX has 305
-distinct sessions from the floor to 2026-09-28) is ~1,500 requests: this is the one loop here that is large, so it is the one that is
-built to lose a request rather than the run. A failed download is reported
-against its insCode or date and the loop carries on; the run exits 1 at the
-end if anything failed. Requests are spaced so the run never exceeds three a
-second overall (--delay), which puts a full run at roughly 9-15 minutes —
-~9 for a weekly refresh, ~15 for the first one.
+distinct sessions from the floor to 2026-09-28) is ~1,500 requests: this is
+the one loop here that is large, so it is the one that is built to lose a
+request rather than the run. A failed download is reported against its
+insCode or date and the loop carries on; the run exits 1 at the end if
+anything failed. Requests start 0.5 s apart by default (--delay; never closer
+than a third of a second), about two a second, which puts a full run at
+roughly 12-20 minutes — ~12 for a weekly refresh, ~20 for the first one.
+
+TSETMC's CDN answers with two copies of the same histories (measured
+2026-09-29: five minutes apart, one copy printed indices to six significant
+digits, lacked the whole 2023-03-27 session and differed by a trade or two on
+a handful of bars and day-file rows). A stored row is never overwritten; one
+the other copy states differently is kept and listed at the end under
+RESTATED, which does not fail the run. What fails it is listed under FAILED
+and CONTRADICTIONS: every per-item error of every ingest call, the bars and
+the market ingest included.
+
+The run's copy inside the prediction container (/tmp/tsetmc-<run>) is removed
+once the ingest calls are done; the host archive under backups/tsetmc/<run>
+is what a re-ingest or a diagnosis reads, and it is kept.
 
 Usage:
     python3 scripts/tsetmc_fetch.py --dry-run              # plan + small downloads only
@@ -196,11 +210,13 @@ TEHRAN_OFFSET = timedelta(hours=3, minutes=30)
 SETTLED_AFTER_HOUR = 15   # app.bourse.ingest.SETTLED_AFTER_HOUR
 EARLIEST_FLOOR = date(2008, 1, 1)
 
-# Politeness: at most three requests a second, overall. --delay is the gap
-# between the STARTS of consecutive requests, so a slow response eats into it
-# rather than adding to it.
+# Politeness: about two requests a second by default, and never more than
+# three. --delay is the gap between the STARTS of consecutive requests, so a
+# slow response eats into it rather than adding to it. 0.5 s is the spacing
+# every other TSETMC and TGJU request in this repo keeps; the floor exists
+# for an operator who knows why they need a faster run.
 MIN_REQUEST_INTERVAL = 1 / 3
-DEFAULT_DELAY = 0.35
+DEFAULT_DELAY = 0.5
 
 # The smallest history in the seeded roster (ذوب, listed 2021-12) is 361 KB;
 # فولاد's is 1.4 MB. A WAF page, an empty result or a truncated transfer is
@@ -751,6 +767,23 @@ class Failures:
         return bool(self.items)
 
 
+class Restated:
+    """Stored rows TSETMC's current copy states differently: kept as stored,
+    listed at the end, and NOT a failure of the run (see the module
+    docstring). A gap in a served copy and a retired or superseded corporate
+    action are listed here too — each is the store being more complete than
+    one copy, not the run going wrong."""
+
+    def __init__(self) -> None:
+        self.items: list[tuple[str, str, str]] = []   # (kind, key, what)
+
+    def add(self, kind: str, key: str, what: str) -> None:
+        self.items.append((kind, key, what))
+
+    def __bool__(self) -> bool:
+        return bool(self.items)
+
+
 def _progress(label: str, done: int, total: int, started: float) -> None:
     elapsed = time.monotonic() - started
     rate = done / elapsed if elapsed > 0 else 0.0
@@ -927,7 +960,26 @@ def _post_ingest(host: str, url: str, body: dict, remote_dir: str,
         raise RemoteError(f"the ingest did not return JSON: {text[:500]}") from exc
 
 
-def _print_bars_report(report: dict) -> None:
+# The container copies this script makes, and the only thing it ever removes
+# inside the container.
+CONTAINER_DIR_RE = re.compile(r"\A/tmp/tsetmc-[0-9]{8}T[0-9]{6}Z\Z")
+
+
+def _remove_container_copy(host: str, container_dir: str) -> None:
+    """Remove this run's copy from the prediction container. The name is the
+    one run() generated from the wall clock, checked again here because it
+    goes into a root shell's ``rm -rf``."""
+    if not CONTAINER_DIR_RE.match(container_dir):
+        raise RemoteError(f"refusing to remove {container_dir!r}: not a run copy this "
+                          "script made")
+    inner = "rm -rf -- " + shlex.quote(container_dir)
+    _ssh(host, f"cd {shlex.quote(COMPOSE_DIR)} && sudo docker compose exec -T "
+               f"prediction-service sh -c {shlex.quote(inner)}", capture=True)
+
+
+def _print_bars_report(report: dict, failures: "Failures", restated: "Restated") -> None:
+    """The bars ingest's report. Every per-symbol error goes into `failures`,
+    so it reaches the run's FAILED summary rather than scrolling past."""
     print(f"\nadjustment : {report.get('adjustment_version')}")
     print(f"validated  : {report.get('validated')}")
     print(f"refused    : {report.get('refused')}")
@@ -940,11 +992,22 @@ def _print_bars_report(report: dict) -> None:
               f"adj=x{result['adjusted_ratio']:.2f}")
         if result.get("refusal_reason"):
             print(f"    {result['refusal_reason']}")
+        if result.get("bars_restated"):
+            restated.add("bars", symbol, f"{result['bars_restated']} stored bar(s) kept; e.g. "
+                         f"{result.get('restated_examples', [])[:2]}")
+        for key, what in (("actions_retired", "retired"), ("actions_superseded", "superseded")):
+            if result.get(key):
+                examples = result.get(f"{what}_examples", [])[:2]
+                restated.add("actions", symbol, f"{result[key]} corporate action(s) {what}: a "
+                             f"session stored since lies between their bars; {examples}")
     for error in report.get("errors") or []:
-        print(f"  ERROR {error['path']}: {error['error']}: {error['message']}")
+        failures.add("ingest bars", error["path"], f"{error['error']}: {error['message']}")
 
 
-def _print_market_report(report: dict) -> None:
+def _print_market_report(report: dict, failures: "Failures", restated: "Restated",
+                         contradictions: list) -> None:
+    """The market ingest's report. Every per-item error goes into `failures`
+    (a contradiction into `contradictions`), so it reaches the run's summary."""
     indices = report.get("indices") or {}
     print(f"\nindex check: {report.get('check_version')}")
     print(f"indices    : {len(indices)} ingested, {report.get('validated')} validated, "
@@ -959,6 +1022,10 @@ def _print_market_report(report: dict) -> None:
     for r in indices.values():
         if r.get("refusal_reason"):
             print(f"  REFUSED {r['name_fa']}: {r['refusal_reason']}")
+        if r.get("restated"):
+            restated.add("index", f"{r['ins_code']} {r['name_fa']}",
+                         f"{r['restated']} stored value(s) kept; e.g. "
+                         f"{r.get('restated_examples', [])[:2]}")
     for market, r in sorted((report.get("market_values") or {}).items()):
         print(f"market val : {market:<10} {r['values_inserted']:>5} inserted, "
               f"{r.get('values_revised', 0)} restated by TSETMC, "
@@ -970,6 +1037,11 @@ def _print_market_report(report: dict) -> None:
     if flows:
         print(f"money flow : {len(flows)} roster symbol(s), "
               f"{sum(r['sessions_inserted'] for r in flows.values())} session(s) inserted")
+        for symbol, r in sorted(flows.items()):
+            if r.get("restated"):
+                restated.add("flows", f"{r['ins_code']} {symbol}",
+                             f"{r['restated']} stored session(s) kept; e.g. "
+                             f"{r.get('restated_examples', [])[:2]}")
     snap = report.get("snapshot") or {}
     for market in ("bourse", "farabourse"):
         if market in snap:
@@ -979,14 +1051,22 @@ def _print_market_report(report: dict) -> None:
         print(f"sectors    : {snap['sectors']['rows']} rows, "
               f"{snap['sectors']['inserted']} inserted")
     for error in report.get("errors") or []:
-        print(f"  ERROR [{error['kind']}] {error['path']}: {error['error']}: "
-              f"{error['message']}")
+        if error["error"] in CONTRADICTIONS:
+            contradictions.append((error["kind"], error["path"], error["message"]))
+        else:
+            failures.add(f"ingest {error['kind']}", error["path"],
+                         f"{error['error']}: {error['message']}")
 
 
-CONTRADICTIONS = {"FlowContradiction", "SessionContradiction", "FundContradiction"}
+# The error types that mean "TSETMC's copy disagrees with most of what is
+# stored", listed apart from the other failures.
+CONTRADICTIONS = {"FlowContradiction", "SessionContradiction", "FundContradiction",
+                  "IndexContradiction"}
 
 
-def _print_universe_report(report: dict) -> None:
+def _print_universe_report(report: dict, failures: "Failures") -> None:
+    """The universe part's report. A failed sector-names file or a refused
+    market watch goes into `failures`, so it is in the run's FAILED summary."""
     u = report.get("universe") or {}
     print(f"\nuniverse   : {u.get('shares')} shares in {u.get('rows_total')} market-watch rows "
           f"{u.get('markets')} {u.get('boards')}")
@@ -1004,7 +1084,8 @@ def _print_universe_report(report: dict) -> None:
         print(f"sectors    : {sectors['listed']} TSETMC names; added {sectors['added'] or 'none'}, "
               f"renamed {sectors['renamed'] or 'none'}")
     for error in report.get("errors") or []:
-        print(f"  ERROR [{error['kind']}] {error['name']}: {error['error']}: {error['message']}")
+        failures.add(f"ingest {error['kind']}", error["name"],
+                     f"{error['error']}: {error['message']}")
 
 
 def _print_chunk_errors(report: dict, contradictions: list, failures: Failures) -> None:
@@ -1017,12 +1098,23 @@ def _print_chunk_errors(report: dict, contradictions: list, failures: Failures) 
                          f"{error['error']}: {error['message']}")
 
 
+def _note_restated(part: str, items: Mapping[str, dict], restated: "Restated") -> None:
+    """A chunk's restated rows, into the run's RESTATED list."""
+    for key, r in sorted(items.items()):
+        count = r.get("restated") if part == "flows" else r.get("rows_restated")
+        if count:
+            restated.add(part, key, f"{count} stored row(s) kept; e.g. "
+                         f"{r.get('restated_examples', [])[:2]}")
+
+
 def _ingest_chunks(post, part: str, total: int, chunk: int, manifest: str,
-                   failures: Failures, contradictions: list) -> dict:
-    """Walk one part of the manifest in chunks. A chunk whose call fails as a
-    whole (every item failed: the service answers 502, which wget turns into a
-    bare exit status) is reported and the walk continues with the next one;
-    the per-item reasons are in the prediction service's log and Issues tab."""
+                   failures: Failures, contradictions: list, restated: "Restated") -> dict:
+    """Walk one part of the manifest in chunks. Every item a chunk failed on
+    comes back in its report — the service answers 200 with the whole report
+    even when every item of the chunk failed (``all_failed``), because wget
+    drops the body of an error answer — and each is a failure of the run. A
+    call that fails outright (ssh, or the service down) fails its chunk, and
+    the walk continues with the next one."""
     totals = Counter()
     items: dict[str, dict] = {}
     offset = 0
@@ -1032,14 +1124,14 @@ def _ingest_chunks(post, part: str, total: int, chunk: int, manifest: str,
             report = post(SHARE_INGEST_URL, body)
         except RemoteError as exc:
             failures.add(f"ingest {part}", f"[{offset}:{offset + chunk}]",
-                         f"the whole chunk failed ({exc}); per-item reasons are in the "
-                         "prediction service's log")
+                         f"the call for this chunk failed ({exc})")
             offset += chunk
             continue
         items.update(report.get("items") or {})
         totals["succeeded"] += report.get("succeeded", 0)
         totals["failed"] += report.get("failed", 0)
         _print_chunk_errors(report, contradictions, failures)
+        _note_restated(part, report.get("items") or {}, restated)
         next_offset = report.get("next_offset")
         offset = next_offset if isinstance(next_offset, int) and next_offset > offset else total
     return {"items": items, **totals}
@@ -1374,15 +1466,21 @@ def run(args: argparse.Namespace) -> int:
         return f"{container_dir}/{path.name}"
 
     copied = False
+    # Whether a copy into the container was attempted at all: a copy that
+    # succeeded before its ingest call failed must still be removed.
+    touched = False
 
     def post(url: str, body: dict) -> dict:
-        nonlocal copied
+        nonlocal copied, touched
+        touched = True
         report = _post_ingest(args.host, url, body, remote_dir, container_dir,
                               copy_first=not copied)
         copied = True
         return report
 
     exit_code = 1 if failures else 0
+    restated = Restated()
+    contradictions: list[tuple[str, str, str]] = []
     ingest_started = time.monotonic()
     if bar_files:
         # The ingest body names PATHS, not payloads: twenty histories are ~28 MB
@@ -1400,9 +1498,7 @@ def run(args: argparse.Namespace) -> int:
         except RemoteError as exc:
             failures.add("ingest bars", "all", str(exc))
         else:
-            _print_bars_report(report)
-            if report.get("failed"):
-                exit_code = 1
+            _print_bars_report(report, failures, restated)
 
     if do_market:
         body = {
@@ -1421,11 +1517,8 @@ def run(args: argparse.Namespace) -> int:
         except RemoteError as exc:  # every market item failed; see the bars above
             failures.add("ingest market", "all", str(exc))
         else:
-            _print_market_report(report)
-            if report.get("failed"):
-                exit_code = 1
+            _print_market_report(report, failures, restated, contradictions)
 
-    contradictions: list[tuple[str, str, str]] = []
     if manifest_ready:
         manifest_path = f"{container_dir}/shares/manifest.json"
         manifest = json.loads((shares_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -1434,20 +1527,18 @@ def run(args: argparse.Namespace) -> int:
         if manifest["market_watch"]:
             try:
                 report = post(SHARE_INGEST_URL, {"manifest": manifest_path, "part": "universe"})
-                _print_universe_report(report)
-                if report.get("failed"):
-                    exit_code = 1
+                _print_universe_report(report, failures)
             except RemoteError as exc:
                 failures.add("ingest universe", "market-watch.json", str(exc))
         if manifest["flows"]:
             flows = _ingest_chunks(post, "flows", len(manifest["flows"]), FLOW_CHUNK,
-                                   manifest_path, failures, contradictions)
+                                   manifest_path, failures, contradictions, restated)
             inserted = sum(r.get("sessions_inserted", 0) for r in flows["items"].values())
             print(f"money flow : {len(flows['items'])} share(s) ingested, {inserted:,} "
                   f"session row(s) inserted, {flows.get('failed', 0)} failed")
         if manifest["days"]:
             days = _ingest_chunks(post, "sessions", len(manifest["days"]), SESSION_CHUNK,
-                                  manifest_path, failures, contradictions)
+                                  manifest_path, failures, contradictions, restated)
             inserted = sum(r.get("rows_inserted", 0) for r in days["items"].values())
             unchecked = sorted(d for d, r in days["items"].items()
                                if (r.get("date_check") or {}).get("status") != "agreed")
@@ -1467,6 +1558,17 @@ def run(args: argparse.Namespace) -> int:
                       f"{r['carry_forward_skipped']} carry-forward and "
                       f"{r['unsettled_skipped']} unsettled skipped, "
                       f"{r['first_date']}..{r['last_date']}")
+                if r.get("live_era_skipped"):
+                    print(f"             {r['live_era_skipped']} session(s) from "
+                          f"{r['live_era_from']} left to the live source")
+                if r.get("restated"):
+                    restated.add("fund", f"{code} {r['symbol']}",
+                                 f"{r['restated']} stored close(s) kept; e.g. "
+                                 f"{r.get('restated_examples', [])[:2]}")
+                if r.get("served_gaps"):
+                    restated.add("fund", f"{code} {r['symbol']}",
+                                 f"the list served skips {r['served_gaps']} session(s) TEDPIX "
+                                 f"records, not judged: {r.get('served_gap_examples')}")
             for error in report.get("errors") or []:
                 if error["error"] in CONTRADICTIONS:
                     contradictions.append(("fund", error["path"], error["message"]))
@@ -1475,11 +1577,29 @@ def run(args: argparse.Namespace) -> int:
                                  f"{error['error']}: {error['message']}")
         except RemoteError as exc:
             failures.add("ingest funds", "all", str(exc))
+    if touched:
+        # The ingest is done with the container's copy; the host archive
+        # stays. Left in /tmp, a first run is ~415 MB there and each weekly
+        # one ~65 MB more, forever (measured on the 215-share rehearsal of
+        # 2026-09-29 and scaled to the market).
+        try:
+            _remove_container_copy(args.host, container_dir)
+            print(f"cleanup    : removed {container_dir} from the prediction container; "
+                  f"the run stays archived in {remote_dir}")
+        except RemoteError as exc:
+            failures.add("cleanup", container_dir, str(exc))
     timings["ingest"] = time.monotonic() - ingest_started
 
+    if restated:
+        print(f"\nRESTATED ({len(restated.items)}): TSETMC's copy now states these "
+              "differently from what is stored; the stored rows were kept and the run "
+              "does not fail on them")
+        for kind, key, what in restated.items:
+            print(f"  [{kind}] {key}: {what}")
     if contradictions:
         print(f"\nCONTRADICTIONS ({len(contradictions)}): TSETMC now serves something "
-              "different from what is stored; nothing was overwritten")
+              "unlike most of what is stored for these; nothing was overwritten and nothing "
+              "was written for them")
         for kind, key, message in contradictions:
             print(f"  [{kind}] {key}: {message}")
     if failures:

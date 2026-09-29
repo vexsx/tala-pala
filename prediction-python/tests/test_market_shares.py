@@ -69,6 +69,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.bourse.funds import (
+    TEDPIX,
     FundContradiction,
     FundRestated,
     fund_roster,
@@ -93,6 +94,7 @@ from app.bourse.parse import (
     parse_static_sectors,
 )
 from app.bourse.shares import (
+    DELIST_GUARD_MARKET_MIN,
     DELIST_GUARD_MIN,
     FLOW_FLOOR,
     SessionContradiction,
@@ -106,9 +108,11 @@ from app.bourse.shares import (
 )
 from app.db import (
     commodity_funds,
+    data_providers,
     equity_client_flows,
     equity_instruments,
     instruments,
+    market_index_values,
     market_indices,
     market_sectors,
     market_session_files,
@@ -539,6 +543,23 @@ def test_a_truncated_market_watch_cannot_delist_the_market(engine):
     assert _count(engine, market_shares) == DELIST_GUARD_MIN * 2
 
 
+def test_a_watch_missing_one_market_cannot_delist_that_market(engine):
+    """A watch without the Farabourse passes the universe-wide test (354 of
+    1,162 shares, 30%) and used to mark every Farabourse share unlisted."""
+    _universe(engine)
+    with engine.begin() as conn:
+        conn.execute(market_shares.insert(), [
+            {"ins_code": str(20_000 + i), "symbol_fa": f"f{i}", "market": "farabourse",
+             "board": "main", "listed": True}
+            for i in range(DELIST_GUARD_MARKET_MIN * 2)
+        ])
+    listed = _count(engine, market_shares, market_shares.c.listed.is_(True))
+    with pytest.raises(MarketParseError, match="listed farabourse shares"):
+        ingest_universe(engine, load_fixture_json("tsetmc_market_watch_subset.json"),
+                        now=MARKET_WATCH_AT + timedelta(days=1))
+    assert _count(engine, market_shares, market_shares.c.listed.is_(True)) == listed
+
+
 def test_the_seeded_roster_row_becomes_listed_and_gains_its_insid(engine):
     """0030 seeds the roster listed=FALSE with no insID; the first market watch
     completes it without inserting a second row."""
@@ -622,19 +643,43 @@ def test_an_unsettled_flow_row_is_not_stored(engine):
     assert report["unsettled_skipped"] == 1 and report["last_date"] == "2026-09-27"
 
 
-def test_a_contradiction_fails_that_share_only(engine, tmp_path):
+def test_a_restated_overlap_row_is_kept_and_does_not_stall_the_share(engine):
+    """The fetch re-sends a share's ten newest stored rows every week. When
+    TSETMC's copy of one of them changed, the share used to fail on it — every
+    week, because the same ten rows go back each time — and nothing newer was
+    ever stored. The stored row stays; the new rows are stored."""
+    _universe(engine)
+    full = load_fixture_json("tsetmc_clienttype_board3_foolad3.json")
+    ingest_client_flows(engine, {"clientType": full["clientType"][1:]}, now=CAPTURED)
+    weekly = copy.deepcopy({"clientType": full["clientType"][:11]})  # 1 new + 10 overlap
+    weekly["clientType"][5]["buy_I_Value"] += 1_000_000
+    report = ingest_client_flows(engine, weekly, now=CAPTURED)
+    assert report["sessions_inserted"] == 1 and report["restated"] == 1
+    [example] = report["restated_examples"]
+    assert "buy_i_value" in example["fields"]
+    assert _share(engine, FOOLAD3)["flow_count"] == 31
+    with engine.connect() as conn:
+        kept = conn.execute(select(equity_client_flows.c.buy_i_value).where(
+            (equity_client_flows.c.ins_code == FOOLAD3)
+            & (equity_client_flows.c.trade_date == date.fromisoformat(example["date"]))
+        )).scalar_one()
+    assert float(kept) == float(full["clientType"][5]["buy_I_Value"])  # not overwritten
+
+
+def test_a_flow_payload_unlike_most_of_its_overlap_fails_that_share_only(engine, tmp_path):
     _universe(engine)
     sdpt = load_fixture_json("tsetmc_clienttype_farabourse_sdpt.json")
     ingest_client_flows(engine, sdpt, now=CAPTURED)
-    restated = copy.deepcopy(sdpt)
-    restated["clientType"][0]["buy_I_Value"] += 1_000_000
+    other = {"clientType": copy.deepcopy(sdpt["clientType"][:10])}  # the overlap a fetch ships
+    for row in other["clientType"]:
+        row["buy_I_Value"] *= 10
     manifest = _manifest(tmp_path, flows=[
-        (SDPT, restated), (FOOLAD3, load_fixture_json("tsetmc_clienttype_board3_foolad3.json"))])
+        (SDPT, other), (FOOLAD3, load_fixture_json("tsetmc_clienttype_board3_foolad3.json"))])
     report = ingest_share_manifest(engine, manifest, "flows", now=CAPTURED)
     assert set(report["items"]) == {FOOLAD3}
     [error] = report["errors"]
     assert error["ins_code"] == SDPT and error["error"] == FlowContradiction.__name__
-    assert "Nothing is overwritten" in error["message"]
+    assert "not a restatement" in error["message"]
     assert _count(engine, equity_client_flows, equity_client_flows.c.ins_code == SDPT) == 113
 
 
@@ -692,23 +737,47 @@ def test_a_day_file_named_for_another_session_is_refused(engine):
     assert _count(engine, market_session_files) == 0
 
 
-def test_a_contradicting_day_fails_that_day_only(engine, tmp_path):
+def test_a_restated_day_row_is_kept_and_the_rest_of_the_day_is_stored(engine):
+    """MEASURED 2026-09-29: the 2026-09-28 day file differed between two CDN
+    copies by one trade on کرمان and وطوبی, and failed the whole day on the
+    re-check. The stored rows stay; the shares not yet stored that day are
+    written."""
+    _universe(engine)
+    good = load_fixture_json("tsetmc_day_20260928_subset.json")
+    rows = good["closingPriceDailyHistoryWithInstDetails"]
+    first = {"closingPriceDailyHistoryWithInstDetails": [
+        r for r in rows if r["insCode"] != int(SDPT)]}
+    ingest_day_file(engine, first, date(2026, 9, 28), now=CAPTURED)
+    other = copy.deepcopy(good)
+    for row in other["closingPriceDailyHistoryWithInstDetails"]:
+        if row["insCode"] == int(FOOLAD):
+            row["zTotTran"] += 1
+    report, inserted = ingest_day_file(engine, other, date(2026, 9, 28), now=CAPTURED)
+    assert inserted == {SDPT} and report["rows_restated"] == 1
+    assert report["restated_examples"] == [{"ins_code": FOOLAD, "fields": ["trades"]}]
+    with engine.connect() as conn:
+        trades = conn.execute(select(market_share_sessions.c.trades).where(
+            (market_share_sessions.c.ins_code == FOOLAD)
+            & (market_share_sessions.c.trade_date == date(2026, 9, 28)))).scalar_one()
+    assert trades == parse_session_row(parse_day_file(good)[FOOLAD])["trades"]
+
+
+def test_a_day_file_unlike_most_of_the_stored_day_fails_that_day_only(engine, tmp_path):
     _universe(engine)
     good = load_fixture_json("tsetmc_day_20260928_subset.json")
     ingest_day_file(engine, good, date(2026, 9, 28), now=CAPTURED)
-    restated = copy.deepcopy(good)
-    for row in restated["closingPriceDailyHistoryWithInstDetails"]:
-        if row["insCode"] == int(FOOLAD):
-            row["pClosing"] += 10
+    other = copy.deepcopy(good)
+    for row in other["closingPriceDailyHistoryWithInstDetails"]:
+        row["pClosing"] += 10
     manifest = _manifest(tmp_path, days=[
         ("20250312", load_fixture_json("tsetmc_day_20250312_subset.json")),
-        ("20260928", restated)])
+        ("20260928", other)])
     report = ingest_share_manifest(engine, manifest, "sessions", now=CAPTURED)
     assert set(report["items"]) == {"2025-03-12"}
     [error] = report["errors"]
     assert error["trade_date"] == "2026-09-28"
     assert error["error"] == SessionContradiction.__name__
-    assert FOOLAD in error["message"]
+    assert "not a restatement" in error["message"]
     with engine.connect() as conn:
         close = conn.execute(select(market_share_sessions.c.close).where(
             (market_share_sessions.c.ins_code == FOOLAD)
@@ -718,7 +787,6 @@ def test_a_contradicting_day_fails_that_day_only(engine, tmp_path):
     # Coverage from the table: two sessions for فولاد now.
     row = _share(engine, FOOLAD)
     assert (row["session_count"], row["session_last_date"]) == (2, date(2026, 9, 28))
-
 
 def test_an_unsettled_session_is_refused(engine):
     _universe(engine)
@@ -957,18 +1025,142 @@ def test_a_close_whose_stamp_is_in_the_future_is_not_stored(engine):
     assert report["unsettled_skipped"] == 1 and report["last_date"] == "2026-09-27"
 
 
-def test_a_fund_re_ingest_is_idempotent_and_a_contradiction_fails_it(engine):
+def test_a_fund_re_ingest_is_idempotent_and_a_restated_close_is_kept(engine):
+    """TSETMC's two copies differ on Tala's 2021-12-15 close by ten rials and
+    on عیار's by one. One rial is the exchange's rounding; ten is a
+    restatement, kept as stored and named, and it no longer fails the fund."""
     _seed_funds(engine)
     payload = load_fixture_json("tsetmc_fund_silver_daily.json")
     ingest_fund_closes(engine, payload, now=CAPTURED)
     again = ingest_fund_closes(engine, payload, now=CAPTURED)
     assert again["closes_inserted"] == 0 and again["closes_existing"] == 158
+    assert again["restated"] == 0
+    rounded = copy.deepcopy(payload)
+    max(rounded["closingPriceDaily"], key=lambda r: r["dEven"])["pClosing"] += 1
+    assert ingest_fund_closes(engine, rounded, now=CAPTURED)["restated"] == 0
     changed = copy.deepcopy(payload)
     newest = max(changed["closingPriceDaily"], key=lambda r: r["dEven"])
-    newest["pClosing"] += 5
-    with pytest.raises(FundContradiction, match="Nothing is overwritten"):
-        ingest_fund_closes(engine, changed, now=CAPTURED + timedelta(days=1))
+    newest["pClosing"] += 10
+    report = ingest_fund_closes(engine, changed, now=CAPTURED + timedelta(days=1))
+    assert report["restated"] == 1
+    assert report["restated_examples"] == [
+        {"date": "2026-09-28", "stored": 1357.8, "served": 1358.8}]
     assert _count(engine, prices) == 158
+    with engine.connect() as conn:
+        newest_value = conn.execute(
+            select(prices.c.value).order_by(prices.c.observed_at.desc())).scalars().first()
+    assert float(newest_value) == 1357.8  # never overwritten
+
+
+def test_a_fund_list_unlike_most_of_the_store_fails_the_fund(engine):
+    _seed_funds(engine)
+    payload = load_fixture_json("tsetmc_fund_silver_daily.json")
+    ingest_fund_closes(engine, payload, now=CAPTURED)
+    tenfold = copy.deepcopy(payload)
+    for row in tenfold["closingPriceDaily"]:
+        row["pClosing"] *= 10
+        row["priceYesterday"] *= 10
+    with pytest.raises(FundContradiction, match="not a restatement"):
+        ingest_fund_closes(engine, tenfold, now=CAPTURED)
+    assert _count(engine, prices) == 158
+
+
+def _tedpix_sessions(engine, payload):
+    """The exchange calendar the fund check reads: TEDPIX on every day the
+    fixture's list carries."""
+    days = sorted({date(r["dEven"] // 10000, r["dEven"] // 100 % 100, r["dEven"] % 100)
+                   for r in payload["closingPriceDaily"]})
+    with engine.begin() as conn:
+        conn.execute(market_index_values.insert(), [
+            {"ins_code": TEDPIX, "trade_date": d, "close": 1.0, "scale_exp": 0,
+             "collected_at": CAPTURED} for d in days])
+
+
+def _without_a_moving_session(payload):
+    """The copy of a daily list TSETMC's CDN served without one traded session
+    whose close moved: the next row's reference is that missing close."""
+    rows = sorted(copy.deepcopy(payload["closingPriceDaily"]), key=lambda r: r["dEven"])
+    i = next(i for i in range(1, len(rows) - 1)
+             if rows[i]["zTotTran"] > 0 and rows[i + 1]["zTotTran"] > 0
+             and rows[i]["pClosing"] != rows[i - 1]["pClosing"])
+    gone = rows.pop(i)
+    return {"closingPriceDaily": rows}, gone
+
+
+def test_a_copy_missing_a_session_is_a_gap_not_a_restated_reference(engine):
+    """MEASURED 2026-09-29: one CDN copy omits 2023-03-27, so AYAR's 2023-03-28
+    reference (77,041, the missing session's close) did not chain to
+    2023-03-26's close (75,820) and all three gold funds were refused as
+    restated. A pair that skips a session TEDPIX records is not judged."""
+    _seed_funds(engine)
+    payload = load_fixture_json("tsetmc_fund_silver_daily.json")
+    short, gone = _without_a_moving_session(payload)
+    _tedpix_sessions(engine, payload)
+    report = ingest_fund_closes(engine, short, now=CAPTURED)
+    gone_day = date(gone["dEven"] // 10000, gone["dEven"] // 100 % 100, gone["dEven"] % 100)
+    assert report["served_gaps"] == 1
+    assert report["served_gap_examples"] == [gone_day.isoformat()]
+    assert report["closes_inserted"] == 157
+    # The complete copy later stores the session in the middle of the history.
+    full = ingest_fund_closes(engine, payload, now=CAPTURED)
+    assert full["closes_inserted"] == 1 and full["served_gaps"] == 0
+    # A weekly run served the short copy again writes nothing, so it names no
+    # gap: the old ones are not reported every week.
+    again = ingest_fund_closes(engine, short, now=CAPTURED)
+    assert again["closes_inserted"] == 0 and again["served_gaps"] == 0
+
+
+def test_without_a_stored_calendar_a_missing_session_still_refuses(engine):
+    """No TEDPIX stored (the index ingest failed): nothing says the pair
+    skipped a session, and the strict rule stands."""
+    _seed_funds(engine)
+    short, _ = _without_a_moving_session(load_fixture_json("tsetmc_fund_silver_daily.json"))
+    with pytest.raises(FundRestated, match="restated the reference"):
+        ingest_fund_closes(engine, short, now=CAPTURED)
+
+
+def test_restatements_are_judged_only_where_a_run_writes(engine):
+    """A reference restated between two STORED closes is history already
+    written; re-judging the whole list every run is what refused a fund for
+    good once. A restated reference on a session this run writes still
+    refuses it."""
+    _seed_funds(engine)
+    payload = load_fixture_json("tsetmc_fund_silver_daily.json")
+    evening = datetime(2026, 9, 28, 18, 0, tzinfo=timezone.utc)  # 2026-09-28 unsettled
+    ingest_fund_closes(engine, payload, now=evening)
+    old_split = copy.deepcopy(payload)
+    rows = sorted(old_split["closingPriceDaily"], key=lambda r: r["dEven"])
+    rows[100]["priceYesterday"] = rows[99]["pClosing"] / 2
+    assert ingest_fund_closes(engine, old_split, now=evening)["closes_inserted"] == 0
+    new_split = copy.deepcopy(payload)
+    rows = sorted(new_split["closingPriceDaily"], key=lambda r: r["dEven"])
+    rows[-1]["priceYesterday"] = rows[-2]["pClosing"] / 2
+    with pytest.raises(FundRestated, match="this run would write"):
+        ingest_fund_closes(engine, new_split, now=CAPTURED)
+    assert _count(engine, prices) == 157
+
+
+def test_fund_closes_stop_where_a_live_source_begins(engine):
+    """AYAR and TALA have BrsApi's intraday mirror from 2026-07-21. A settled
+    close written into those days is a second, different-source row per day —
+    pClosing differs from the last trade by a median 0.32% on عیار — so, as in
+    tgju_backfill, only sessions before the first other-source day are
+    written."""
+    _seed_funds(engine)
+    live = datetime(2026, 9, 20, 9, 5, tzinfo=timezone.utc)
+    with engine.begin() as conn:
+        conn.execute(prices.insert().values(
+            symbol="IR_SILVER_FUND_SILVER", value=1300.0, currency="IRT", unit="unit",
+            source="tse_funds", observed_at=live, collected_at=live, quality="ok"))
+    report = ingest_fund_closes(engine, load_fixture_json("tsetmc_fund_silver_daily.json"),
+                                now=CAPTURED)
+    assert report["live_era_from"] == live.isoformat()
+    assert report["live_era_skipped"] > 0
+    assert report["last_date"] < "2026-09-20"
+    with engine.connect() as conn:
+        days = [r.observed_at.date() for r in conn.execute(
+            select(prices.c.observed_at).where(prices.c.source == "tsetmc_cdn"))]
+    assert max(days) < date(2026, 9, 20)
 
 
 def test_a_restated_reference_refuses_the_fund(engine):
@@ -1042,7 +1234,17 @@ def test_the_share_endpoints(client, engine, tmp_path):
     assert state["count"] == 15 and state["floor"] == "2025-03-21"
 
 
-def test_the_share_endpoint_answers_400_for_the_call_and_502_for_the_data(client, tmp_path):
+def test_the_share_endpoint_answers_400_for_the_call_and_names_every_failed_item(
+    client, engine, tmp_path
+):
+    """A chunk in which every item failed used to answer 502, and busybox wget
+    — the fetch's only way in — throws the body of a non-2xx answer away, so
+    the run knew THAT the chunk failed and never WHICH items or why. It now
+    answers 200 with the whole report, and the provider's health row still
+    records the failure."""
+    with engine.begin() as conn:
+        conn.execute(data_providers.insert().values(
+            code="tsetmc_cdn", name="TSETMC CDN", category="iran_equity"))
     manifest = _manifest(tmp_path, flows=[(SDPT, load_fixture_json(
         "tsetmc_clienttype_farabourse_sdpt.json"))])
     bad = client.post("/internal/bourse/shares/ingest",
@@ -1054,9 +1256,15 @@ def test_the_share_endpoint_answers_400_for_the_call_and_502_for_the_data(client
     assert missing.status_code == 400
     failed = client.post("/internal/bourse/shares/ingest",
                          json={"manifest": manifest, "part": "flows"}, headers=HEADERS)
-    assert failed.status_code == 502
-    assert failed.json()["error"]["code"] == "upstream_failed"
-    assert failed.json()["errors"][0]["ins_code"] == SDPT
+    assert failed.status_code == 200
+    body = failed.json()
+    assert body["all_failed"] is True and body["succeeded"] == 0 and body["failed"] == 1
+    assert body["errors"][0]["ins_code"] == SDPT
+    assert "not in market_shares" in body["errors"][0]["message"]
+    with engine.connect() as conn:
+        health = conn.execute(select(data_providers.c.consecutive_failures, data_providers.c.last_error)
+                              .where(data_providers.c.code == "tsetmc_cdn")).one()
+    assert health.consecutive_failures >= 1 and "failed" in health.last_error
 
 
 def test_the_fund_endpoints(client, engine, tmp_path):
@@ -1073,8 +1281,10 @@ def test_the_fund_endpoints(client, engine, tmp_path):
                        headers=HEADERS).status_code == 400
     bad = tmp_path / "fund-2.json"
     bad.write_text("{", encoding="utf-8")
-    assert client.post("/internal/bourse/funds/ingest", json={"paths": [str(bad)]},
-                       headers=HEADERS).status_code == 502
+    failed = client.post("/internal/bourse/funds/ingest", json={"paths": [str(bad)]},
+                         headers=HEADERS)
+    assert failed.status_code == 200 and failed.json()["all_failed"] is True
+    assert failed.json()["errors"][0]["path"] == str(bad)
 
 
 # --- the fetch script's decisions ---------------------------------------------------------------
@@ -1306,6 +1516,63 @@ def test_the_request_rate_cannot_exceed_three_a_second(fetch):
     assert fetch.DEFAULT_DELAY >= fetch.MIN_REQUEST_INTERVAL
 
 
+def test_the_default_spacing_is_half_a_second(fetch):
+    """About two requests a second: the spacing every other TSETMC and TGJU
+    request in this repo keeps. The floor stays for an operator who asks."""
+    assert fetch.DEFAULT_DELAY == 0.5
+    assert fetch.Pacer().interval == 0.5
+
+
+def test_every_ingest_error_reaches_the_runs_summary(fetch, capsys):
+    """The bars and market ingests used to print their per-item errors inline
+    only: run B's 4 bar and 64 index failures were not in its FAILED list."""
+    failures, restated, contradictions = fetch.Failures(), fetch.Restated(), []
+    fetch._print_bars_report({"symbols": {}, "errors": [
+        {"path": "/tmp/tsetmc-x/1.json", "error": "BarParseError", "message": "no"}]},
+        failures, restated)
+    fetch._print_market_report({"indices": {}, "errors": [
+        {"kind": "index_history", "path": "/tmp/i-1.json", "error": "MarketParseError",
+         "message": "bad"},
+        {"kind": "index_history", "path": "/tmp/i-2.json", "error": "IndexContradiction",
+         "message": "unlike"}]}, failures, restated, contradictions)
+    fetch._print_universe_report({"universe": {}, "errors": [
+        {"kind": "static_data", "name": "static-data.json", "error": "MarketParseError",
+         "message": "no IndustrialGroup rows"}]}, failures)
+    assert [(k, key) for k, key, _ in failures.items] == [
+        ("ingest bars", "/tmp/tsetmc-x/1.json"), ("ingest index_history", "/tmp/i-1.json"),
+        ("ingest static_data", "static-data.json")]
+    assert [key for _, key, _ in contradictions] == ["/tmp/i-2.json"]
+
+
+def test_a_chunk_in_which_every_item_failed_names_every_item(fetch):
+    """The service answers 200 with the whole report when every item of a chunk
+    failed; each item is a failure of the run, with its reason."""
+    failures, restated, contradictions = fetch.Failures(), fetch.Restated(), []
+
+    def post(url, body):
+        return {"items": {}, "succeeded": 0, "failed": 2, "all_failed": True,
+                "next_offset": None, "errors": [
+                    {"kind": "sessions", "name": "day-20260927.json", "trade_date": "2026-09-27",
+                     "error": "WrongSessionFile", "message": "some other session"},
+                    {"kind": "sessions", "name": "day-20260928.json", "trade_date": "2026-09-28",
+                     "error": "SessionContradiction", "message": "unlike"}]}
+
+    fetch._ingest_chunks(post, "sessions", 2, 20, "m", failures, contradictions, restated)
+    assert [(k, key) for k, key, _ in failures.items] == [("ingest sessions", "2026-09-27")]
+    assert [key for _, key, _ in contradictions] == ["2026-09-28"]
+
+
+def test_only_a_run_copy_is_ever_removed_from_the_container(fetch, monkeypatch):
+    commands = []
+    monkeypatch.setattr(fetch, "_ssh", lambda host, command, capture=False: commands.append(command))
+    fetch._remove_container_copy("h", "/tmp/tsetmc-20260929T122625Z")
+    assert "rm -rf -- /tmp/tsetmc-20260929T122625Z" in commands[0]
+    for bad in ("/tmp", "/tmp/tsetmc-x", "/tmp/tsetmc-20260929T122625Z/..", "/"):
+        with pytest.raises(fetch.RemoteError):
+            fetch._remove_container_copy("h", bad)
+    assert len(commands) == 1
+
+
 def test_the_pacer_spaces_request_starts(fetch, monkeypatch):
     clock = {"now": 100.0}
     slept = []
@@ -1339,6 +1606,7 @@ class _FakeServer:
         self.remote.mkdir()
         self.run_dir = None
         self.posts = []
+        self.commands = []
 
     def internal_get(self, host, url, what):
         resp = self.client.get(url.split(":8500", 1)[1], headers=HEADERS)
@@ -1348,6 +1616,7 @@ class _FakeServer:
     def subprocess_run(self, argv, **kwargs):
         import shutil
 
+        self.commands.append(list(argv))
         if argv[0] == "scp":
             *sources, target = argv[4:]
             self.run_dir = self.remote / target.rsplit("/", 2)[-2]
@@ -1483,6 +1752,43 @@ def test_a_full_run_ships_what_the_service_ingests(fetch, wired, engine, tmp_pat
     evidence = tmp_path / "out" / "evidence"
     assert (evidence / f"clienttype-{FOOLAD}.json.gz").is_file()
     assert "timings" in out
+
+
+def test_a_run_removes_its_container_copy_and_keeps_the_archive(fetch, wired, tmp_path,
+                                                                monkeypatch, capsys):
+    monkeypatch.setattr(fetch, "_curl", _tsetmc(fetch))
+    assert fetch.run(_args(tmp_path)) == 0
+    removals = [c for c in wired.commands if c[0] == "ssh" and "rm -rf" in c[-1]]
+    assert len(removals) == 1 and "/tmp/tsetmc-" in removals[0][-1]
+    assert "backups/tsetmc" not in removals[0][-1]
+    assert wired.run_dir is not None and any(wired.run_dir.iterdir())  # the archive
+    assert "cleanup    : removed /tmp/tsetmc-" in capsys.readouterr().out
+
+
+def test_a_restated_row_is_listed_and_does_not_fail_the_run(fetch, wired, engine, tmp_path,
+                                                            monkeypatch, capsys):
+    """The second copy of 2026-09-28 differs by one trade on one share: the
+    stored row is kept, the day is not failed, and the run exits 0 with the
+    restatement listed."""
+    monkeypatch.setattr(fetch, "_curl", _tsetmc(fetch))
+    assert fetch.run(_args(tmp_path)) == 0
+    capsys.readouterr()
+    served = _tsetmc(fetch)
+    other = copy.deepcopy(load_fixture_json("tsetmc_day_20260928_subset.json"))
+    for row in other["closingPriceDailyHistoryWithInstDetails"]:
+        if row["insCode"] == int(FOOLAD):
+            row["zTotTran"] += 1
+
+    def second_copy(url, timeout=120):
+        if url.endswith(fetch.DAY_FILE_PATH.format(yyyymmdd="20260928")):
+            return json.dumps(other, ensure_ascii=False).encode("utf-8")
+        return served(url, timeout)
+
+    monkeypatch.setattr(fetch, "_curl", second_copy)
+    assert fetch.run(_args(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "RESTATED (1)" in out and f"[sessions] 2026-09-28: 1 stored row(s) kept" in out
+    assert "FAILED" not in out
 
 
 def test_a_second_run_ships_only_what_is_new(fetch, wired, engine, tmp_path, monkeypatch):

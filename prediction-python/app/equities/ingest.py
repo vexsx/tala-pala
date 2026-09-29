@@ -21,16 +21,32 @@ and a failure is collected into the report rather than raised.
 applied at read time — which is also why re-detecting an action never has to
 rewrite the bar table.
 
+*The actions describe the STORED bars, not the last payload.*  They are
+detected over everything ``equity_bars`` holds once this payload's new bars
+are in, because that is what the read API multiplies.  TSETMC's CDN served two
+copies of the same histories five minutes apart on 2026-09-29, one of them
+without the 2023-03-27 session: detected over that copy, 2023-03-28's
+reference (the missing session's close) against 2023-03-26's close read as a
+corporate action on eighteen roster shares — اخابر ×1.0627 — and when the other
+copy later stored the 2023-03-27 bar, the phantom action stayed and rescaled
+every adjusted price before it while the verdict still said ``validated``.  So
+an action whose evidence a later-stored session contradicts is retired, and the
+verdict is recomputed over the same stored series.
+
 *Nothing is invented.*  An insCode the roster does not carry is refused; this
 never creates an ``equity_instruments`` row from a payload.  The roster is
 data (0028 seeds it), so widening it is an INSERT, not a code change.
 
-*A stored bar is never overwritten.*  TSETMC does not revise a settled session,
-so a payload that disagrees with a stored bar is a contradiction, not a
-revision, and the symbol FAILS rather than having its history rewritten.  There
-is no vintage machinery here on purpose: ``economic_observations`` has it
-because macro statistics are restated by their publishers, and a daily bar is
-not.  A real restatement is a human decision, and it should arrive as one.
+*A stored bar is never overwritten.*  A payload that disagrees with a stored
+bar keeps the stored bar, and the disagreement is counted and named in the
+report; the payload's NEW sessions are still stored.  The two CDN copies
+disagree on four roster bars (2021-12-15 and 2022-03-26, by a trade or two),
+and refusing the symbol on them failed it on every other run.  Only a payload
+that disagrees with most of the stored bars it overlaps — not a restatement
+but some other series — fails the symbol (the rule of
+app.bourse.ingest.restatement_is_systematic).  There is no vintage machinery
+here on purpose: ``economic_observations`` has it because macro statistics
+are restated by their publishers, and a daily bar is not.
 
 *The gate is enforced by a row.*  ``equity_adjustments`` records the verdict per
 symbol per ``adjustment_version``, and the read API serves an adjusted series
@@ -44,7 +60,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional, Sequence
 
 from sqlalchemy import and_, func, select, update
@@ -59,6 +75,7 @@ from ..db import (
     insert_ignore,
     utcnow,
 )
+from ..bourse.ingest import RESTATED_EXAMPLES, restatement_is_systematic
 from .adjust import (
     ADJUSTMENT_VERSION,
     KIND_CLOSE_RESTATED,
@@ -143,15 +160,16 @@ def _instrument(conn: Connection, ins_code: str) -> Optional[dict[str, Any]]:
 
 def _write_bars(
     conn: Connection, ins_code: str, bars: Sequence[Bar], collected_at: datetime
-) -> dict[str, int]:
-    """Insert the bars that are not stored yet; refuse to change one that is.
+) -> dict[str, Any]:
+    """Insert the bars that are not stored yet; never change one that is.
 
     The existing rows are read first — 4,600 of them for the longest history,
-    which costs nothing — so the counts are exact and a CONTRADICTION is
-    visible.  A payload that disagrees with a stored session raises: TSETMC
-    does not revise a settled bar, so the disagreement means either a corrupt
-    transfer or a genuine restatement, and both deserve a human rather than an
-    UPDATE that erases what was previously served.
+    which costs nothing — so the counts are exact and a disagreement is
+    visible.  A stored bar the payload states differently is kept and reported
+    as restated; a payload that disagrees with most of what it overlaps raises
+    (module docstring).  A session new to the store is inserted wherever it
+    falls, including in the middle of the history — the actions over it are
+    re-derived afterwards (:func:`ingest_payload`).
     """
     stored = {
         row["trade_date"]: row
@@ -165,7 +183,7 @@ def _write_bars(
         ).mappings()
     }
 
-    conflicts: list[str] = []
+    restated: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = []
     for bar in bars:
         existing = stored.get(bar.trade_date)
@@ -193,22 +211,36 @@ def _write_bars(
             or float(existing["price_yesterday"]) != bar.price_yesterday
             or int(existing["volume"]) != bar.volume
         ):
-            conflicts.append(
-                f"{bar.trade_date.isoformat()}: stored close="
-                f"{float(existing['final_close'])} yesterday="
-                f"{float(existing['price_yesterday'])} volume={int(existing['volume'])}, "
-                f"payload close={bar.final_close} yesterday={bar.price_yesterday} "
-                f"volume={bar.volume}"
+            restated.append(
+                {
+                    "date": bar.trade_date.isoformat(),
+                    "stored": {
+                        "close": float(existing["final_close"]),
+                        "yesterday": float(existing["price_yesterday"]),
+                        "volume": int(existing["volume"]),
+                    },
+                    "served": {
+                        "close": bar.final_close,
+                        "yesterday": bar.price_yesterday,
+                        "volume": bar.volume,
+                    },
+                }
             )
 
-    if conflicts:
-        shown = "; ".join(conflicts[:3])
-        more = "" if len(conflicts) <= 3 else f" and {len(conflicts) - 3} more"
+    compared = len(bars) - len(pending)
+    if restatement_is_systematic(len(restated), compared):
+        shown = "; ".join(
+            f"{r['date']}: stored {r['stored']}, payload {r['served']}" for r in restated[:3]
+        )
         raise BarParseError(
-            f"{ins_code}: the payload contradicts {len(conflicts)} stored bar(s): "
-            f"{shown}{more}. TSETMC does not revise a settled session, so this is "
-            "a corrupt transfer or a genuine restatement — either way a human "
-            "decides, and nothing is overwritten here."
+            f"{ins_code}: the payload contradicts {len(restated)} of the {compared} stored "
+            f"bar(s) it overlaps ({shown}). That is not a restatement of this history but "
+            "a different one; nothing is overwritten and nothing was written."
+        )
+    if restated:
+        log.warning(
+            "equity %s: %d stored bar(s) differ from TSETMC's current copy and were kept; "
+            "first %s", ins_code, len(restated), restated[0],
         )
 
     inserted = insert_ignore(conn, equity_bars, pending) if pending else 0
@@ -216,6 +248,8 @@ def _write_bars(
         "bars_total": len(bars),
         "bars_inserted": inserted,
         "bars_existing": len(bars) - len(pending),
+        "bars_restated": len(restated),
+        "restated_examples": restated[:RESTATED_EXAMPLES],
         # A row that was pending and did not insert lost a race with a
         # concurrent ingest of the same symbol.  The unique constraint made
         # that safe; the count says it happened.
@@ -225,20 +259,33 @@ def _write_bars(
 
 def _write_actions(
     conn: Connection, ins_code: str, series: AdjustedSeries, detected_at: datetime
-) -> dict[str, int]:
-    """Insert the corporate actions for this version; refuse to restate one.
+) -> dict[str, Any]:
+    """Make the stored corporate actions the ones ``series`` implies.
 
+    ``series`` is detected over the STORED bars (:func:`ingest_payload`).
     Keyed ``(ins_code, effective_date, adjustment_version)``, so a v2 detector
-    lands beside v1 instead of over it.  A stored action whose ratio disagrees
-    with a freshly detected one means the bars underneath it changed, which
-    ``_write_bars`` has already refused — reaching here would mean the two
-    disagree about the same data, so it raises rather than picking one.
+    lands beside v1 instead of over it.  Three outcomes for a stored action:
+
+    * detected again from the same two bars — kept, its cumulative factor
+      recomputed;
+    * detected on the same date from a DIFFERENT previous bar — a session was
+      stored between the two it was measured from, so its evidence is gone:
+      it is replaced by the one the stored bars now imply (``superseded``);
+    * no longer detected — the stored bars no longer imply any action there
+      (the phantom 2023-03-28 action becomes a ratio of exactly 1 once
+      2023-03-27 is stored): it is removed (``retired``), and the report names
+      its dates and ratio.
+
+    Bars are never overwritten, so an action measured from the SAME two bars
+    can only be re-detected with the same ratio; a disagreement there means
+    the store is inconsistent with itself, and it raises rather than pick one.
     """
     stored = {
         row["effective_date"]: row
         for row in conn.execute(
             select(
                 corporate_actions.c.effective_date,
+                corporate_actions.c.prev_trade_date,
                 corporate_actions.c.ratio,
                 corporate_actions.c.cumulative_factor,
             ).where(
@@ -250,40 +297,86 @@ def _write_actions(
         ).mappings()
     }
 
+    def row_of(action) -> dict[str, Any]:
+        return {
+            "ins_code": ins_code,
+            "effective_date": action.effective_date,
+            "prev_trade_date": action.prev_trade_date,
+            "prev_close": action.prev_close,
+            "price_yesterday": action.price_yesterday,
+            "kind": action.kind,
+            "restated_close": action.restated_close,
+            "ratio": action.ratio,
+            "cumulative_factor": action.cumulative_factor,
+            "adjustment_version": series.version,
+            "detected_at": detected_at,
+        }
+
+    def key_of(effective_date):
+        return and_(
+            corporate_actions.c.ins_code == ins_code,
+            corporate_actions.c.effective_date == effective_date,
+            corporate_actions.c.adjustment_version == series.version,
+        )
+
+    detected = {action.effective_date: action for action in series.actions}
     pending: list[dict[str, Any]] = []
-    restated: list[str] = []
+    disagreeing: list[str] = []
+    superseded: list[dict[str, Any]] = []
     for action in series.actions:
         existing = stored.get(action.effective_date)
         if existing is None:
-            pending.append(
+            pending.append(row_of(action))
+            continue
+        if existing["prev_trade_date"] != action.prev_trade_date:
+            superseded.append(
                 {
-                    "ins_code": ins_code,
-                    "effective_date": action.effective_date,
-                    "prev_trade_date": action.prev_trade_date,
-                    "prev_close": action.prev_close,
-                    "price_yesterday": action.price_yesterday,
-                    "kind": action.kind,
-                    "restated_close": action.restated_close,
-                    "ratio": action.ratio,
-                    "cumulative_factor": action.cumulative_factor,
-                    "adjustment_version": series.version,
-                    "detected_at": detected_at,
+                    "effective_date": action.effective_date.isoformat(),
+                    "was_measured_from": existing["prev_trade_date"].isoformat(),
+                    "was_ratio": float(existing["ratio"]),
+                    "now_measured_from": action.prev_trade_date.isoformat(),
+                    "now_ratio": action.ratio,
                 }
             )
             continue
         if not _close_enough(float(existing["ratio"]), action.ratio):
-            restated.append(
+            disagreeing.append(
                 f"{action.effective_date.isoformat()}: stored ratio "
                 f"{float(existing['ratio'])!r}, detected {action.ratio!r}"
             )
 
-    if restated:
+    if disagreeing:
         raise BarParseError(
-            f"{ins_code}: {len(restated)} stored corporate action(s) disagree with "
-            f"what this payload implies ({'; '.join(restated[:3])}). The ratio is "
-            "derived from two stored bars, so a disagreement means the bars changed "
-            "underneath it; refusing rather than restating a factor that every "
-            "adjusted price before that date depends on."
+            f"{ins_code}: {len(disagreeing)} stored corporate action(s) disagree with "
+            f"what the stored bars imply ({'; '.join(disagreeing[:3])}), measured from "
+            "the same two bars. Bars are never overwritten, so the store disagrees with "
+            "itself; refusing rather than restating a factor that every adjusted price "
+            "before that date depends on."
+        )
+
+    retired = [
+        {
+            "effective_date": day.isoformat(),
+            "prev_trade_date": row["prev_trade_date"].isoformat(),
+            "ratio": float(row["ratio"]),
+        }
+        for day, row in sorted(stored.items())
+        if day not in detected
+    ]
+    for item in retired:
+        conn.execute(
+            corporate_actions.delete().where(key_of(date.fromisoformat(item["effective_date"])))
+        )
+    for item in superseded:
+        day = date.fromisoformat(item["effective_date"])
+        conn.execute(corporate_actions.delete().where(key_of(day)))
+        pending.append(row_of(detected[day]))
+        stored.pop(day, None)
+    if retired or superseded:
+        log.warning(
+            "equity %s: %d stored action(s) retired and %d superseded — a session stored "
+            "since they were detected lies between the bars they were measured from; "
+            "first %s", ins_code, len(retired), len(superseded), (retired or superseded)[0],
         )
 
     # The cumulative factor of EVERY earlier action changes when a new action
@@ -326,6 +419,10 @@ def _write_actions(
         "actions_inserted": inserted,
         "actions_existing": len(series.actions) - len(pending),
         "actions_refactored": refactored,
+        "actions_retired": len(retired),
+        "actions_superseded": len(superseded),
+        "retired_examples": retired[:RESTATED_EXAMPLES],
+        "superseded_examples": superseded[:RESTATED_EXAMPLES],
     }
 
 
@@ -423,6 +520,35 @@ def _write_coverage(conn: Connection, ins_code: str, now: datetime) -> None:
     )
 
 
+def _stored_bars(conn: Connection, ins_code: str) -> list[Bar]:
+    """Every stored bar of ``ins_code``, ascending, as the adjuster reads one."""
+    b = equity_bars
+    rows = conn.execute(
+        select(
+            b.c.trade_date, b.c.open, b.c.high, b.c.low, b.c.close, b.c.final_close,
+            b.c.price_yesterday, b.c.volume, b.c.trade_count, b.c.value,
+        )
+        .where(b.c.ins_code == ins_code)
+        .order_by(b.c.trade_date)
+    ).all()
+    return [
+        Bar(
+            ins_code=ins_code,
+            trade_date=r.trade_date,
+            open=float(r.open),
+            high=float(r.high),
+            low=float(r.low),
+            close=float(r.close),
+            final_close=float(r.final_close),
+            price_yesterday=float(r.price_yesterday),
+            volume=int(r.volume),
+            trade_count=int(r.trade_count),
+            value=float(r.value),
+        )
+        for r in rows
+    ]
+
+
 # --- the ingest --------------------------------------------------------------
 
 
@@ -434,8 +560,12 @@ def ingest_payload(
 ) -> dict[str, Any]:
     """Ingest one instrument's daily-bar payload.  One transaction.
 
-    Everything is parsed, adjusted and validated BEFORE the transaction opens,
-    so a payload that fails any guard leaves the database exactly as it was.
+    The payload is parsed and adjusted BEFORE the transaction opens, so one
+    that fails any guard leaves the database exactly as it was.  Inside it, the
+    new bars are written and the actions and the verdict are then derived
+    again over EVERY stored bar — the series the read API serves — so a
+    session stored in the middle of the history re-measures the actions around
+    it (module docstring).  A failure at that step rolls the bars back too.
     """
     collected_at = ensure_utc(now) or utcnow()
     series = adjust(parse_daily_list(payload, ins_code=ins_code))
@@ -459,6 +589,9 @@ def ingest_payload(
             "adjustment_version": series.version,
         }
         report.update(_write_bars(conn, series.ins_code, series.bars, collected_at))
+        # What the read API will multiply: the stored bars, this payload's new
+        # sessions included, and never the payload alone.
+        series = adjust(_stored_bars(conn, series.ins_code))
         report.update(_write_actions(conn, series.ins_code, series, collected_at))
         report["verdict"] = _write_verdict(conn, series.ins_code, series, collected_at)
         _write_coverage(conn, series.ins_code, collected_at)

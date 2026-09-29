@@ -661,10 +661,13 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
         that the explicit gate for this phase.
 
         **Idempotent.** Re-posting the same payloads inserts nothing: every bar
-        and every action is already there. A payload that CONTRADICTS a stored
-        bar fails that symbol rather than overwriting it — TSETMC does not
-        revise a settled session, so a disagreement is a corrupt transfer or a
-        real restatement, and both want a human.
+        and every action is already there. A stored bar is never overwritten:
+        one the payload states differently is kept and reported as restated
+        (TSETMC's CDN serves two copies that disagree on a few bars), and a
+        payload that disagrees with most of what it overlaps fails that
+        symbol. The actions and the verdict are derived over the STORED bars,
+        so a session stored in the middle of a history re-measures the
+        actions around it.
         """
         from .equities.adjust import BarParseError
         from .equities.ingest import EquityIngestFailed, ingest_bar_files
@@ -712,8 +715,9 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
 
         Same contract as /internal/equities/bars: each item in its own
         transaction, failures collected into ``errors``, 502 only when every
-        item failed, and a payload that contradicts a stored value fails its
-        item rather than overwriting it.
+        item failed. A stored value is never overwritten: one TSETMC now
+        states differently is kept and reported as restated, and a payload
+        that disagrees with most of what it overlaps fails its item.
         """
         from .bourse.ingest import MarketIngestFailed, ingest_market_files
         from .bourse.parse import MarketParseError
@@ -754,12 +758,20 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
         never deleted), every share's حقیقی/حقوقی flow, and the whole-market
         day files.
 
-        Same contract as /internal/bourse/ingest: each share's flows and each
-        session's file in its own transaction, failures in ``errors``, 502
-        only when every item in the call failed, and a payload that
-        contradicts a stored row fails its item rather than overwriting it.
-        A malformed manifest, an unknown part or an offset past the end is a
-        statement about the CALL and answers 400.
+        Each share's flows and each session's file in its own transaction,
+        failures in ``errors``; a stored row is never overwritten, and one
+        TSETMC now states differently is reported as restated.  A malformed
+        manifest, an unknown part or an offset past the end is a statement
+        about the CALL and answers 400.
+
+        A call in which EVERY item failed answers **200 with the full report**
+        (``all_failed: true``) and records the failure on the provider's
+        health row — unlike /internal/bourse/ingest's 502.  This is called
+        once per chunk by scripts/tsetmc_fetch.py through busybox wget, which
+        discards the body of a non-2xx answer: a quiet week whose only day
+        files were the two re-checked ones, both failing, reached the script as
+        a bare exit status with no reason.  The script counts every listed
+        error as a failure and exits 1.  No scheduler reads this route.
         """
         from .bourse.ingest import MarketIngestFailed
         from .bourse.parse import MarketParseError
@@ -776,11 +788,7 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
             )  # type: ignore[return-value]
         except MarketIngestFailed as exc:
             registry.record_failure(engine, "tsetmc_cdn", str(exc))
-            return JSONResponse(
-                status_code=502,
-                content=exc.report
-                | {"error": {"code": "upstream_failed", "message": str(exc)}},
-            )  # type: ignore[return-value]
+            return exc.report | {"all_failed": True, "message": str(exc)}
         registry.record_success(engine, "tsetmc_cdn")
         return report
 
@@ -799,8 +807,11 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
     def bourse_fund_ingest(body: FundIngestRequest) -> dict:
         """Ingest commodity-fund daily lists into ``prices`` as toman closes
         (source ``tsetmc_cdn``, stamped 23:00 UTC on the session date,
-        traded sessions only, never overwritten). Same 400/502/health-row
-        contract as /internal/bourse/ingest.
+        traded sessions only, before any live source's first day, never
+        overwritten). 400 for a bad call; a call in which every fund failed
+        answers 200 with the full report (``all_failed: true``) and records
+        the failure on the health row, for the reason
+        /internal/bourse/shares/ingest states.
         """
         from .bourse.funds import ingest_fund_files
         from .bourse.ingest import MarketIngestFailed
@@ -815,11 +826,7 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
             )  # type: ignore[return-value]
         except MarketIngestFailed as exc:
             registry.record_failure(engine, "tsetmc_cdn", str(exc))
-            return JSONResponse(
-                status_code=502,
-                content=exc.report
-                | {"error": {"code": "upstream_failed", "message": str(exc)}},
-            )  # type: ignore[return-value]
+            return exc.report | {"all_failed": True, "message": str(exc)}
         registry.record_success(engine, "tsetmc_cdn")
         return report
 

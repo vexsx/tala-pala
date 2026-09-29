@@ -113,7 +113,12 @@
 -- session pairs, priceYesterday equals the previous closing price on all but
 -- two, and those two differ by exactly one rial (rounding): no split and no
 -- restated unit, so the closes are comparable across the whole history
--- unadjusted. The 190 zero-trade rows are carry-forward fillers
+-- unadjusted. That is true of the copy TSETMC's CDN served for that count:
+-- the other copy it serves (measured the same day, five minutes apart) lacks
+-- the 2023-03-27 session, so there AYAR's, TALA's and KAHRABA's 2023-03-28
+-- reference is the missing session's close — a gap in the copy, not a
+-- restatement, and app/bourse/funds.py judges it as one (against TEDPIX's
+-- sessions). The 190 zero-trade rows are carry-forward fillers
 -- (pClosing = priceYesterday on all 190, on the same closure windows as
 -- TGJU's 2026 gaps) and are not prices of anything. Funds trade until 18:00
 -- Tehran (their newest rows are stamped hEven 175959 and 180000), later than
@@ -360,7 +365,7 @@ INSERT INTO commodity_funds (ins_code, instrument_code, symbol_fa, name_fa, unde
   ('34144395039913458','IR_GOLD_FUND_AYAR','عیار','صندوق طلای عیار مفید','gold',
      'IRTKMOFD0001; 1,998 daily rows from 2018-06-02 on 2026-09-29, 48 of them zero-trade carries.'),
   ('46700660505281786','IR_GOLD_FUND_TALA','طلا','صندوق س. کالای پارسیان','gold',
-     'IRTKLOTF0001; 2,237 daily rows from 2017-06-10 on 2026-09-29, 58 of them zero-trade carries. The oldest fund here, and the highest unit price (1,749,293 rials on 2026-09-28): a level, not a split — its reference never restates.'),
+     'IRTKLOTF0001; 2,237 daily rows from 2017-06-10 on 2026-09-29, 58 of them zero-trade carries. The oldest fund here, and the highest unit price (1,749,293 rials on 2026-09-28): a level, not a split: no reference restates beyond a rial, except across the 2023-03-27 session one of TSETMC''s two CDN copies omits.'),
   ('25559236668122210','IR_GOLD_FUND_KAHRABA','کهربا','صندوق س. کالای کهربا','gold',
      'IRTKROBA0001; 1,250 daily rows from 2021-07-06 on 2026-09-29, 34 of them zero-trade carries.'),
   ('18156575395080321','IR_SILVER_FUND_SILVER','سیلور','صندوق س.بازده نقره نوا','silver',
@@ -368,3 +373,24 @@ INSERT INTO commodity_funds (ins_code, instrument_code, symbol_fa, name_fa, unde
   ('33761569293467411','IR_SILVER_FUND_SIMIN','سیمین','صندوق س.نقره سیمین هوبر','silver',
      'IRTKSIMI0001; 183 daily rows from 2025-12-20 on 2026-09-29, 25 of them zero-trade carries.')
 ON CONFLICT (ins_code) DO NOTHING;
+
+-- ------------------------------------------------------ 0029's index notes
+-- TSETMC's two copies, in the index notes 0029 wrote.
+--
+-- Fetched five minutes apart on 2026-09-29, the CDN answered two copies of the
+-- index histories. In one, the second market and the price index of 50
+-- companies carry the decimal-shift stretches 0029's notes describe; in the
+-- other they do not (10,060,226.2 where the first prints 1,006,020.0 on
+-- 2026-08-16; 142 dates of the price-50 index a power of ten apart). Either
+-- copy is stored corrected by scale_exp, and a later copy a power of ten away
+-- is accepted as the same value, so the chart is the same whichever was
+-- ingested first; the notes stop claiming the stretch is simply what TSETMC
+-- stores. Only a note still reading as 0029 wrote it is changed.
+UPDATE market_indices SET notes =
+  'One of the two copies of this history TSETMC''s CDN serves stores it at one tenth of its value from 2026-08-16 onward (history 1,315,840 against a live 13,310,356 on 2026-09-29); the other does not. Whichever copy was ingested, the values are corrected by scale_exp, and the other copy is accepted as the same values a power of ten apart.'
+WHERE ins_code = '71704845530629737'
+  AND notes = 'Stored at one tenth of its value from 2026-08-16 onward (history 1,315,840 against a live 13,310,356 on 2026-09-29); corrected by scale_exp.';
+UPDATE market_indices SET notes =
+  'One of the two copies of this history TSETMC''s CDN serves carries 9 decimal-shift steps, most of them in January-February 2026 alternating between scales day to day; the other does not (142 dates a power of ten apart, measured 2026-09-29). Whichever copy was ingested, the values are corrected by scale_exp.'
+WHERE ins_code = '69932667409721265'
+  AND notes = 'Carries 9 decimal-shift steps, most of them in January-February 2026 alternating between scales day to day; corrected by scale_exp.';

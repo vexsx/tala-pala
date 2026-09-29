@@ -35,6 +35,7 @@ changes that count.
 from __future__ import annotations
 
 import copy
+import math
 import os
 import re
 from datetime import date, datetime, timezone
@@ -43,6 +44,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.bourse.ingest import (
+    IndexContradiction,
     MarketIngestFailed,
     index_roster,
     ingest_client_flows,
@@ -50,6 +52,7 @@ from app.bourse.ingest import (
     ingest_market_files,
     ingest_market_values,
     ingest_snapshot,
+    restatement_is_systematic,
 )
 from app.bourse.parse import (
     MarketParseError,
@@ -455,14 +458,83 @@ def test_a_power_of_ten_restatement_is_accepted_and_changes_nothing(engine):
     assert float(row.close) * 10 ** row.scale_exp == pytest.approx(13158400.0)
 
 
-def test_any_other_restatement_fails_the_index_and_names_the_date(engine):
+def test_the_two_print_formats_of_one_index_value_are_one_value(engine):
+    """MEASURED 2026-09-29: TSETMC's CDN answered two copies five minutes
+    apart, one printing an index to six significant digits and one to one
+    decimal (3,654,230.0 against 3,654,237.6; 148.3 against 148.4). Compared
+    exactly, 64 of 71 indices failed on the second run."""
+    _register_index(engine, FINANCIAL)
+    payload = load_fixture_json_gz("tsetmc_index_financial.json.gz")
+    ingest_index_history(engine, payload, _live())
+    other = copy.deepcopy(payload)
+    for row in other["indexB2"][:200]:
+        value = row["xNivInuClMresIbs"]
+        digits = 6 - len(str(int(value)))  # six significant digits, truncated
+        row["xNivInuClMresIbs"] = math.floor(value * 10 ** digits) / 10 ** digits
+    report = ingest_index_history(engine, other, _live())
+    assert report["restated"] == 0 and report["values_inserted"] == 0
+
+
+def test_a_restated_index_value_is_kept_and_named(engine):
+    """Beyond the print formats the two copies disagreed on three indices, one
+    date each (-0.72%, -0.51%, -0.12%). The stored value stays; the new
+    sessions are still ingested; the report names the date."""
+    _register_index(engine, FINANCIAL)
+    payload = load_fixture_json_gz("tsetmc_index_financial.json.gz")
+    newest = max(r["dEven"] for r in payload["indexB2"])
+    older = copy.deepcopy(payload)
+    older["indexB2"] = [r for r in older["indexB2"] if r["dEven"] != newest]
+    ingest_index_history(engine, older, _live())
+    changed = copy.deepcopy(payload)
+    target = changed["indexB2"][100]
+    stored = target["xNivInuClMresIbs"]
+    target["xNivInuClMresIbs"] = stored * 0.9928
+    report = ingest_index_history(engine, changed, _live())
+    assert report["values_inserted"] == 1
+    assert report["restated"] == 1
+    [example] = report["restated_examples"]
+    assert example["stored"] == pytest.approx(stored) and example["served"] == target["xNivInuClMresIbs"]
+    with engine.connect() as conn:
+        kept = conn.execute(
+            select(market_index_values.c.close).where(
+                market_index_values.c.trade_date == date.fromisoformat(example["date"])
+            )
+        ).scalar_one()
+    assert float(kept) == pytest.approx(stored)  # never overwritten
+
+
+def test_an_index_payload_unlike_most_of_the_store_fails_the_index(engine):
     _register_index(engine, FINANCIAL)
     payload = load_fixture_json_gz("tsetmc_index_financial.json.gz")
     ingest_index_history(engine, payload, _live())
     changed = copy.deepcopy(payload)
-    changed["indexB2"][100]["xNivInuClMresIbs"] *= 1.01
-    with pytest.raises(MarketParseError, match="contradicts 1 stored value"):
+    for row in changed["indexB2"]:
+        row["xNivInuClMresIbs"] *= 1.5
+    with pytest.raises(IndexContradiction, match="not a restatement of this series"):
         ingest_index_history(engine, changed, _live())
+
+
+def test_restatement_is_systematic_only_past_half_of_enough_rows():
+    assert not restatement_is_systematic(1, 10)
+    assert not restatement_is_systematic(5, 10)
+    assert restatement_is_systematic(6, 10)
+    # Too few rows compared to call anything systematic: a one-row overlap
+    # that disagrees is a restatement, not a reason to stall a share for good.
+    assert not restatement_is_systematic(3, 3)
+    assert restatement_is_systematic(3, 4)
+
+
+def test_a_power_of_ten_restatement_in_the_other_print_format_is_accepted(engine):
+    """The copy without the decimal-shift stretch prints 10,060,226.2 where the
+    stretched one printed 1,006,020.0: a power of ten to within the print."""
+    _register_index(engine, SECOND_MARKET, kind="market")
+    payload = load_fixture_json_gz("tsetmc_index_second_market.json.gz")
+    ingest_index_history(engine, payload, _live())
+    repaired = copy.deepcopy(payload)
+    newest = next(r for r in repaired["indexB2"] if r["dEven"] == 20260928)
+    newest["xNivInuClMresIbs"] = 13158426.2
+    report = ingest_index_history(engine, repaired, _live())
+    assert report["restated_by_power_of_ten"] == 1 and report["restated"] == 0
 
 
 def test_an_index_outside_the_registry_is_refused(engine):
