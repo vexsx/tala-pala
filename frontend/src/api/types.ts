@@ -2429,6 +2429,28 @@ export interface TieredFlowSummary {
   value_share_pct: number | null
   previous_value_share_pct: number | null
   value_share_change_pp: number | null
+  /**
+   * Why a share, a previous share or the change is null although rows were
+   * summed: the group's own coverage falls short of the 90% a market session
+   * needs, or nothing of it was summed in the window before.
+   */
+  value_share_reason?: string
+  /** The group's OWN coverage against the day files (null where not measured). */
+  coverage: SectorFlowGroupCoverage | null
+}
+
+/**
+ * A share's, company's or sector's flow over a window against the
+ * share-sessions TSETMC's day files show it trading — and the window before,
+ * which the rotation is measured against.
+ */
+export interface SectorFlowGroupCoverage {
+  day_file_share_sessions: number
+  with_flow: number
+  share_pct: number | null
+  value_pct: number | null
+  previous_share_pct: number | null
+  previous_value_pct: number | null
 }
 
 export interface SectorFlowWindow extends TieredFlowSummary {
@@ -2564,6 +2586,10 @@ export interface SectorFlowCoverage {
   thin_dates_after_newest: number
   newest_thin?: SectorFlowDateCoverage | null
   thin_dates_skipped: number
+  /** The newest stored date with a whole-market day file, market session or not. */
+  newest_day_file: SectorFlowDateCoverage | null
+  /** Stored dates in the lookback with a day file. */
+  day_files_stored: number
 }
 
 export interface SectorFlowChecks {

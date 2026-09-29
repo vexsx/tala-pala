@@ -249,7 +249,7 @@ server's own. Only the INPUTS below are invented, deterministically (seed 1405):
 
 | file | request | what it exercises |
 | --- | --- | --- |
-| `bourse-sector-flows.json` | `GET /bourse/sector-flows`, clock 2026-09-29 | every window available with its day-file coverage (~98.8% of the traded share-sessions), 12 blocks, the four tiers, index returns (and one sector with none), top lists with roster and non-roster companies, a three-board company, a company listed inside the 5-session window, `null` price changes with reasons |
+| `bourse-sector-flows.json` | `GET /bourse/sector-flows`, clock 2026-09-29 | every window available with its day-file coverage (~98.8% of the traded share-sessions), every sector and company with its own coverage (sector 27 at ~90% by count, the three unflowed shares' doing), 12 blocks, the four tiers, index returns (and one sector with none), top lists with roster and non-roster companies, a three-board company, a company listed inside the 5-session window, `null` price changes with reasons |
 | `bourse-sector-flows-27-w5.json` | `GET /bourse/sector-flows/27?window=5` | one sector's shares, each board its own row; the untraded block board with empty figures; three shares with "flow not stored" |
 | `bourse-sector-flows-roster-only.json` | `GET /bourse/sector-flows` before the first market-wide ingest: the 19 seeded roster rows (`listed=false`), ten sessions of their flow only, and no day file | `coverage.market_wide: false`, nothing summed, the "not stored for any session yet" note — the roster is not passed off as the market |
 
@@ -420,6 +420,7 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 	// dayFile holds what each session's day file lists: the value of every
 	// share it shows trading, and whether that share's flow is stored.
 	type dayEntry struct {
+		code    string
 		value   float64
 		hasFlow bool
 	}
@@ -482,7 +483,7 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 					sv *= 1.03 // disagrees with the session statement
 				}
 				r.SessionValue = &sv
-				dayFile[d] = append(dayFile[d], dayEntry{value: sv, hasFlow: true})
+				dayFile[d] = append(dayFile[d], dayEntry{code: sh.meta.InsCode, value: sv, hasFlow: true})
 				if !sh.meta.InRoster {
 					prices = append(prices, priceRow{InsCode: sh.meta.InsCode, Day: d, Close: close, PriceYesterday: py})
 				}
@@ -498,7 +499,8 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 			}
 			py := close
 			close = py * (1 + math.Min(0.05, math.Max(-0.05, rng.NormFloat64()*0.02)))
-			dayFile[days[i]] = append(dayFile[days[i]], dayEntry{value: 20e9 * math.Exp(rng.NormFloat64()*0.5)})
+			dayFile[days[i]] = append(dayFile[days[i]], dayEntry{code: m.InsCode,
+				value: 20e9 * math.Exp(rng.NormFloat64()*0.5)})
 			prices = append(prices, priceRow{InsCode: m.InsCode, Day: days[i], Close: close, PriceYesterday: py})
 		}
 	}
@@ -561,9 +563,18 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 		metas = append(metas, sh.meta)
 	}
 	metas = append(metas, unflowed...)
+	// The day files' traded rows, as sectorFlowsPricesSelect reads them: what
+	// every share's, company's and sector's own coverage is measured against.
+	var files []dayFileRow
+	for d, entries := range dayFile {
+		for _, e := range entries {
+			files = append(files, dayFileRow{InsCode: e.code, Day: d, Value: e.value})
+		}
+	}
 	build := func(rows []marketRow) sectorFlowsBuilt {
 		return buildSectorFlows(sectorFlowInput{Calendar: buildMarketCalendar(counts(rows, true), calendarSessions),
-			Rows: rows, Prices: prices, Shares: metas, Sectors: names, SectorIndex: index, IndexSeries: series})
+			Rows: rows, Prices: prices, DayFiles: files, Shares: metas, Sectors: names, SectorIndex: index,
+			IndexSeries: series})
 	}
 	write := func(name string, v any) {
 		body, err := json.Marshal(v) // compact, as the route serves it

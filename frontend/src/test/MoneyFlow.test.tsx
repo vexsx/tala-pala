@@ -329,6 +329,85 @@ describe('the sector table', () => {
     expect(metals.shares).toBeGreaterThan(metals.instruments)
   })
 
+  it("marks a sector's own coverage, and says why a share it cannot support is missing", async () => {
+    // MEASURED on the rehearsal's clone: one share missing its newest week
+    // halved its sector's value share while the market read 99.9% covered
+    // and the row said "6 of 6 shares with flow". The API withholds the share
+    // and says why; the page shows the coverage and the reason.
+    const reason =
+      "flow is stored for 25 of the 30 share-sessions TSETMC's day files show this sector trading in this window " +
+      '(83.3%, and 40.0% of their traded value), under the 90% a share of traded value needs: summed from what is ' +
+      'stored, it would be understated'
+    const sectors = FLOWS.sectors.map((s) =>
+      s.sector_code === '27'
+        ? {
+            ...s,
+            windows: {
+              ...s.windows,
+              '5': {
+                ...s.windows['5'],
+                value_share_pct: null,
+                previous_value_share_pct: null,
+                value_share_change_pp: null,
+                value_share_reason: reason,
+                coverage: {
+                  day_file_share_sessions: 30,
+                  with_flow: 25,
+                  share_pct: 83.33,
+                  value_pct: 40,
+                  previous_share_pct: 100,
+                  previous_value_pct: 100
+                }
+              }
+            }
+          }
+        : s
+    )
+    await renderPage({ ...FLOWS, sectors })
+    const row = screen.getByTestId('mf-sector-27')
+    const mark = within(row).getByTestId('mf-sector-coverage-27')
+    expect(mark.textContent).toBe('flow for 25 of 30 traded share-sessions (40.0% of their value)')
+    expect(mark).toHaveAttribute('title', reason)
+    const dashes = within(row)
+      .getAllByRole('cell')
+      .filter((c) => c.textContent === '—' && c.getAttribute('title') === reason)
+    expect(dashes.length).toBe(2) // the share, and the change against the window before
+    // A fully covered sector carries no mark.
+    expect(within(screen.getByTestId('mf-sector-13')).queryByTestId('mf-sector-coverage-13')).toBeNull()
+  })
+
+  it('says how many sessions of a partly stored share have no flow', async () => {
+    // The rehearsal's فاهواز traded 20 sessions with flow stored for 15; its
+    // row read "51.6B toman, 0.1%" with no marker.
+    const partial = METALS_5.items.find((it) => it.summary.rows > 0 && it.flow_not_stored_sessions === 0)!
+    const items = METALS_5.items.map((it) =>
+      it.ins_code === partial.ins_code ? { ...it, traded_sessions: 5, flow_not_stored_sessions: 2 } : it
+    )
+    apiMock.mockImplementation((path: string) =>
+      path === '/bourse/sector-flows/27?window=5'
+        ? Promise.resolve({ ...METALS_5, items })
+        : routeTo(FLOWS)(path)
+    )
+    render(
+      <MemoryRouter>
+        <SettingsProvider>
+          <MoneyFlow />
+        </SettingsProvider>
+      </MemoryRouter>
+    )
+    await screen.findByTestId('mf-sector-table')
+    fireEvent.click(within(screen.getByTestId('mf-sector-27')).getByRole('button', { name: 'Basic metals' }))
+    const shares = await screen.findByTestId('mf-shares-27')
+    const mark = within(shares).getByTestId(`mf-flow-partial-${partial.ins_code}`)
+    expect(mark.textContent).toBe('flow not stored for 2 of 5 sessions')
+    // The value is still shown: it is what the stored sessions sum to.
+    expect(within(shares).getByTestId(`mf-share-${partial.ins_code}`).textContent).toContain('toman')
+    // A wholly unstored share keeps the full label, and no partial mark.
+    const unflowed = METALS_5.items.find((it) => it.summary.rows === 0 && it.flow_not_stored_sessions > 0)!
+    expect(within(shares).queryByTestId(`mf-flow-partial-${unflowed.ins_code}`)).toBeNull()
+    expect(within(shares).getByTestId(`mf-flow-not-stored-${unflowed.ins_code}`).textContent).toBe('flow not stored')
+  })
+
   it('shows no share of the market for a sector with nothing summed', async () => {
     // "0.0%" and "0.00 pp" beside a sector index that moved read as a fact.
     const sectors = FLOWS.sectors.map((s) =>
@@ -511,6 +590,34 @@ describe('before the market-wide flows exist', () => {
     expect(screen.queryByTestId('mf-tiles')).toBeNull()
     expect(screen.queryByTestId('mf-heatmap')).toBeNull()
     expect(screen.getByTestId('mf-explainer').textContent).toContain('Market-wide flows are not stored for any session yet')
+    expect(screen.getByTestId('mf-newest-day-file').textContent).toBe('No whole-market day file is stored at all.')
     await waitFor(() => expect(apiMock).toHaveBeenCalledTimes(1))
+  })
+
+  it('names the newest day file when the newest stored date has none', async () => {
+    // MEASURED on the rehearsal's clone: a roster-only flow ingest on the
+    // newest date, and every one of 214 day files near 83% covered — the page
+    // named only the newest date's missing day file.
+    const coverage = {
+      ...ROSTER_ONLY.coverage,
+      day_files_stored: 214,
+      newest_day_file: {
+        date: '2026-09-27',
+        traded_shares: 808,
+        day_file: true,
+        day_file_traded_shares: 973,
+        with_flow: 808,
+        share_pct: 83.04,
+        value_pct: 86.1,
+        reason:
+          'flow is stored for 808 of the 973 shares its day file shows trading (83.0%, and 86.1% of their traded ' +
+          'value); a market session needs 90% of both'
+      }
+    }
+    await renderPage({ ...ROSTER_ONLY, coverage }, 'mf-not-ingested')
+    const line = screen.getByTestId('mf-newest-day-file')
+    expect(line.textContent).toContain('The newest date with a whole-market day file, 2026-09-27, is not one either')
+    expect(line.textContent).toContain('flow is stored for 808 of the 973 shares')
+    expect(line.textContent).toContain('214 stored dates have a day file')
   })
 })

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -128,11 +129,31 @@ func (m *testMarket) counts() []sessionCount {
 	return out
 }
 
+// dayFiles is what sectorFlowsPricesSelect's day-file rows hold for the test
+// market: the same traded rows counts() counts, each with its value.
+func (m *testMarket) dayFiles() []dayFileRow {
+	var out []dayFileRow
+	for _, r := range m.rows {
+		f := r.Flow
+		if f.BuyIValue+f.BuyNValue+f.SellIValue+f.SellNValue > 0 && !m.noFile[dayFloor(f.Day)] {
+			out = append(out, dayFileRow{InsCode: r.InsCode, Day: dayFloor(f.Day),
+				Value: f.BuyIValue + f.BuyNValue})
+		}
+	}
+	for _, p := range m.dayOnly {
+		if !m.noFile[dayFloor(p.Day)] {
+			out = append(out, dayFileRow{InsCode: p.InsCode, Day: dayFloor(p.Day), Value: p.Close})
+		}
+	}
+	return out
+}
+
 func (m *testMarket) build() sectorFlowsBuilt {
 	return buildSectorFlows(sectorFlowInput{
 		Calendar:    buildMarketCalendar(m.counts(), calendarSessions),
 		Rows:        m.rows,
 		Prices:      m.prices,
+		DayFiles:    m.dayFiles(),
 		Shares:      m.shares,
 		Sectors:     testSectors,
 		SectorIndex: m.sectorIndex,
@@ -879,6 +900,174 @@ func TestAShareTradedWithoutStoredFlowSaysSo(t *testing.T) {
 	filler := shareIn(t, b, fillerSector, 5, "90000")
 	if filler.TradedSessions != 0 || filler.FlowNotStored != 0 {
 		t.Fatalf("no price row, nothing claimed: %+v", filler)
+	}
+}
+
+// A sector states its OWN coverage, and has no measured share of the market
+// where it falls short. MEASURED on the rehearsal's clone: کماسه, 59% of
+// sector 14's value, lost its newest five sessions; the market still read
+// 99.9% covered, the row said "6 of 6 shares with flow", and the sector's
+// five-session value share read 0.051% against 0.202% — its rotation flipped
+// from +0.026 to −0.125 points.
+func TestASectorShortOfItsDayFilesHasNoMeasuredShare(t *testing.T) {
+	m := newTestMarket(10)
+	m.share(shareMeta{InsCode: "big", Symbol: "کماسه", SectorCode: "27", CompanyCode: "IRO1KMAS"})
+	for i := 0; i < 5; i++ {
+		m.share(shareMeta{InsCode: fmt.Sprintf("s%d", i), Symbol: fmt.Sprintf("م%d", i), SectorCode: "27",
+			CompanyCode: fmt.Sprintf("IRO1M%03d", i)})
+	}
+	for i, d := range m.days {
+		if i < 5 { // the day file shows it trading; its flow download failed
+			m.dayOnly = append(m.dayOnly, priceRow{InsCode: "big", Day: d, Close: 300})
+		} else {
+			m.flow("big", traded(d, 180, 120, 150, 150))
+		}
+		for j := 0; j < 5; j++ {
+			m.flow(fmt.Sprintf("s%d", j), traded(d, 24, 16, 20, 20))
+		}
+	}
+	b := m.build()
+	if !b.resp.Coverage.MarketWide || b.resp.Coverage.SessionsAvailable != 10 {
+		t.Fatalf("205 of 206 shares a session is the market: %+v", b.resp.Coverage)
+	}
+	w5 := sectorOf(t, b, "27").Windows["5"]
+	c := w5.Coverage
+	if c == nil || c.DayFileShareSessions != 30 || c.WithFlow != 25 {
+		t.Fatalf("sector coverage %+v", c)
+	}
+	approx(t, "share", c.SharePct, 25.0/30*100, 1e-5)
+	approx(t, "value", c.ValuePct, 25*40.0/(25*40+5*300)*100, 1e-5)
+	approx(t, "previous share", c.PreviousSharePct, 100, 1e-9)
+	if w5.ValueSharePct != nil || w5.ValueShareChangePP != nil || w5.PreviousValueSharePct != nil {
+		t.Fatalf("a sector 40%% covered by value has no measured share: %v %v", w5.ValueSharePct,
+			w5.ValueShareChangePP)
+	}
+	if !contains(w5.ValueShareReason, "25 of the 30 share-sessions") ||
+		!contains(w5.ValueShareReason, "40.0% of their traded value") {
+		t.Fatalf("reason %q", w5.ValueShareReason)
+	}
+	// Its sums are still stated, beside the coverage that qualifies them.
+	approx(t, "value summed", w5.TotalValueToman, 25*40, 1e-9)
+	// The sector fully covered keeps its share.
+	if f := sectorOf(t, b, fillerSector).Windows["5"]; f.ValueSharePct == nil ||
+		f.Coverage == nil || *f.Coverage.SharePct != 100 {
+		t.Fatalf("filler %+v", f)
+	}
+	// The share itself: its part of the sector is not measured either.
+	it := shareIn(t, b, "27", 5, "big")
+	if it.Summary.ValueSharePct != nil || it.Summary.ValueShareReason == "" ||
+		it.Summary.Coverage == nil || it.Summary.Coverage.WithFlow != 0 {
+		t.Fatalf("share %+v", it.Summary)
+	}
+	// So is every other share's part of a sector short of its day files.
+	if other := shareIn(t, b, "27", 5, "s0"); other.Summary.ValueSharePct != nil ||
+		!contains(other.Summary.ValueShareReason, "its sector") {
+		t.Fatalf("a share of a short sector %+v", other.Summary)
+	}
+	// The market figure carries the market's coverage, as the window does.
+	mk := b.resp.Market["5"].Coverage
+	if mk == nil || mk.DayFileShareSessions != 5*206 || mk.WithFlow != 5*205 {
+		t.Fatalf("market coverage %+v", mk)
+	}
+}
+
+// A previous window with nothing summed has no share, not 0%: a sector whose
+// flow begins inside the window read a rotation of its whole current share.
+func TestAPreviousWindowWithNothingSummedHasNoShare(t *testing.T) {
+	m := newTestMarket(10)
+	m.share(shareMeta{InsCode: "3", Symbol: "وبملت", SectorCode: "57"})
+	for _, d := range m.days[:5] {
+		m.flow("3", traded(d, 400, 100, 100, 400))
+	}
+	w := sectorOf(t, m.build(), "57").Windows["5"]
+	if w.ValueSharePct == nil || w.PreviousValueSharePct != nil || w.ValueShareChangePP != nil {
+		t.Fatalf("share %v, previous %v, change %v", w.ValueSharePct, w.PreviousValueSharePct,
+			w.ValueShareChangePP)
+	}
+	if !contains(w.ValueShareReason, "nothing of this sector was summed in the window before") {
+		t.Fatalf("reason %q", w.ValueShareReason)
+	}
+}
+
+// A company in the top lists states its coverage too, and its part of the
+// market only where that coverage supports one.
+func TestACompanyShortOfItsDayFilesHasNoMeasuredShare(t *testing.T) {
+	m := newTestMarket(5)
+	m.share(shareMeta{InsCode: "1", Symbol: "فولاد", SectorCode: "27", CompanyCode: "IRO1FOLD"})
+	for i, d := range m.days {
+		if i < 3 {
+			m.dayOnly = append(m.dayOnly, priceRow{InsCode: "1", Day: d, Close: 1000})
+		} else {
+			m.flow("1", traded(d, 700, 300, 400, 600))
+		}
+	}
+	top := m.build().resp.Top["5"]
+	if len(top.Inflow) != 1 {
+		t.Fatalf("top %+v", top)
+	}
+	c := top.Inflow[0].Summary
+	if c.Coverage == nil || c.Coverage.DayFileShareSessions != 5 || c.Coverage.WithFlow != 2 ||
+		c.ValueSharePct != nil || !contains(c.ValueShareReason, "this company") {
+		t.Fatalf("company %+v", c)
+	}
+}
+
+// The same rows in any order build the same response: they arrive from the
+// database unordered, and a float sum's last bit depends on its order.
+func TestTheSameRowsInAnotherOrderBuildTheSameResponse(t *testing.T) {
+	m := newTestMarket(20)
+	for i, d := range m.days {
+		for j := 0; j < 30; j++ {
+			code := fmt.Sprintf("7%04d", j)
+			if i == 0 {
+				m.share(shareMeta{InsCode: code, Symbol: fmt.Sprintf("ن%d", j), SectorCode: "27"})
+			}
+			v := 1e9/float64(j+3) + float64(i)*1234.5678
+			m.flow(code, traded(d, 0.7*v, 0.3*v, (0.7-0.013*float64(j%7))*v, (0.3+0.013*float64(j%7))*v))
+			m.prices = append(m.prices, priceRow{InsCode: code, Day: d, Close: 1000 + v/1e7,
+				PriceYesterday: 1000 + v/1.1e7})
+		}
+	}
+	first, _ := json.Marshal(m.build().resp)
+	r := rand.New(rand.NewSource(1405))
+	for k := 0; k < 5; k++ {
+		r.Shuffle(len(m.rows), func(i, j int) { m.rows[i], m.rows[j] = m.rows[j], m.rows[i] })
+		r.Shuffle(len(m.prices), func(i, j int) { m.prices[i], m.prices[j] = m.prices[j], m.prices[i] })
+		again, _ := json.Marshal(m.build().resp)
+		if string(again) != string(first) {
+			t.Fatalf("shuffle %d: the same rows in another order build another response", k)
+		}
+	}
+}
+
+// Before the first market session the newest stored date may be a
+// roster-only flow ingest with no day file; the day files that ARE stored,
+// and how far short their flow falls, are named beside it. MEASURED on the
+// rehearsal's clone: every one of 214 day files sat near 83% while the page
+// named only the newest date's missing day file.
+func TestNotMarketWideNamesTheNewestDayFile(t *testing.T) {
+	m := newTestMarket(10)
+	for _, d := range m.days[1:] {
+		for i := 0; i < 40; i++ { // shares the day files show trading, flow not stored
+			m.dayOnly = append(m.dayOnly, priceRow{InsCode: fmt.Sprintf("8%04d", i), Day: d, Close: 100})
+		}
+	}
+	m.noFile = map[time.Time]bool{m.days[0]: true} // the newest date: roster flows only
+	b := m.build()
+	cov := b.resp.Coverage
+	if cov.MarketWide || cov.NewestStored == nil || cov.NewestStored.DayFile {
+		t.Fatalf("coverage %+v", cov)
+	}
+	f := cov.NewestDayFile
+	if f == nil || *f.Date != dayString(m.days[1]) || f.DayFileTradedShares != 240 || f.WithFlow != 200 ||
+		cov.DayFilesStored != 9 {
+		t.Fatalf("newest day file %+v, stored %d", f, cov.DayFilesStored)
+	}
+	approx(t, "its coverage", f.SharePct, 200.0/240*100, 1e-5)
+	if !contains(b.resp.Notes[0], "The newest date with a whole-market day file, "+dayString(m.days[1])) ||
+		!contains(b.resp.Notes[0], "flow is stored for 200 of the 240 shares") ||
+		!contains(b.resp.Notes[0], "9 stored date(s) have a day file") {
+		t.Fatalf("note: %s", b.resp.Notes[0])
 	}
 }
 

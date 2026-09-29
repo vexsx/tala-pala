@@ -902,6 +902,11 @@ of every call), removes its container copy, and paces requests 0.5 s apart.
 **Money flow.** A market session is a date whose stored day file shows at least 200 shares trading
 and has flow for at least 90% of them by count and by value (was: 200 flow rows); every window states
 its coverage, `newest_partial` and its median are gone, and a date that is not a session says why.
-A share's listing session (its first stored session, close beyond ×1.25 of the reference) is left out
+Every sector, company and share also states its OWN coverage against the day files (`coverage`), and
+its value share and rotation are `null` with `value_share_reason` where that coverage (or a share's
+sector's) is under 90%, or where nothing of it was summed in the window before; a partly stored share
+says for how many sessions its flow is not stored. Before the first market session the newest date
+with a day file is named beside the newest stored date (`newest_day_file`, `day_files_stored`). The
+same rows in any order build the same response. A share's listing session (its first stored session, close beyond ×1.25 of the reference) is left out
 of the price chain (measured from its first close, `listing_session`, `price_change_note`) and of
 buyer power (`listing_sessions`). docs/api.md has the fields.

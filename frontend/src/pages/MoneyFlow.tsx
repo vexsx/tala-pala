@@ -10,6 +10,7 @@ import type {
   SectorFlowBlock,
   SectorFlowChecks,
   SectorFlowCompany,
+  SectorFlowGroupCoverage,
   SectorFlowSector,
   SectorFlowShare,
   SectorFlowSharesResponse,
@@ -109,6 +110,51 @@ export function coverageLine(c: SectorFlowWindowCoverage | undefined): string | 
   return (
     `Flow is stored for ${pctText(c.share_pct)} of the ${formatGrouped(c.day_file_share_sessions)} ` +
     `share-sessions TSETMC's day files show trading (${pctText(c.value_pct)} of their traded value)`
+  )
+}
+
+/**
+ * A share's, company's or sector's OWN coverage, when the day files list
+ * anything its flow is missing: "flow for 25 of 30 traded share-sessions
+ * (40.0% of their value)". Null when nothing is missing. `short` is below the
+ * 90% a share of traded value needs, where the API withholds that share.
+ */
+export function groupCoverage(
+  c: SectorFlowGroupCoverage | null | undefined
+): { text: string; short: boolean } | null {
+  if (!c || c.day_file_share_sessions === 0) return null
+  const missing = c.with_flow < c.day_file_share_sessions || (c.value_pct !== null && c.value_pct < 100)
+  if (!missing) return null
+  const short = (c.share_pct ?? 100) < 90 || (c.value_pct ?? 100) < 90
+  return {
+    text:
+      `flow for ${formatGrouped(c.with_flow)} of ${countOf(c.day_file_share_sessions, 'traded share-session')} ` +
+      `(${pctText(c.value_pct)} of their value)`,
+    short
+  }
+}
+
+function CoverageMark({ c, reason, testId }: { c: SectorFlowGroupCoverage | null | undefined; reason?: string; testId?: string }) {
+  const cov = groupCoverage(c)
+  if (!cov) return null
+  return cov.short ? (
+    <span className="badge badge-warn bx-badge" data-testid={testId} title={reason ?? cov.text}>
+      {cov.text}
+    </span>
+  ) : (
+    <span className="muted small" data-testid={testId}>
+      {' '}
+      · {cov.text}
+    </span>
+  )
+}
+
+/** A value share, or a dash that says why there is none. */
+function ShareCell({ value, reason }: { value: number | null | undefined; reason?: string }) {
+  return (
+    <td className="num mono" title={value == null ? reason : undefined}>
+      {value == null ? '—' : `${value.toFixed(1)}%`}
+    </td>
   )
 }
 
@@ -454,8 +500,9 @@ function SectorTable({
             )}, each on its own scale.`
           : 'the trend line needs five market sessions, and fewer are stored.'}{' '}
         <em>Checks</em> counts the share-sessions behind each row: checked against a session value · identities only ·
-        excluded. A sector with nothing summed shows no share of the market (—), not 0%. Select a sector for its
-        shares.
+        excluded. A sector with nothing summed shows no share of the market (—), not 0%; so does one whose flow covers
+        less than 90% of what TSETMC's day files show it trading (its coverage is marked, and the dash says why).
+        Select a sector for its shares.
       </p>
       <div className="bx-legend" aria-hidden="true">
         <span className="bx-legend-item">
@@ -517,15 +564,21 @@ function SectorTable({
                           </>
                         ) : null}
                       </div>
+                      <CoverageMark c={win?.coverage} reason={win?.value_share_reason} testId={`mf-sector-coverage-${s.sector_code}`} />
                     </td>
                     <td className="num mono">{formatTomanScaled(win?.total_value_toman)}</td>
-                    <td className="num mono">
-                      {win?.value_share_pct == null ? '—' : `${win.value_share_pct.toFixed(1)}%`}
-                    </td>
+                    <ShareCell value={win?.value_share_pct} reason={win?.value_share_reason} />
                     <td>
                       <ShareSpark blocks={s.blocks} calendar={calendar} />
                     </td>
-                    <td className="num mono" title={win?.previous_value_share_pct != null ? `previous window ${win.previous_value_share_pct.toFixed(1)}%` : undefined}>
+                    <td
+                      className="num mono"
+                      title={
+                        win?.previous_value_share_pct != null
+                          ? `previous window ${win.previous_value_share_pct.toFixed(1)}%`
+                          : win?.value_share_reason
+                      }
+                    >
                       {signedPp(win?.value_share_change_pp)}
                     </td>
                     <td className="num mf-net-cell">
@@ -572,8 +625,9 @@ function SectorShares({ code, window: w }: { code: string; window: WindowKey }) 
       </div>
       <p className="muted small bx-unit">
         Each board is its own row. <em>Share of sector</em> is the share's part of the sector's traded value. A share
-        TSETMC's day files show trading with no flow stored for those sessions says <em>flow not stored</em>; a listed
-        share that did not trade in the window is listed with empty figures. Price change is chained through each
+        TSETMC's day files show trading with no flow stored for those sessions says <em>flow not stored</em> — for how
+        many of its sessions, when it is some of them; a listed share that did not trade in the window is listed with
+        empty figures. Price change is chained through each
         session's reference price, so a capital increase is not read as a fall; it is measured from the first close of
         a share listed inside the window, and is empty when a traded session has no stored close.
       </p>
@@ -623,12 +677,27 @@ function SectorShares({ code, window: w }: { code: string; window: WindowKey }) 
                       flow not stored
                     </span>
                   ) : (
-                    formatTomanScaled(it.summary.total_value_toman)
+                    <>
+                      {formatTomanScaled(it.summary.total_value_toman)}
+                      {/* Partly stored: the value above is summed over the
+                          sessions whose flow is stored, and says so. */}
+                      {it.flow_not_stored_sessions > 0 ? (
+                        <div
+                          className="muted small"
+                          data-testid={`mf-flow-partial-${it.ins_code}`}
+                          title={`TSETMC's day files show it trading on ${countOf(
+                            it.traded_sessions,
+                            'session'
+                          )} of this window; no flow is stored for ${it.flow_not_stored_sessions} of them, and the figures leave them out`}
+                        >
+                          flow not stored for {formatGrouped(it.flow_not_stored_sessions)} of{' '}
+                          {countOf(it.traded_sessions, 'session')}
+                        </div>
+                      ) : null}
+                    </>
                   )}
                 </td>
-                <td className="num mono">
-                  {it.summary.value_share_pct == null ? '—' : `${it.summary.value_share_pct.toFixed(1)}%`}
-                </td>
+                <ShareCell value={it.summary.value_share_pct} reason={it.summary.value_share_reason} />
                 <td className="num mono">{signedToman(it.summary.net_individual_toman)}</td>
                 <td className="num mono">{formatPct(it.summary.net_individual_pct_of_value, { digits: 1 })}</td>
                 <td className="num mono">{it.summary.buyer_power == null ? '—' : it.summary.buyer_power.toFixed(2)}</td>
@@ -808,6 +877,7 @@ function TopList({
                       </span>
                     ) : null}
                     <ListingBadge date={c.listing_session} />
+                    <CoverageMark c={c.summary.coverage} reason={c.summary.value_share_reason} testId={`mf-company-coverage-${c.ins_code}`} />
                   </td>
                   <td className="small">{sectorLabel({ sector_code: c.sector_code, name_en: c.sector_name_en })}</td>
                   <td className="num mono">{signedToman(c.summary.net_individual_toman)}</td>
@@ -864,6 +934,7 @@ function Explainer({ checks, notes }: { checks: SectorFlowChecks; notes: string[
 function NotIngested({ data, calendar }: { data: SectorFlowsResponse; calendar: 'jalali' | 'gregorian' }) {
   const c = data.coverage
   const stored = c.newest_stored
+  const dayFile = c.newest_day_file
   return (
     <div className="card callout callout-warn" data-testid="mf-not-ingested" role="status">
       <div className="card-title">Market-wide flows are not stored for any session yet</div>
@@ -881,6 +952,20 @@ function NotIngested({ data, calendar }: { data: SectorFlowsResponse; calendar: 
           <>No money-flow row and no day file is stored at all, so nothing is summed here.</>
         )}
       </p>
+      {/* The newest stored date can be a roster-only flow ingest with no day
+          file; the day files that ARE stored, and how far short their flow
+          falls, are the part an operator can act on. */}
+      {stored?.date && dayFile?.date && dayFile.date !== stored.date ? (
+        <p className="bx-verdict" data-testid="mf-newest-day-file">
+          The newest date with a whole-market day file, {formatDate(dayFile.date, calendar)}, is not one either:{' '}
+          {dayFile.reason}. {countOf(c.day_files_stored, 'stored date')} {c.day_files_stored === 1 ? 'has' : 'have'} a day
+          file.
+        </p>
+      ) : stored?.date && !dayFile ? (
+        <p className="bx-verdict" data-testid="mf-newest-day-file">
+          No whole-market day file is stored at all.
+        </p>
+      ) : null}
       <p className="muted small">
         The roster's own table — {countOf(c.roster_instruments, 'share')}, labelled as the roster — is on the{' '}
         <Link to="/bourse">Tehran market</Link> page. Market-wide flows arrive with the off-server fetch (

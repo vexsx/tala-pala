@@ -196,6 +196,15 @@ type shareMeta struct {
 	FlowFirstDate *time.Time
 }
 
+// dayFileRow is one share TSETMC's whole-market day file shows TRADING on
+// one date, with its traded value (toman): the exchange's own list of who
+// traded, which a group's flow is measured against as the market's is.
+type dayFileRow struct {
+	InsCode string
+	Day     time.Time
+	Value   float64
+}
+
 type sectorName struct {
 	Code, NameFA, NameEN string
 }
@@ -279,6 +288,12 @@ type marketCalendar struct {
 	ThinAfterNewest int
 	NewestThin      *sessionCount
 	ThinSkipped     int
+	// NewestDayFile is the newest stored date with a whole-market day file,
+	// market session or not, and DayFiles how many stored dates have one:
+	// when the newest stored date has none (a roster-only flow ingest, a
+	// day file still to come), its reason is not the one that matters.
+	NewestDayFile *sessionCount
+	DayFiles      int
 }
 
 func (c marketCalendar) marketWide() bool { return len(c.Sessions) > 0 }
@@ -293,6 +308,17 @@ func buildMarketCalendar(counts []sessionCount, keep int) marketCalendar {
 		newest := s[0]
 		newest.Day = dayFloor(newest.Day)
 		c.NewestStored = &newest
+	}
+	for _, x := range s {
+		if !x.DayFile {
+			continue
+		}
+		c.DayFiles++
+		if c.NewestDayFile == nil {
+			file := x
+			file.Day = dayFloor(file.Day)
+			c.NewestDayFile = &file
+		}
 	}
 	// A thin date counts as skipped only once an older market session shows it
 	// lay BETWEEN two: the roster's dates before the market-wide history began
@@ -415,6 +441,104 @@ func (w sessionWindow) item(stored int) sessionWindowItem {
 	}
 	it.Coverage = w.Coverage
 	return it
+}
+
+// --- a group's own coverage -----------------------------------------------------------
+
+// coverageAcc is what one share's, company's or sector's figures over a window
+// rest on, measured against the day files as the market's are: the
+// share-sessions they show it trading, and those with a traded flow row, by
+// count and by value. Every market session passed minFlowCoverage for the
+// market as a whole; a group can still fall far short of it — the fetch is
+// built to lose single downloads, and on the rehearsal's clone one share
+// missing its newest week (کماسه, 59% of sector 14's value) halved the
+// sector's value share and flipped its rotation from +0.026 to −0.125 points
+// while the market read 99.9% covered and the row said "6 of 6 shares with
+// flow".
+type coverageAcc struct {
+	dayFile, withFlow       int
+	dayValue, withFlowValue float64
+}
+
+func (c *coverageAcc) add(value float64, flowed bool) {
+	c.dayFile++
+	c.dayValue += value
+	if flowed {
+		c.withFlow++
+		c.withFlowValue += value
+	}
+}
+
+func (c *coverageAcc) merge(o coverageAcc) {
+	c.dayFile += o.dayFile
+	c.withFlow += o.withFlow
+	c.dayValue += o.dayValue
+	c.withFlowValue += o.withFlowValue
+}
+
+// meets is the market session's rule applied to a group's window: flow for at
+// least minFlowCoverage of the share-sessions the day files show it trading,
+// by count and by value. A group the day files never show trading in the
+// window is missing nothing they list.
+func (c coverageAcc) meets() bool {
+	if c.dayFile == 0 {
+		return true
+	}
+	return float64(c.withFlow) >= minFlowCoverage*float64(c.dayFile) &&
+		(c.dayValue <= 0 || c.withFlowValue >= minFlowCoverage*c.dayValue)
+}
+
+func (c coverageAcc) pcts() (share, value *float64) {
+	if c.dayFile > 0 {
+		share = fp(float64(c.withFlow) / float64(c.dayFile) * 100)
+	}
+	if c.dayValue > 0 {
+		value = fp(c.withFlowValue / c.dayValue * 100)
+	}
+	return share, value
+}
+
+// shortfall says, of a group whose coverage does not meet the rule, what it
+// covers and what that does to a share of traded value measured over it. Pure.
+func (c coverageAcc) shortfall(who, when, consequence string) string {
+	share, value := c.pcts()
+	return fmt.Sprintf("flow is stored for %d of the %d share-sessions TSETMC's day files show %s "+
+		"trading %s (%s, and %s of their traded value), under the %.0f%% a share of traded value "+
+		"needs: %s", c.withFlow, c.dayFile, who, when, pctOrDash(share), pctOrDash(value),
+		minFlowCoverage*100, consequence)
+}
+
+const (
+	understated = "summed from what is stored, it would be understated"
+	overstated  = "summed from what is stored, the total this is a part of is understated, and the part overstated"
+)
+
+func pctOrDash(p *float64) string {
+	if p == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f%%", *p)
+}
+
+// groupCoverage is coverageAcc as a response states it, for the window and
+// the window of equal length before (the one value_share_change_pp is
+// measured against; null percentages where there is none).
+type groupCoverage struct {
+	DayFileShareSessions int      `json:"day_file_share_sessions"`
+	WithFlow             int      `json:"with_flow"`
+	SharePct             *float64 `json:"share_pct"`
+	ValuePct             *float64 `json:"value_pct"`
+	PreviousSharePct     *float64 `json:"previous_share_pct"`
+	PreviousValuePct     *float64 `json:"previous_value_pct"`
+}
+
+func coverageItem(cur, prev coverageAcc, w sessionWindow) *groupCoverage {
+	g := &groupCoverage{DayFileShareSessions: cur.dayFile, WithFlow: cur.withFlow}
+	g.SharePct, g.ValuePct = cur.pcts()
+	if w.PrevAvailable {
+		g.PreviousSharePct, g.PreviousValuePct = prev.pcts()
+	}
+	return g
 }
 
 // --- summing ------------------------------------------------------------------------
@@ -543,6 +667,13 @@ type TieredFlowSummary struct {
 	ValueSharePct         *float64 `json:"value_share_pct"`
 	PreviousValueSharePct *float64 `json:"previous_value_share_pct"`
 	ValueShareChangePP    *float64 `json:"value_share_change_pp"`
+	// ValueShareReason says why a share, a previous share or the change is
+	// null although rows were summed: the group's own coverage (Coverage)
+	// falls short of the rule a market session meets, or nothing of it was
+	// summed in the window before.
+	ValueShareReason string `json:"value_share_reason,omitempty"`
+	// Coverage is this group's own, against the day files (groupCoverage).
+	Coverage *groupCoverage `json:"coverage"`
 }
 
 func summarizeAcc(a flowAcc, w sessionWindow) TieredFlowSummary {
@@ -603,6 +734,50 @@ func (s *TieredFlowSummary) setValueShare(cur, curWhole float64, prev *[2]float6
 	if s.ValueSharePct != nil && s.PreviousValueSharePct != nil {
 		s.ValueShareChangePP = fp(*s.ValueSharePct - *s.PreviousValueSharePct)
 	}
+}
+
+// groupShare is a group's part of an enclosing total over a window and the
+// window before, with the coverage each rests on.
+type groupShare struct {
+	who             string
+	cur, whole      float64
+	prev, prevWhole float64
+	prevRows        int // accepted rows summed in the window before
+	cov, prevCov    coverageAcc
+	// The enclosing total's own coverage, when it can fall short too (a
+	// share's sector; never the market, whose every session meets the rule).
+	enclosing    *coverageAcc
+	enclosingWho string
+}
+
+// setCoveredValueShare sets s's value share, previous share and change from
+// g, withholding each one the coverage cannot support — a share summed over
+// flow stored for part of what the day files show trading understates the
+// group — and a previous share of a window in which nothing was summed, which
+// is unknown rather than 0%. Pure.
+func (s *TieredFlowSummary) setCoveredValueShare(g groupShare, w sessionWindow) {
+	s.Coverage = coverageItem(g.cov, g.prevCov, w)
+	switch {
+	case !g.cov.meets():
+		s.ValueShareReason = g.cov.shortfall(g.who, "in this window", understated)
+		return
+	case g.enclosing != nil && !g.enclosing.meets():
+		s.ValueShareReason = g.enclosing.shortfall(g.enclosingWho, "in this window", overstated)
+		return
+	}
+	var prev *[2]float64
+	if w.PrevAvailable {
+		switch {
+		case g.prevRows == 0:
+			s.ValueShareReason = "nothing of " + g.who + " was summed in the window before, so it " +
+				"has no previous share to measure a change from"
+		case !g.prevCov.meets():
+			s.ValueShareReason = g.prevCov.shortfall(g.who, "in the window before", understated)
+		default:
+			prev = &[2]float64{g.prev, g.prevWhole}
+		}
+	}
+	s.setValueShare(g.cur, g.whole, prev)
 }
 
 // --- a share's price over a window ---------------------------------------------------
@@ -908,6 +1083,13 @@ type sectorFlowCoverage struct {
 	ThinDatesAfterNewest int           `json:"thin_dates_after_newest"`
 	NewestThin           *dateCoverage `json:"newest_thin,omitempty"`
 	ThinDatesSkipped     int           `json:"thin_dates_skipped"`
+	// NewestDayFile is the newest stored date with a whole-market day file,
+	// market session or not, and DayFilesStored how many stored dates in the
+	// lookback have one. Before the first market session they say whether
+	// the day files exist and how far their flow falls short, which the
+	// newest stored date alone cannot when it has no day file.
+	NewestDayFile  *dateCoverage `json:"newest_day_file"`
+	DayFilesStored int           `json:"day_files_stored"`
 }
 
 // flowChecks publishes the tolerances so a client never restates them.
@@ -949,9 +1131,12 @@ type sectorFlowInput struct {
 	// Rows are flow rows on the calendar's dates; any other date is ignored.
 	Rows []marketRow
 	// Prices over the calendar's span, thin dates included.
-	Prices  []priceRow
-	Shares  []shareMeta
-	Sectors []sectorName
+	Prices []priceRow
+	// DayFiles are the traded rows of the stored whole-market day files over
+	// the same span: what each group's coverage is measured against.
+	DayFiles []dayFileRow
+	Shares   []shareMeta
+	Sectors  []sectorName
 	// SectorIndex maps a sector code to its bourse sector index (SectorIndexFor);
 	// IndexSeries holds the validated series, as the index store does.
 	SectorIndex map[string]string
@@ -974,6 +1159,26 @@ type shareWindows struct {
 	// flowed those on which its flow shows a trade.
 	priced []int
 	flowed map[int]bool
+	// dayFile is the share's traded value in the day file of each market
+	// session, by calendar position, where the day file shows it trading.
+	dayFile map[int]float64
+}
+
+// coverageIn is the share's coverage over window n and the window before.
+// Pure.
+func (sw *shareWindows) coverageIn(n int) (cur, prev coverageAcc) {
+	if sw == nil {
+		return cur, prev
+	}
+	for i, v := range sw.dayFile {
+		switch {
+		case i < n:
+			cur.add(v, sw.flowed[i])
+		case i < 2*n:
+			prev.add(v, sw.flowed[i])
+		}
+	}
+	return cur, prev
 }
 
 // pricedIn counts the share's priced market sessions in window n, and those
@@ -1093,9 +1298,29 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 			byShare[m.InsCode] = nil
 		}
 	}
+	// Every sum below is in a fixed order: a float sum's last bit depends on
+	// the order of its terms, the rows arrive in whatever order the database
+	// returns them, and the same data must build the same response.
+	for code := range byShare {
+		rows := byShare[code]
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].idx > rows[j].idx })
+	}
 	prices := map[string][]priceRow{}
 	for _, p := range in.Prices {
 		prices[p.InsCode] = append(prices[p.InsCode], p)
+	}
+	for code := range prices {
+		ps := prices[code]
+		sort.SliceStable(ps, func(i, j int) bool { return ps[i].Day.Before(ps[j].Day) })
+	}
+	dayFiles := map[string]map[int]float64{}
+	for _, r := range in.DayFiles {
+		if i, ok := pos[dayFloor(r.Day)]; ok {
+			if dayFiles[r.InsCode] == nil {
+				dayFiles[r.InsCode] = map[int]float64{}
+			}
+			dayFiles[r.InsCode][i] = r.Value
+		}
 	}
 
 	nBlocks := len(cal.Sessions) / blockSessions
@@ -1112,6 +1337,7 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 	perShare := map[string]*shareWindows{}
 	oldestSession := cal.Sessions[len(cal.Sessions)-1]
 	sectorPrev := map[string]map[int]float64{}
+	sectorPrevRows := map[string]map[int]int{}
 	marketPrev := map[int]float64{}
 	sectorBlocks := map[string][]flowAcc{}
 	marketBlocks := make([]flowAcc, nBlocks)
@@ -1128,7 +1354,7 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 		m := meta[code]
 		sec := m.SectorCode
 		sw := &shareWindows{acc: map[int]*flowAcc{}, traded: map[int][]time.Time{},
-			thin: thinTraded[code], flowed: map[int]bool{},
+			thin: thinTraded[code], flowed: map[int]bool{}, dayFile: dayFiles[code],
 			listing: listingSession(m, prices[code], oldestSession)}
 		for _, p := range prices[code] {
 			if i, ok := pos[dayFloor(p.Day)]; ok {
@@ -1139,6 +1365,7 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 		sectorMembers[sec] = append(sectorMembers[sec], code)
 		if sectorPrev[sec] == nil {
 			sectorPrev[sec] = map[int]float64{}
+			sectorPrevRows[sec] = map[int]int{}
 			sectorBlocks[sec] = make([]flowAcc, nBlocks)
 		}
 		for _, n := range flowWindows {
@@ -1162,6 +1389,7 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 				case r.idx < 2*n && out.windows[n].PrevAvailable && r.tier.accepted():
 					v := r.flow.BuyIValue + r.flow.BuyNValue
 					sectorPrev[sec][n] += v
+					sectorPrevRows[sec][n]++
 					marketPrev[n] += v
 				}
 			}
@@ -1181,17 +1409,30 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 	sort.Strings(secCodes)
 	sectorAcc := map[string]map[int]flowAcc{}
 	marketAcc := map[int]flowAcc{}
+	// Coverage per sector per window, [0] the window and [1] the one before.
+	sectorCov := map[string]map[int][2]coverageAcc{}
+	marketCov := map[int][2]coverageAcc{}
 	for _, sec := range secCodes {
 		sectorAcc[sec] = map[int]flowAcc{}
+		sectorCov[sec] = map[int][2]coverageAcc{}
 		for _, n := range flowWindows {
 			var a flowAcc
+			var cov [2]coverageAcc
 			for _, code := range sectorMembers[sec] {
 				a.merge(*perShare[code].acc[n])
+				cur, prev := perShare[code].coverageIn(n)
+				cov[0].merge(cur)
+				cov[1].merge(prev)
 			}
 			sectorAcc[sec][n] = a
+			sectorCov[sec][n] = cov
 			m := marketAcc[n]
 			m.merge(a)
 			marketAcc[n] = m
+			mc := marketCov[n]
+			mc[0].merge(cov[0])
+			mc[1].merge(cov[1])
+			marketCov[n] = mc
 		}
 	}
 	for _, n := range flowWindows {
@@ -1200,12 +1441,13 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 			continue
 		}
 		s := summarizeAcc(marketAcc[n], w)
-		for _, sw := range perShare {
-			s.countInstrument(*sw.acc[n])
+		for _, code := range codes {
+			s.countInstrument(*perShare[code].acc[n])
 		}
 		if marketAcc[n].value > 0 {
 			s.ValueSharePct = fp(100)
 		}
+		s.Coverage = coverageItem(marketCov[n][0], marketCov[n][1], w)
 		resp.Market[fmt.Sprint(n)] = s
 	}
 
@@ -1235,15 +1477,17 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 			for _, code := range sectorMembers[sec] {
 				s.countInstrument(*perShare[code].acc[n])
 			}
-			var prev *[2]float64
-			if w.PrevAvailable {
-				prev = &[2]float64{sectorPrev[sec][n], marketPrev[n]}
-			}
 			// A sector with no summed row has no measured share of the market:
 			// its listed shares may well have traded with their flow not
 			// stored, and "0.0%" beside its index moving +2.8% read as a fact.
+			// One with rows has one only where its own coverage supports it.
+			cov := sectorCov[sec][n]
+			s.Coverage = coverageItem(cov[0], cov[1], w)
 			if sectorAcc[sec][n].consistent() > 0 {
-				s.setValueShare(sectorAcc[sec][n].value, marketAcc[n].value, prev)
+				s.setCoveredValueShare(groupShare{who: "this sector",
+					cur: sectorAcc[sec][n].value, whole: marketAcc[n].value,
+					prev: sectorPrev[sec][n], prevWhole: marketPrev[n],
+					prevRows: sectorPrevRows[sec][n], cov: cov[0], prevCov: cov[1]}, w)
 			}
 			wi := sectorWindowItem{TieredFlowSummary: s}
 			wi.IndexReturnPct, wi.IndexReturnReason = sectorIndexReturn(item.IndexInsCode, in.IndexSeries, w)
@@ -1286,9 +1530,16 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 				continue
 			}
 			items := make([]shareFlowItem, 0, len(sectorMembers[sec]))
+			// A share's part of its sector: no window before at this level.
+			single := out.windows[n]
+			single.PrevAvailable = false
+			sectorCur := sectorCov[sec][n][0]
 			for _, code := range sectorMembers[sec] {
 				it := shareItem(code, n)
-				it.Summary.ValueSharePct = valueShare(perShare[code].acc[n].value, sectorAcc[sec][n].value)
+				cur, _ := perShare[code].coverageIn(n)
+				it.Summary.setCoveredValueShare(groupShare{who: "this share",
+					cur: perShare[code].acc[n].value, whole: sectorAcc[sec][n].value, cov: cur,
+					enclosing: &sectorCur, enclosingWho: "its sector"}, single)
 				items = append(items, it)
 			}
 			sort.SliceStable(items, func(i, j int) bool {
@@ -1436,10 +1687,18 @@ func buildCompanies(meta map[string]shareMeta, names map[string]sectorName,
 		}
 		m := meta[shown]
 		s := summarizeAcc(acc, w)
+		var cov coverageAcc
 		for _, code := range codes {
 			s.countInstrument(*perShare[code].acc[n])
+			cur, _ := perShare[code].coverageIn(n)
+			cov.merge(cur)
 		}
-		s.ValueSharePct = valueShare(acc.value, marketValue)
+		// Its part of the market, where its own coverage supports one; the
+		// top lists have no window before.
+		single := w
+		single.PrevAvailable = false
+		s.setCoveredValueShare(groupShare{who: "this company", cur: acc.value, whole: marketValue,
+			cov: cov}, single)
 		it := companyFlowItem{CompanyCode: m.CompanyCode, InsCode: shown, Symbol: m.Symbol,
 			NameFA: m.NameFA, Board: m.Board, SectorCode: m.SectorCode,
 			SectorNameFA: names[m.SectorCode].NameFA, SectorNameEN: names[m.SectorCode].NameEN,
@@ -1507,7 +1766,8 @@ func buildCoverage(cal marketCalendar, shares []shareMeta) sectorFlowCoverage {
 		MinTradedShares: minMarketShares, MinCoveragePct: minFlowCoverage * 100,
 		SessionsAvailable: len(cal.Sessions), NewestStored: coverageOf(cal.NewestStored),
 		ThinDatesAfterNewest: cal.ThinAfterNewest, NewestThin: coverageOf(cal.NewestThin),
-		ThinDatesSkipped: cal.ThinSkipped, InstrumentsKnown: len(shares)}
+		ThinDatesSkipped: cal.ThinSkipped, InstrumentsKnown: len(shares),
+		NewestDayFile: coverageOf(cal.NewestDayFile), DayFilesStored: cal.DayFiles}
 	for _, m := range shares {
 		if m.Listed {
 			c.InstrumentsListed++
@@ -1537,10 +1797,22 @@ func notMarketWideNotes(cal marketCalendar) []string {
 	head := "Market-wide flows not ingested yet: no money-flow row and no day file is stored."
 	if x := cal.NewestStored; x != nil {
 		head = fmt.Sprintf("Market-wide flows are not stored for any session yet. The newest "+
-			"stored date, %s, is not a market session: %s. A sample of the market — the roster "+
-			"alone, a part of the shares, or an ingest still under way — is not the market, so "+
-			"nothing is summed here; the Tehran market page shows the roster's own table, "+
-			"labelled as the roster.", dayString(x.Day), x.whyNot())
+			"stored date, %s, is not a market session: %s.", dayString(x.Day), x.whyNot())
+		// The newest stored date can be a roster-only flow ingest with no day
+		// file, which says nothing of the day files that ARE stored: on the
+		// rehearsal's clone every one of 214 sat near 83% covered, and the
+		// note named only the day file missing on the newest date.
+		switch f := cal.NewestDayFile; {
+		case f == nil:
+			head += " No whole-market day file is stored at all."
+		case !f.Day.Equal(x.Day):
+			head += fmt.Sprintf(" The newest date with a whole-market day file, %s, is not one "+
+				"either: %s. %d stored date(s) have a day file.", dayString(f.Day), f.whyNot(),
+				cal.DayFiles)
+		}
+		head += " A sample of the market — the roster alone, a part of the shares, or an " +
+			"ingest still under way — is not the market, so nothing is summed here; the Tehran " +
+			"market page shows the roster's own table, labelled as the roster."
 	}
 	return []string{head, zeroSumNote}
 }

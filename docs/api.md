@@ -335,7 +335,9 @@ toman; percentages in percent.
 | `inflow_sessions`, `outflow_sessions` | consistent share-sessions with net individual flow above / below zero |
 | `instruments_traded`, `inflow_instruments`, `outflow_instruments` | shares with a consistent row, and those whose window net is positive / negative |
 | `value_share_pct` | part of the **enclosing** total's traded value: a sector's of the market's; in `/sector-flows/{sector}` a share's of its sector's; in `top`, a company's of the market's |
-| `previous_value_share_pct`, `value_share_change_pp` | the same share over the window of equal length before, and the change in percentage points (sectors only; `null` when no earlier window is stored) |
+| `previous_value_share_pct`, `value_share_change_pp` | the same share over the window of equal length before, and the change in percentage points (sectors only; `null` when no earlier window is stored, or nothing of the sector was summed in it) |
+| `coverage` | the group's **own** coverage against the day files: `day_file_share_sessions` (share-sessions the day files show it trading in the window), `with_flow` (those with a traded flow row), `share_pct`, `value_pct`, and `previous_share_pct` / `previous_value_pct` for the window before (sectors and the market) |
+| `value_share_reason` | why `value_share_pct`, the previous share or the change is `null` although rows were summed: the group's coverage — or, for a share, its sector's — is under the 90% a market session needs, by count or by value (a share of traded value summed over part of what traded understates it), or nothing of it was summed in the window before |
 
 ### `GET /bourse/sector-flows`
 
@@ -347,7 +349,7 @@ toman; percentages in percent.
 | `index_return_pct` | the sector's bourse index from its value in force at the market session **before** the window's first to its value at the window's last; `null` with a reason where the sector has no index, the index has no validated series, or the session before the window is not stored |
 | `blocks`, `market_blocks`, `sectors[].blocks` | the newest 60 market sessions in 12 blocks of 5, oldest first (only whole blocks): `from`, `to`, `rows`, `consistent`, `excluded`, `net_individual_toman`, `net_individual_pct_of_value`, `total_value_toman`, `value_share_pct` — the heatmap and the value-share sparklines |
 | `top` | per window, `inflow` and `outflow`: the 15 companies with the largest net individual inflow / outflow |
-| `coverage` | `market_wide`, `floor`, `min_traded_shares`, `min_coverage_pct`, `newest_session`, `newest` and `newest_stored` (each a date's coverage: `date`, `traded_shares` with flow, `day_file`, `day_file_traded_shares`, `with_flow`, `share_pct`, `value_pct`, and `reason` when it is not a market session), `instruments_with_rows_newest`, `sessions_available`, `instruments_known`, `instruments_listed`, `roster_instruments`, `thin_dates_after_newest`, `newest_thin`, `thin_dates_skipped` |
+| `coverage` | `market_wide`, `floor`, `min_traded_shares`, `min_coverage_pct`, `newest_session`, `newest` and `newest_stored` (each a date's coverage: `date`, `traded_shares` with flow, `day_file`, `day_file_traded_shares`, `with_flow`, `share_pct`, `value_pct`, and `reason` when it is not a market session), `instruments_with_rows_newest`, `sessions_available`, `instruments_known`, `instruments_listed`, `roster_instruments`, `thin_dates_after_newest`, `newest_thin`, `thin_dates_skipped`, `newest_day_file` (the newest stored date with a whole-market day file, market session or not, as a date's coverage) and `day_files_stored` |
 | `checks`, `notes`, `data_age` | the tolerances; what the figures are and are not; the age of the newest market session (the bourse `data_age` block, 10-day bound) |
 
 **Companies.** `top` sums every board of a company (`company_code`, TSETMC's
@@ -407,7 +409,8 @@ sessions on which TSETMC shows it trading) and `flow_not_stored_sessions` (of
 those, the ones with no traded flow row). Every listed share of the sector is
 present; one with no traded row in the window has empty figures and `rows: 0`
 — "flow not stored" when `flow_not_stored_sessions > 0`, "did not trade" only
-when `traded_sessions` is 0. Items are ordered by traded value.
+when `traded_sessions` is 0; one with some of its sessions stored says for how
+many it is not. Items are ordered by traded value.
 
 | status | when |
 |---|---|

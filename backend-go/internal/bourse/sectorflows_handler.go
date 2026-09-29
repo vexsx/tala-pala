@@ -116,13 +116,17 @@ const sectorFlowsRowsSelect = `
 // sectorFlowsPricesSelect is each share's official close against its
 // reference price over the same span: TSETMC's whole-market day file where it
 // was ingested, and a roster share's own TRADED bar where it was not (a halted
-// bar carries the reference price in its close and is not a session).
+// bar carries the reference price in its close and is not a session). A day
+// file's row also carries its traded value and whether it shows a trade: the
+// rows every group's coverage is measured against (dayFileRow). RIALS.
 const sectorFlowsPricesSelect = `
-	SELECT ins_code, trade_date, close::float8, price_yesterday::float8
+	SELECT ins_code, trade_date, close::float8, price_yesterday::float8,
+	       value::float8, (trades > 0 OR volume > 0), TRUE
 	FROM market_share_sessions
 	WHERE trade_date BETWEEN $1::date AND $2::date
 	UNION ALL
-	SELECT b.ins_code, b.trade_date, b.final_close::float8, b.price_yesterday::float8
+	SELECT b.ins_code, b.trade_date, b.final_close::float8, b.price_yesterday::float8,
+	       b.value::float8, TRUE, FALSE
 	FROM equity_bars b
 	WHERE b.trade_date BETWEEN $1::date AND $2::date
 	  AND b.volume > 0 AND b.price_yesterday > 0
@@ -181,7 +185,7 @@ func readSectorFlowInput(ctx context.Context, pool *pgxpool.Pool, store *indexSt
 	if in.Rows, err = readMarketRows(ctx, pool, oldest, newest); err != nil {
 		return in, err
 	}
-	if in.Prices, err = readPrices(ctx, pool, oldest, newest); err != nil {
+	if in.Prices, in.DayFiles, err = readPrices(ctx, pool, oldest, newest); err != nil {
 		return in, err
 	}
 	if in.Sectors, err = readSectorNames(ctx, pool); err != nil {
@@ -264,23 +268,30 @@ func readMarketRows(ctx context.Context, pool *pgxpool.Pool, from, to time.Time)
 	return out, rows.Err()
 }
 
-func readPrices(ctx context.Context, pool *pgxpool.Pool, from, to time.Time) ([]priceRow, error) {
+func readPrices(ctx context.Context, pool *pgxpool.Pool, from, to time.Time) ([]priceRow, []dayFileRow, error) {
 	rows, err := pool.Query(ctx, sectorFlowsPricesSelect, from, to)
 	if err != nil {
-		return nil, fmt.Errorf("prices: %w", err)
+		return nil, nil, fmt.Errorf("prices: %w", err)
 	}
 	defer rows.Close()
 	var out []priceRow
+	var files []dayFileRow
 	for rows.Next() {
 		var p priceRow
-		if err := rows.Scan(&p.InsCode, &p.Day, &p.Close, &p.PriceYesterday); err != nil {
-			return nil, fmt.Errorf("price scan: %w", err)
+		var value float64
+		var traded, dayFile bool
+		if err := rows.Scan(&p.InsCode, &p.Day, &p.Close, &p.PriceYesterday, &value, &traded,
+			&dayFile); err != nil {
+			return nil, nil, fmt.Errorf("price scan: %w", err)
 		}
 		p.Day = dayFloor(p.Day)
 		out = append(out, p)
+		if dayFile && traded {
+			files = append(files, dayFileRow{InsCode: p.InsCode, Day: p.Day, Value: value / rialsPerToman})
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Ascending per share, so a reader of one share's prices reads them in order.
 	sort.Slice(out, func(i, j int) bool {
@@ -289,7 +300,7 @@ func readPrices(ctx context.Context, pool *pgxpool.Pool, from, to time.Time) ([]
 		}
 		return out[i].Day.Before(out[j].Day)
 	})
-	return out, nil
+	return out, files, nil
 }
 
 func readSectorNames(ctx context.Context, pool *pgxpool.Pool) ([]sectorName, error) {
