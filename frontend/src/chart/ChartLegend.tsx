@@ -14,7 +14,8 @@ import {
   valueAt,
   type ChartIndicatorState,
   type IndicatorInstance,
-  type IndicatorPlot
+  type IndicatorPlot,
+  type OverlayToggles
 } from './indicators/registry'
 import type { EventPlacement, ForecastPoint, TrendOverlayReading } from './overlays'
 
@@ -60,6 +61,15 @@ export interface ChartLegendProps {
   forecast: ForecastReading
   events: EventReading
   trend: TrendOverlayReading
+  /**
+   * Why an instance cannot be computed on the charted series, or null when it
+   * can. A refused row says so in words — never "no data", which would suggest
+   * that more history might fill it. The row carries `short`; the full
+   * `reason` is written once beneath the rows.
+   */
+  refusal?: (instance: IndicatorInstance) => { short: string; reason: string } | null
+  /** Why an overlay cannot be drawn on the charted symbol; absent when it can. */
+  overlayRefusals?: Partial<Record<keyof OverlayToggles, string>>
 }
 
 /** Glyph AND word for every state, so the read survives greyscale. */
@@ -108,12 +118,23 @@ export function ChartLegend({
   cold,
   forecast,
   events,
-  trend
+  trend,
+  refusal = () => null,
+  overlayRefusals = {}
 }: ChartLegendProps) {
   const { calendar } = useSettings()
   const [editing, setEditing] = useState<string | null>(null)
 
   const coldIds = new Set(cold.map((i) => i.id))
+  // Each distinct refusal, once, with the rows it applies to.
+  const refusals: Array<{ reason: string; names: string[] }> = []
+  for (const instance of state.instances) {
+    const r = refusal(instance)
+    if (r === null) continue
+    const entry = refusals.find((e) => e.reason === r.reason)
+    if (entry) entry.names.push(instanceLabel(instance))
+    else refusals.push({ reason: r.reason, names: [instanceLabel(instance)] })
+  }
   const anything =
     state.instances.length > 0 ||
     state.overlays.forecast ||
@@ -139,7 +160,8 @@ export function ChartLegend({
             const primary = mine.find((p) => p.primary) ?? mine[0] ?? null
             const readouts = levelReadouts(instance, levels)
             const label = instanceLabel(instance)
-            const isCold = coldIds.has(instance.id)
+            const refused = refusal(instance)
+            const isCold = refused === null && coldIds.has(instance.id)
             const value =
               primary === null
                 ? null
@@ -160,7 +182,14 @@ export function ChartLegend({
                   {label}
                 </span>
 
-                {readouts.length > 0 ? (
+                {refused !== null ? (
+                  <span
+                    className="muted small tchart-legend-value tchart-legend-refusal"
+                    title={refused.reason}
+                  >
+                    <span className="badge badge-off">not available</span> {refused.short}
+                  </span>
+                ) : readouts.length > 0 ? (
                   <span className="tchart-legend-value">
                     {readouts.map((readout) => (
                       <span key={readout.label}>
@@ -232,18 +261,43 @@ export function ChartLegend({
         </ul>
       )}
 
-      {state.overlays.forecast && (
-        <ForecastBlock reading={forecast} symbol={symbol} unit={unit} calendar={calendar} />
-      )}
+      {refusals.map(({ reason, names }) => (
+        <p key={reason} className="muted small tchart-overlay-note">
+          Not available on this series — {names.join(', ')}: {reason}
+        </p>
+      ))}
 
-      {state.overlays.events && <EventBlock reading={events} />}
+      {state.overlays.forecast &&
+        (overlayRefusals.forecast ? (
+          <RefusedOverlay title="FORECAST" label="Forecast overlay" reason={overlayRefusals.forecast} />
+        ) : (
+          <ForecastBlock reading={forecast} symbol={symbol} unit={unit} calendar={calendar} />
+        ))}
 
-      {state.overlays.trend && <TrendBlock reading={trend} />}
+      {state.overlays.events &&
+        (overlayRefusals.events ? (
+          <RefusedOverlay title="NEWS EVENTS" label="News events overlay" reason={overlayRefusals.events} />
+        ) : (
+          <EventBlock reading={events} />
+        ))}
+
+      {state.overlays.trend && <TrendBlock reading={trend} refusal={overlayRefusals.trend} />}
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
+
+/** An overlay that is switched on but cannot be drawn on this symbol, and why. */
+function RefusedOverlay({ title, label, reason }: { title: string; label: string; reason: string }) {
+  return (
+    <div className="tchart-overlay-block" aria-label={label}>
+      <span className="tchart-overlay-title">{title}</span>
+      <span className="badge badge-off">not drawn</span>
+      <span className="muted small">{reason}</span>
+    </div>
+  )
+}
 
 function ForecastBlock({
   reading,
@@ -331,7 +385,7 @@ function EventBlock({ reading }: { reading: EventReading }) {
 
 // ---------------------------------------------------------------------------
 
-function TrendBlock({ reading }: { reading: TrendOverlayReading }) {
+function TrendBlock({ reading, refusal }: { reading: TrendOverlayReading; refusal?: string }) {
   const data = reading.data
 
   if (reading.unsupported) {
@@ -339,6 +393,7 @@ function TrendBlock({ reading }: { reading: TrendOverlayReading }) {
       <div className="tchart-overlay-block" aria-label="Trend alignment overlay">
         <span className="tchart-overlay-title">TREND ALIGNMENT</span>
         <span className="muted small">Not served for this symbol.</span>
+        {refusal && <span className="muted small">{refusal}</span>}
       </div>
     )
   }

@@ -1,28 +1,36 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import { useApi } from '../hooks/useApi'
 import type {
   ChartCandle,
+  ChartEquityInstrument,
+  ChartIndexInstrument,
+  CurrentPrice,
   CurrentPricesResponse,
   NewsFeedResponse,
   NewsItem,
   Prediction,
   ProviderGapResponse,
-  SignalSummary
+  SignalSummary,
+  Symbol_
 } from '../api/types'
 import { GOLD_FUND_SYMBOLS, HORIZON_LABELS, SYMBOL_LABELS, type Horizon } from '../api/types'
 import { unwrapList } from '../lib/unwrap'
 import { useSettings } from '../lib/settings'
+import { formatIndexLevel } from '../lib/bourse'
 import { formatPct, formatToman, pctClass } from '../lib/format'
 import DataFreshness from '../components/DataFreshness'
 import GaugeBar from '../components/GaugeBar'
 import Loading from '../components/Loading'
 import ErrorMessage from '../components/ErrorMessage'
 import EmptyState from '../components/EmptyState'
+import { BourseAgeNotice } from './Bourse'
 import { TradingChart, type ChartHandle } from '../chart/TradingChart'
 import { ChartToolbar, useChartFullscreen } from '../chart/ChartToolbar'
-import { OhlcHeader } from '../chart/OhlcHeader'
+import { OhlcHeader, formatChartPrice } from '../chart/OhlcHeader'
 import { ChartStatusBar } from '../chart/ChartStatusBar'
 import { useCandles } from '../chart/useCandles'
+import { useChartCatalog } from '../chart/catalog'
 import { IndicatorMenu } from '../chart/IndicatorMenu'
 import { ChartLegend } from '../chart/ChartLegend'
 import { IndicatorPanes, PANE_HEIGHT } from '../chart/indicators/panes'
@@ -34,7 +42,9 @@ import {
   loadIndicatorState,
   saveIndicatorState,
   serverOverlays,
-  type ChartIndicatorState
+  type ChartIndicatorState,
+  type IndicatorKind,
+  type OverlayToggles
 } from '../chart/indicators/registry'
 import {
   forecastPlots,
@@ -54,13 +64,23 @@ import {
   type IntervalId
 } from '../chart/intervals'
 import {
-  DEFAULT_SYMBOL,
   readInterval,
+  readLogScale,
   readSymbol,
   writeInterval,
-  writeSymbol,
-  type ChartSymbol
+  writeLogScale,
+  writeSymbol
 } from '../chart/prefs'
+import {
+  TSE_COVERAGE,
+  indicatorSupport,
+  isTehranSymbol,
+  overlaySupport,
+  seriesModeFor,
+  symbolIntervals,
+  symbolKind,
+  type ChartSymbol
+} from '../chart/symbols'
 
 /** The API's 400 for a timeframe this data source cannot bucket. */
 const UNSUPPORTED_RE = /not available for the current data source/i
@@ -68,19 +88,88 @@ const UNSUPPORTED_RE = /not available for the current data source/i
 /** Headlines the event overlay considers; the feed is ordered urgent-first. */
 const NEWS_PATH = '/intelligence/news?limit=50'
 
-export default function TradePanel() {
-  const { unit } = useSettings()
-  const shellRef = useRef<HTMLDivElement | null>(null)
+/**
+ * A Tehran series changes when an operator runs the off-server fetch, a few
+ * times a week at most; polling it every minute would ask a question whose
+ * answer cannot have changed. Ten minutes still notices a restatement the
+ * same sitting it lands.
+ */
+const TSE_POLL_MS = 600_000
 
-  const [symbol, setSymbol] = useState<ChartSymbol>(() => readSymbol())
-  const [interval, setIntervalId] = useState<IntervalId>(() => readInterval() ?? FALLBACK_INTERVAL)
-  const [notice, setNotice] = useState<string | null>(null)
+/**
+ * The timeframe a symbol forces, with the reason, or null when the reader's
+ * choice stands. The choice itself is left alone in storage — see prefs.ts.
+ */
+function forcedInterval(
+  symbol: ChartSymbol,
+  wanted: IntervalId
+): { interval: IntervalId; notice: string } | null {
+  const allowed = symbolIntervals(symbol)
+  if (!allowed || allowed.includes(wanted)) return null
+  return {
+    interval: FALLBACK_INTERVAL,
+    notice: `${intervalLabel(wanted)} is unavailable — showing ${intervalLabel(
+      FALLBACK_INTERVAL
+    )} instead. A Tehran market series is one settled close per session; your ${intervalLabel(
+      wanted
+    )} choice is kept for the other symbols.`
+  }
+}
+
+function initialChart(): { symbol: ChartSymbol; interval: IntervalId; notice: string | null } {
+  const symbol = readSymbol()
+  const wanted = readInterval() ?? FALLBACK_INTERVAL
+  const forced = forcedInterval(symbol, wanted)
+  return { symbol, interval: forced?.interval ?? wanted, notice: forced?.notice ?? null }
+}
+
+function isEquityInstrument(
+  inst: ChartIndexInstrument | ChartEquityInstrument
+): inst is ChartEquityInstrument {
+  return 'adjustment' in inst
+}
+
+/** What to call a symbol when the catalog has not named it yet. */
+function fallbackLabel(
+  symbol: ChartSymbol,
+  inst: ChartIndexInstrument | ChartEquityInstrument | null
+): string {
+  if (inst) return isEquityInstrument(inst) ? inst.symbol : inst.name_en || inst.name_fa
+  return SYMBOL_LABELS[symbol as Symbol_] ?? symbol
+}
+
+const WEIGHTING: Record<string, string> = {
+  cap: 'Capitalisation-weighted',
+  equal: 'Equal-weighted',
+  free_float: 'Free-float weighted'
+}
+
+const BASIS: Record<string, string> = {
+  total: 'total return (price and dividends)',
+  price: 'price only (dividends excluded)'
+}
+
+export default function TradePanel() {
+  const { unit, calendar } = useSettings()
+  const shellRef = useRef<HTMLDivElement | null>(null)
+  const catalog = useChartCatalog()
+
+  const [initial] = useState(initialChart)
+  const [symbol, setSymbol] = useState<ChartSymbol>(initial.symbol)
+  const [interval, setIntervalId] = useState<IntervalId>(initial.interval)
+  const [notice, setNotice] = useState<string | null>(initial.notice)
   const [hovered, setHovered] = useState<ChartCandle | null>(null)
   const [indicators, setIndicators] = useState<ChartIndicatorState>(() => loadIndicatorState())
   const [chart, setChart] = useState<ChartHandle | null>(null)
+  const [logScale, setLogScale] = useState(() => readLogScale())
 
-  const candles = useCandles(symbol, interval)
+  const tehran = isTehranSymbol(symbol)
+  const candles = useCandles(symbol, interval, tehran ? { pollMs: TSE_POLL_MS } : {})
   const { fullscreen, toggle: toggleFullscreen } = useChartFullscreen(shellRef)
+
+  const option = catalog.find(symbol)
+  const symbolLabel = option?.short ?? fallbackLabel(symbol, candles.instrument)
+  const seriesMode = seriesModeFor(symbol, candles.priceFields)
 
   // Drawings are scoped to (symbol, interval) by the hook itself; the seconds
   // are only what a duplicate is offset by so it does not land under the original.
@@ -99,9 +188,20 @@ export default function TradePanel() {
     if (candles.candles.length === 0) setChart(null)
   }, [candles.candles.length])
 
+  // ---- what may be drawn over this symbol ---------------------------------
+  const forecastSupport = overlaySupport(symbol, 'forecast')
+  const eventsSupport = overlaySupport(symbol, 'events')
+
   const current = useApi<CurrentPricesResponse>('/prices/current')
-  const signal = useApi<SignalSummary>('/signals/current')
-  const latest = useApi<unknown>('/predictions')
+  // The signal is 18k gold's advisory. Beside a Tehran chart it would read as
+  // advice about that index or share, so it is not fetched there at all.
+  const signal = useApi<SignalSummary>(tehran ? null : '/signals/current')
+  // The forecast of the CHARTED symbol, and only where one exists: asking
+  // without ?symbol= got 18k gold's toman forecasts, which were then drawn
+  // over XAU/USD.
+  const latest = useApi<unknown>(
+    forecastSupport.ok ? `/predictions?symbol=${encodeURIComponent(symbol)}` : null
+  )
   const gap = useApi<ProviderGapResponse>('/market/provider-gap?symbol=IR_GOLD_18K&history_days=0')
 
   // The candle store runs its own live tail poll; these side cards still need a
@@ -114,25 +214,50 @@ export default function TradePanel() {
     return () => window.clearInterval(id)
   }, [current.reload, gap.reload]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const chooseInterval = useCallback((next: IntervalId) => {
-    setNotice(null)
-    setHovered(null)
-    setIntervalId(next)
-    writeInterval(next)
-  }, [])
+  // Only the reader's own choice is stored. A timeframe the data forces is
+  // shown, never saved: see prefs.ts.
+  const chooseInterval = useCallback(
+    (next: IntervalId) => {
+      setNotice(null)
+      setHovered(null)
+      setIntervalId(next)
+      if (!isTehranSymbol(symbol)) writeInterval(next)
+    },
+    [symbol]
+  )
 
-  const chooseSymbol = useCallback((next: ChartSymbol) => {
-    setNotice(null)
-    setHovered(null)
-    setSymbol(next)
-    writeSymbol(next)
-  }, [])
+  const chooseSymbol = useCallback(
+    (next: ChartSymbol) => {
+      setNotice(null)
+      setHovered(null)
+      setSymbol(next)
+      writeSymbol(next)
+      const forced = forcedInterval(next, interval)
+      if (forced) {
+        setIntervalId(forced.interval)
+        setNotice(forced.notice)
+        return
+      }
+      if (!symbolIntervals(next)) {
+        // Back on a tick symbol: the reader's own timeframe returns.
+        const wanted = readInterval() ?? FALLBACK_INTERVAL
+        if (wanted !== interval) setIntervalId(wanted)
+      }
+    },
+    [interval]
+  )
 
   // A stored timeframe can stop being servable when coverage changes. Fall back
   // to 1D and keep the reason on screen: silently drawing different bars than
-  // the button says would be worse than the empty chart it replaces.
+  // the button says would be worse than the empty chart it replaces. The
+  // stored choice is not overwritten — a daily-only symbol must not reset the
+  // timeframe of every other chart.
+  //
+  // Both fallbacks act only on an answer for the pair on screen: for one render
+  // after a switch the store still holds the previous pair's coverage.
+  const answered = candles.loadedFor === `${symbol}|${interval}`
   useEffect(() => {
-    if (!candles.coverage) return
+    if (!candles.coverage || !answered) return
     const support = isSupported(interval, candles.coverage)
     if (support.ok) return
     setNotice(
@@ -141,13 +266,12 @@ export default function TradePanel() {
       )} instead. ${support.reason}`
     )
     setIntervalId(FALLBACK_INTERVAL)
-    writeInterval(FALLBACK_INTERVAL)
-  }, [candles.coverage, interval])
+  }, [candles.coverage, interval, answered])
 
   // A rejected timeframe 400s, and a 400 carries no coverage — so the guard
   // above can never fire for it. Read the refusal itself instead.
   useEffect(() => {
-    if (!candles.error || interval === FALLBACK_INTERVAL) return
+    if (!candles.error || !answered || interval === FALLBACK_INTERVAL) return
     if (!UNSUPPORTED_RE.test(candles.error)) return
     setNotice(
       `${intervalLabel(interval)} is unavailable — showing ${intervalLabel(
@@ -155,8 +279,14 @@ export default function TradePanel() {
       )} instead. ${candles.error}`
     )
     setIntervalId(FALLBACK_INTERVAL)
-    writeInterval(FALLBACK_INTERVAL)
-  }, [candles.error, interval])
+  }, [candles.error, interval, answered])
+
+  const toggleLogScale = useCallback(() => {
+    setLogScale((on) => {
+      writeLogScale(!on)
+      return !on
+    })
+  }, [])
 
   const predictions = useMemo(
     () => unwrapList<Prediction>(latest.data, 'items', 'predictions'),
@@ -164,6 +294,35 @@ export default function TradePanel() {
   )
 
   // ---- indicators -------------------------------------------------------
+  // Until the first response names its price fields, an index is known to be
+  // close-only from its symbol alone.
+  const priceFields = useMemo(
+    () => candles.priceFields ?? (symbolKind(symbol) === 'tse_index' ? ['close'] : null),
+    [candles.priceFields, symbol]
+  )
+  const indicatorRefusal = useCallback(
+    (kind: IndicatorKind): string | null => {
+      const support = indicatorSupport(kind, priceFields)
+      return support.ok ? null : support.reason
+    },
+    [priceFields]
+  )
+  const overlayRefusal = useCallback(
+    (key: keyof OverlayToggles): string | null => {
+      const support = overlaySupport(symbol, key)
+      return support.ok ? null : support.reason
+    },
+    [symbol]
+  )
+  const overlayRefusals = useMemo(() => {
+    const out: Partial<Record<keyof OverlayToggles, string>> = {}
+    for (const key of ['forecast', 'events', 'trend'] as const) {
+      const reason = overlayRefusal(key)
+      if (reason !== null) out[key] = reason
+    }
+    return out
+  }, [overlayRefusal])
+
   // The server's own overlay arrays still travel through TradingChart's
   // `overlays` prop; only the series the API cannot give us for an arbitrary
   // timeframe (the EMA preset, RSI, MACD) are attached by the indicator layer.
@@ -194,7 +353,10 @@ export default function TradePanel() {
     [indicators.instances, candles.overlays]
   )
 
-  const cold = useMemo(() => coldInstances(indicators.instances, plots), [indicators.instances, plots])
+  const cold = useMemo(
+    () => coldInstances(indicators.instances, plots, (i) => indicatorRefusal(i.kind) !== null),
+    [indicators.instances, plots, indicatorRefusal]
+  )
 
   const levels = useMemo(
     () => ({
@@ -209,15 +371,15 @@ export default function TradePanel() {
   const lastCandle =
     candles.candles.length > 0 ? candles.candles[candles.candles.length - 1] : null
 
+  const forecastOn = indicators.overlays.forecast && forecastSupport.ok
   const forecast = useMemo(
-    () => (indicators.overlays.forecast ? forecastPoints(predictions, lastCandle) : []),
-    [indicators.overlays.forecast, predictions, lastCandle]
+    () => (forecastOn ? forecastPoints(predictions, lastCandle) : []),
+    [forecastOn, predictions, lastCandle]
   )
   const forecastSeries = useMemo(() => forecastPlots(forecast), [forecast])
 
-  const news = useApi<NewsFeedResponse>(indicators.overlays.events ? NEWS_PATH : null, [
-    indicators.overlays.events
-  ])
+  const eventsOn = indicators.overlays.events && eventsSupport.ok
+  const news = useApi<NewsFeedResponse>(eventsOn ? NEWS_PATH : null)
   const eventPlacement = useMemo(
     () =>
       placeEvents(
@@ -231,16 +393,20 @@ export default function TradePanel() {
 
   useIndicatorSeries(chart?.chart ?? null, mainPlots)
   useIndicatorSeries(chart?.chart ?? null, forecastSeries)
-  useEventMarkers(chart?.candleSeries ?? null, eventPlacement.events, indicators.overlays.events)
+  useEventMarkers(chart?.mainSeries ?? null, eventPlacement.events, eventsOn)
 
   const baseHeight = fullscreen ? Math.max(window.innerHeight - 260, 320) : 440
   const chartHeight = baseHeight + PANE_HEIGHT * paneCount
 
-  const quote = current.data?.prices?.[symbol]
+  const prices = current.data?.prices as Partial<Record<string, CurrentPrice>> | undefined
+  const quote = tehran ? undefined : prices?.[symbol]
   const gold = current.data?.prices?.IR_GOLD_18K
-  const st = candles.overlays?.supertrend_dir
+  // The row sits under the 18k gold card, so it is 18k gold's direction or
+  // nothing — never the charted symbol's.
+  const st = symbol === 'IR_GOLD_18K' ? candles.overlays?.supertrend_dir : null
   const stDir = st && st.length > 0 ? st[st.length - 1] : 0
   const firstLoad = candles.loading && candles.candles.length === 0
+  const onGold = symbol === 'IR_GOLD_18K'
 
   return (
     <div className="page-body">
@@ -255,12 +421,23 @@ export default function TradePanel() {
             <ChartToolbar
               symbol={symbol}
               onSymbolChange={chooseSymbol}
+              groups={catalog.groups}
+              symbolLabel={symbolLabel}
               interval={interval}
               onIntervalChange={chooseInterval}
-              coverage={candles.coverage}
+              coverage={candles.coverage ?? (tehran ? TSE_COVERAGE : null)}
               fullscreen={fullscreen}
               onToggleFullscreen={toggleFullscreen}
-              indicatorsSlot={<IndicatorMenu state={indicators} onChange={setIndicators} />}
+              logScale={logScale}
+              onToggleLogScale={toggleLogScale}
+              indicatorsSlot={
+                <IndicatorMenu
+                  state={indicators}
+                  onChange={setIndicators}
+                  indicatorRefusal={indicatorRefusal}
+                  overlayRefusal={overlayRefusal}
+                />
+              }
               drawSlot={<DrawingToolbar engine={drawings} />}
             />
 
@@ -272,10 +449,12 @@ export default function TradePanel() {
 
             <OhlcHeader
               symbol={symbol}
+              label={symbolLabel}
               interval={interval}
               hovered={hovered}
               candles={candles.candles}
               unit={unit}
+              priceFields={candles.priceFields}
             />
 
             {firstLoad ? (
@@ -285,11 +464,20 @@ export default function TradePanel() {
             ) : candles.candles.length === 0 ? (
               <EmptyState
                 title="No candle data"
-                hint="Candles appear once price history exists for this symbol and timeframe."
+                hint={
+                  tehran
+                    ? `No settled session of ${symbolLabel} is stored. Tehran market data arrives when an operator runs the off-server fetch.`
+                    : `Nothing is stored for ${symbolLabel} yet. Its chart appears once price history has been collected for it — nothing is drawn in the meantime.`
+                }
               />
             ) : (
               <>
                 <TradingChart
+                  // A series cannot change type in place: a close-only index
+                  // is a line, everything else is candles.
+                  key={seriesMode}
+                  seriesMode={seriesMode}
+                  logScale={logScale}
                   candles={candles.candles}
                   overlays={visibleOverlays}
                   overlayTimes={candles.overlayTimes}
@@ -350,6 +538,11 @@ export default function TradePanel() {
                 collectionEnabled: news.data?.collection_enabled !== false
               }}
               trend={trend}
+              refusal={(instance) => {
+                const support = indicatorSupport(instance.kind, priceFields)
+                return support.ok ? null : { short: support.short, reason: support.reason }
+              }}
+              overlayRefusals={overlayRefusals}
             />
 
             <ChartStatusBar
@@ -357,13 +550,25 @@ export default function TradePanel() {
               interval={interval}
               candles={candles.candles}
               coverage={candles.coverage}
-              source={quote?.source ?? null}
-              stale={quote?.stale}
+              source={tehran ? (candles.source ?? 'TSETMC') : (quote?.source ?? null)}
+              stale={tehran ? undefined : quote?.stale}
+              dataAge={tehran ? candles.dataAge : undefined}
             />
           </div>
         </div>
 
         <aside className="trade-side">
+          {tehran && (
+            <TehranInstrumentCard
+              symbol={symbol}
+              label={symbolLabel}
+              instrument={candles.instrument}
+              notes={candles.notes}
+              last={lastCandle}
+              ageCard={<BourseAgeNotice age={candles.dataAge ?? undefined} calendar={calendar} />}
+            />
+          )}
+
           <div className="card">
             <div className="card-title">IR_GOLD_18K</div>
             {gold ? (
@@ -387,26 +592,32 @@ export default function TradePanel() {
             )}
           </div>
 
-          <div className="card">
-            <div className="card-title">Signal</div>
-            {signal.data ? (
-              <>
-                <div className={`signal-level sig-${signal.data.signal}`}>
-                  {signal.data.signal.replace('_', ' ').toUpperCase()}
-                </div>
-                <GaugeBar value={signal.data.score} label={`Score ${signal.data.score}/100`} />
-                <p className="muted small">{signal.data.explanation}</p>
-              </>
-            ) : signal.loading ? (
-              <Loading label="Loading signal…" />
-            ) : (
-              <span className="muted small">No signal yet</span>
-            )}
-          </div>
+          {!tehran && (
+            <div className="card">
+              <div className="card-title">{onGold ? 'Signal' : 'Signal · 18k gold'}</div>
+              {signal.data ? (
+                <>
+                  <div className={`signal-level sig-${signal.data.signal}`}>
+                    {signal.data.signal.replace('_', ' ').toUpperCase()}
+                  </div>
+                  <GaugeBar value={signal.data.score} label={`Score ${signal.data.score}/100`} />
+                  <p className="muted small">{signal.data.explanation}</p>
+                </>
+              ) : signal.loading ? (
+                <Loading label="Loading signal…" />
+              ) : (
+                <span className="muted small">No signal yet</span>
+              )}
+            </div>
+          )}
 
           <div className="card">
-            <div className="card-title">Forecasts</div>
-            {predictions.length > 0 ? (
+            <div className="card-title">
+              {onGold || !forecastSupport.ok ? 'Forecasts' : `Forecasts · ${symbolLabel}`}
+            </div>
+            {!forecastSupport.ok ? (
+              <span className="muted small">{forecastSupport.reason}</span>
+            ) : predictions.length > 0 ? (
               <ul className="driver-list">
                 {predictions.map((p) => {
                   const pct = p.expected_change_pct
@@ -464,7 +675,7 @@ export default function TradePanel() {
           )}
 
           <div className="card">
-            <div className="card-title">Provider quotes</div>
+            <div className="card-title">{onGold ? 'Provider quotes' : 'Provider quotes · 18k gold'}</div>
             {(gap.data?.providers ?? []).length > 0 ? (
               <ul className="driver-list">
                 {(gap.data?.providers ?? [])
@@ -509,7 +720,7 @@ export default function TradePanel() {
                     ).map(([label, value, cls]) => (
                       <tr key={label}>
                         <td className={cls}>{label}</td>
-                        <td className="num mono">{formatToman(value, unit, false)}</td>
+                        <td className="num mono">{formatChartPrice(value, symbol, unit)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -519,6 +730,97 @@ export default function TradePanel() {
           )}
         </aside>
       </div>
+    </div>
+  )
+}
+
+/**
+ * What the charted Tehran series IS: its registry label, its verdict, the
+ * API's own notes and how old the stored data is. Every sentence here comes
+ * from the response; this card derives nothing.
+ */
+function TehranInstrumentCard({
+  symbol,
+  label,
+  instrument,
+  notes,
+  last,
+  ageCard
+}: {
+  symbol: ChartSymbol
+  label: string
+  instrument: ChartIndexInstrument | ChartEquityInstrument | null
+  notes: string[]
+  last: ChartCandle | null
+  ageCard: ReactNode
+}) {
+  const equity = symbolKind(symbol) === 'tse_equity'
+  return (
+    <div className="card" data-testid="trade-instrument">
+      <div className="card-title">{label}</div>
+      {instrument && isEquityInstrument(instrument) ? (
+        <>
+          <div className="bidi-fa" lang="fa" dir="rtl">
+            {instrument.name_fa}
+          </div>
+          <div className="kv">
+            <span className="muted">Sector</span>
+            <span className="bidi-fa" lang="fa" dir="rtl">
+              {instrument.sector_fa || '—'}
+            </span>
+          </div>
+          <div className="kv">
+            <span className="muted">Adjustment</span>
+            <span className="mono small">
+              {instrument.adjustment.status} · {instrument.adjustment.actions_applied} action(s)
+            </span>
+          </div>
+        </>
+      ) : instrument ? (
+        <>
+          <div className="bidi-fa" lang="fa" dir="rtl">
+            {instrument.name_fa}
+          </div>
+          <div className="kv">
+            <span className="muted">Basis</span>
+            <span className="small">
+              {WEIGHTING[instrument.weighting] ?? 'Weighting not stated'},{' '}
+              {BASIS[instrument.return_basis] ?? 'return basis not stated'}
+            </span>
+          </div>
+          <div className="kv">
+            <span className="muted">Check</span>
+            <span className="mono small">
+              {instrument.check_status} · {instrument.rows_rescaled} value(s) corrected
+            </span>
+          </div>
+          {last && (
+            <div className="kv">
+              <span className="muted">Last close</span>
+              <span className="num mono">{formatIndexLevel(last.close)}</span>
+            </div>
+          )}
+        </>
+      ) : (
+        <span className="muted small">Loading…</span>
+      )}
+      {ageCard}
+      {notes.length > 0 && (
+        <ul className="muted small tchart-notes">
+          {notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      )}
+      {equity && instrument && isEquityInstrument(instrument) ? (
+        <Link className="small" to={`/stocks/${encodeURIComponent(instrument.symbol)}`}>
+          {instrument.symbol} against its market →
+        </Link>
+      ) : (
+        <Link className="small" to="/bourse">
+          The Tehran market page →
+        </Link>
+      )}
     </div>
   )
 }

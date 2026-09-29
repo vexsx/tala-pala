@@ -544,9 +544,17 @@ export interface SnapContext {
  * already within a few pixels, so a deliberately free-hand line stays free-hand.
  * Time and price snap independently — grabbing the bar's start while leaving the
  * price alone is the common case near a wick.
+ *
+ * Only prices that exist are candidates. A close-only index has no open, high
+ * or low (null — and Math.abs(null - price) would snap an anchor to 0), and a
+ * halted Tehran session has no traded price at all, so it is not a bar to
+ * snap to.
  */
 export function snapPoint(raw: DrawingPoint, ctx: SnapContext): DrawingPoint {
-  const { candles, mode, proj } = ctx
+  const { mode, proj } = ctx
+  const candles = ctx.candles.some((c) => c.traded === false)
+    ? ctx.candles.filter((c) => c.traded !== false)
+    : ctx.candles
   if (mode === 'off' || candles.length === 0) return raw
   if (!Number.isFinite(raw.t) || !Number.isFinite(raw.price)) return raw
 
@@ -564,7 +572,9 @@ export function snapPoint(raw: DrawingPoint, ctx: SnapContext): DrawingPoint {
   }
 
   let price = raw.price
-  const candidates = [candle.open, candle.high, candle.low, candle.close]
+  const candidates = [candle.open, candle.high, candle.low, candle.close].filter(
+    (c): c is number => c !== null && Number.isFinite(c)
+  )
   let best = candidates[0]
   let bestDelta = Infinity
   for (const c of candidates) {

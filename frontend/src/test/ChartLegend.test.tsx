@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import type { IChartApi } from 'lightweight-charts'
 import type {
+  CandleOverlays,
   ChartCandle,
   TrendAlignmentResponse,
   TrendAlignmentState,
@@ -21,6 +22,7 @@ import {
   type IndicatorInstance
 } from '../chart/indicators/registry'
 import type { TrendOverlayReading } from '../chart/overlays'
+import { TSE_INDEX, indicatorSupport, overlaySupport } from '../chart/symbols'
 // The components' own source, so the "no maths here" guards cannot drift.
 import legendSource from '../chart/ChartLegend.tsx?raw'
 import overlaySource from '../chart/overlays.ts?raw'
@@ -219,6 +221,119 @@ describe('ChartLegend rows', () => {
   it('says so plainly when nothing is on the chart', () => {
     render(<ChartLegend {...legendProps({ state: applyPreset('clean') })} />)
     expect(screen.getByText(/No indicators\. Candles only/)).toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// A close-only series (a Tehran index) refuses what needs a high and a low
+// ---------------------------------------------------------------------------
+
+describe('refusals on a close-only series', () => {
+  const refusal = (i: IndicatorInstance) => {
+    const s = indicatorSupport(i.kind, ['close'])
+    return s.ok ? null : { short: s.short, reason: s.reason }
+  }
+  const full = applyPreset('full')
+  // What the API sends for an index: the close-based overlays, nulls for the rest.
+  const closeOnly: Partial<CandleOverlays> = {
+    sma_20: [null, null, null, null],
+    sma_50: [null, null, null, null],
+    bollinger_upper: [null, null, null, null],
+    bollinger_mid: [null, null, null, null],
+    bollinger_lower: [null, null, null, null],
+    supertrend: null,
+    psar: null,
+    ichimoku_tenkan: null
+  }
+
+  it('says which indicators cannot be computed and why, never "no data" for them', () => {
+    const plots = buildPlots(full.instances, { candles: CANDLES, overlays: closeOnly, overlayTimes: [] })
+    const cold = coldInstances(full.instances, plots, (i) => refusal(i) !== null)
+    render(
+      <ChartLegend
+        {...legendProps({ state: full, plots, cold })}
+        refusal={refusal}
+      />
+    )
+    for (const name of ['SuperTrend', 'PSAR', 'Ichimoku', 'Pivots']) {
+      const row = screen.getByLabelText(`Remove ${name}`).closest('li') as HTMLElement
+      expect(within(row).getByText('not available')).toBeInTheDocument()
+      expect(within(row).getByText(/needs a high and a low/)).toBeInTheDocument()
+      expect(within(row).getByTitle(/Needs each session’s high and low/)).toBeInTheDocument()
+      expect(within(row).queryByText('no data')).not.toBeInTheDocument()
+    }
+    // The full sentence is written once, naming every row it applies to.
+    expect(
+      screen.getByText(
+        /Not available on this series — SuperTrend, PSAR, Ichimoku, Pivots: Needs each session’s high and low/
+      )
+    ).toBeInTheDocument()
+    // The refused rows are still on the board: it is global, and gold can draw them.
+    expect(cold.map((i) => i.kind)).not.toContain('supertrend')
+    // SMA 20/50 with four sessions genuinely needs more history — that IS "no data".
+    const sma = screen.getByLabelText('Remove SMA 20/50').closest('li') as HTMLElement
+    expect(within(sma).getByText('no data')).toBeInTheDocument()
+  })
+
+  it('shows an overlay that cannot be drawn here as not drawn, with the reason', () => {
+    const state: ChartIndicatorState = {
+      instances: [],
+      overlays: { forecast: true, events: true, trend: false }
+    }
+    render(
+      <ChartLegend
+        {...legendProps({ state })}
+        overlayRefusals={{
+          forecast: 'No forecast is produced for this symbol.',
+          events: 'News markers are gold and macro headlines.'
+        }}
+      />
+    )
+    expect(within(screen.getByLabelText('Forecast overlay')).getByText('not drawn')).toBeInTheDocument()
+    expect(screen.getByText('No forecast is produced for this symbol.')).toBeInTheDocument()
+    expect(screen.queryByText('ESTIMATE')).not.toBeInTheDocument()
+    expect(screen.getByText('News markers are gold and macro headlines.')).toBeInTheDocument()
+  })
+
+  it('disables what the series refuses in the menu, but lets a refused item already on be removed', () => {
+    const onChange = vi.fn()
+    const state = applyPreset('trend') // sma, supertrend, pivots, sr
+    render(
+      <IndicatorMenu
+        state={state}
+        onChange={onChange}
+        indicatorRefusal={(kind) => {
+          const s = indicatorSupport(kind, ['close'])
+          return s.ok ? null : s.reason
+        }}
+        overlayRefusal={(key) => {
+          const s = overlaySupport(TSE_INDEX.TEDPIX, key)
+          return s.ok ? null : s.reason
+        }}
+      />
+    )
+    fireEvent.click(screen.getByLabelText('Indicators'))
+    // Off and refused: cannot be switched on.
+    for (const name of ['PSAR', 'Ichimoku']) {
+      const item = screen.getByRole('menuitemcheckbox', { name })
+      expect(item).toBeDisabled()
+      expect(item).toHaveAttribute('title', expect.stringContaining('high and low'))
+    }
+    for (const name of ['Forecast', 'News events', 'Trend alignment']) {
+      expect(screen.getByRole('menuitemcheckbox', { name })).toBeDisabled()
+    }
+    // On and refused: still removable.
+    const st = screen.getByRole('menuitemcheckbox', { name: 'SuperTrend' })
+    expect(st).toBeEnabled()
+    fireEvent.click(st)
+    expect((onChange.mock.calls[0][0] as ChartIndicatorState).instances.map((i) => i.id)).not.toContain(
+      'supertrend'
+    )
+    // The reasons are text in the menu, not only tooltips.
+    expect(screen.getByText(/Needs each session’s high and low/)).toBeInTheDocument()
+    expect(screen.getByText(/the models forecast 18k gold and XAU\/USD only/)).toBeInTheDocument()
+    // What a close-only series supports is untouched.
+    expect(screen.getByRole('menuitemcheckbox', { name: 'Bollinger' })).toBeEnabled()
   })
 })
 

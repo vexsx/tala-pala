@@ -843,9 +843,23 @@ function pointsFromComputed(candles: ChartCandle[], values: Array<number | null>
   return out
 }
 
+/**
+ * The sessions an indicator computed here may use. A halted Tehran share's
+ * close is TSETMC's carried reference price and a closed market's index value
+ * repeats the previous close exactly; neither is a price anyone traded at, and
+ * fifty of them in a row would drag an average flat through a closure. They
+ * keep their place on the time axis — the lines simply have no point there —
+ * which is the rule the server applies to the overlays it computes.
+ */
+export function indicatorCandles(candles: ChartCandle[]): ChartCandle[] {
+  if (!candles.some((c) => c.traded === false || c.unchanged === true)) return candles
+  return candles.filter((c) => c.traded !== false && c.unchanged !== true)
+}
+
 /** Every plot the active instances put on the chart, in draw order. */
 export function buildPlots(instances: IndicatorInstance[], ctx: PlotContext): IndicatorPlot[] {
-  const closes = ctx.candles.map((c) => c.close)
+  const usable = indicatorCandles(ctx.candles)
+  const closes = usable.map((c) => c.close)
   const out: IndicatorPlot[] = []
 
   for (const instance of instances) {
@@ -869,7 +883,7 @@ export function buildPlots(instances: IndicatorInstance[], ctx: PlotContext): In
         format: 'price',
         owner: 'layer',
         primary: true,
-        data: pointsFromComputed(ctx.candles, values)
+        data: pointsFromComputed(usable, values)
       })
       continue
     }
@@ -888,7 +902,7 @@ export function buildPlots(instances: IndicatorInstance[], ctx: PlotContext): In
         format: 'number',
         owner: 'layer',
         primary: true,
-        data: pointsFromComputed(ctx.candles, values),
+        data: pointsFromComputed(usable, values),
         reference: [30, 50, 70]
       })
       continue
@@ -909,7 +923,7 @@ export function buildPlots(instances: IndicatorInstance[], ctx: PlotContext): In
           format: 'price',
           owner: 'layer',
           primary: false,
-          data: pointsFromComputed(ctx.candles, m.hist),
+          data: pointsFromComputed(usable, m.hist),
           reference: [0]
         },
         {
@@ -924,7 +938,7 @@ export function buildPlots(instances: IndicatorInstance[], ctx: PlotContext): In
           format: 'price',
           owner: 'layer',
           primary: true,
-          data: pointsFromComputed(ctx.candles, m.line)
+          data: pointsFromComputed(usable, m.line)
         },
         {
           key: `${instance.id}:signal`,
@@ -938,7 +952,7 @@ export function buildPlots(instances: IndicatorInstance[], ctx: PlotContext): In
           format: 'price',
           owner: 'layer',
           primary: false,
-          data: pointsFromComputed(ctx.candles, m.signal)
+          data: pointsFromComputed(usable, m.signal)
         }
       )
       continue
@@ -1046,13 +1060,19 @@ export function valueAt(plot: IndicatorPlot, time: number | null): number | null
  * Instances that produced no points at all in this window. Reported rather
  * than left as an invisible blank: "the line is missing" and "the line is off
  * screen" look identical otherwise.
+ *
+ * An instance the series REFUSES (`refused`) is not cold: it has no data
+ * because it cannot be computed here at all, and the legend says that instead
+ * of "no data", which would suggest more history might fix it.
  */
 export function coldInstances(
   instances: IndicatorInstance[],
-  plots: IndicatorPlot[]
+  plots: IndicatorPlot[],
+  refused: (instance: IndicatorInstance) => boolean = () => false
 ): IndicatorInstance[] {
   return instances.filter((instance) => {
     if (instance.kind === 'pivots' || instance.kind === 'sr') return false
+    if (refused(instance)) return false
     const mine = plots.filter((p) => p.instanceId === instance.id)
     if (mine.length === 0) return true
     return mine.every((p) => p.data.length === 0)

@@ -25,6 +25,7 @@ import {
   formatIndexLevel,
   formatTomanScaled,
   formatUsdScaled,
+  indexGroups,
   jalaliYearStart,
   sortIndices,
   spanDaysOf,
@@ -90,13 +91,6 @@ const UNITS = [
   { key: 'real', label: 'Real (CPI)' }
 ] as const
 type Unit = (typeof UNITS)[number]['key']
-
-const KIND_LABEL: Record<string, string> = {
-  headline: 'All-share',
-  market: 'Market boards',
-  segment: 'Segments',
-  sector: 'Sectors'
-}
 
 function Fa({ children }: { children: string }) {
   return (
@@ -234,19 +228,6 @@ function HeadlineRow({ overview, calendar }: { overview: BourseOverviewResponse;
 }
 
 // --- the index chart --------------------------------------------------------------
-
-function indexGroups(items: BourseIndexItem[]): Array<{ label: string; items: BourseIndexItem[] }> {
-  const groups: Array<{ label: string; items: BourseIndexItem[] }> = []
-  for (const market of ['bourse', 'farabourse']) {
-    for (const kind of ['headline', 'market', 'segment', 'sector']) {
-      const g = items.filter((i) => i.market === market && i.kind === kind)
-      if (g.length) {
-        groups.push({ label: `${market === 'bourse' ? 'Bourse' : 'Farabourse'} · ${KIND_LABEL[kind]}`, items: g })
-      }
-    }
-  }
-  return groups
-}
 
 function IndexChartCard({
   code,

@@ -170,6 +170,34 @@ export function sortIndices(
   })
 }
 
+/** What a registry `kind` is called in a picker or a table heading. */
+export const KIND_LABEL: Record<string, string> = {
+  headline: 'All-share',
+  market: 'Market boards',
+  segment: 'Segments',
+  sector: 'Sectors'
+}
+
+/**
+ * Indices grouped for a picker: market by market, kind by kind, each group in
+ * the registry's display order. Shared by the Tehran market page and the
+ * Trade chart so the two pickers read the same way.
+ */
+export function indexGroups<T extends { market: string; kind: string }>(
+  items: T[]
+): Array<{ label: string; items: T[] }> {
+  const groups: Array<{ label: string; items: T[] }> = []
+  for (const market of ['bourse', 'farabourse']) {
+    for (const kind of ['headline', 'market', 'segment', 'sector']) {
+      const g = items.filter((i) => i.market === market && i.kind === kind)
+      if (g.length) {
+        groups.push({ label: `${market === 'bourse' ? 'Bourse' : 'Farabourse'} · ${KIND_LABEL[kind]}`, items: g })
+      }
+    }
+  }
+  return groups
+}
+
 /** The four breadth buckets as percentage widths that always sum to 100. */
 export function breadthWidths(b: {
   down_over_2: number

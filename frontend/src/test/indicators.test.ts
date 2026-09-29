@@ -10,6 +10,7 @@ import {
   deserializeState,
   emaSeries,
   hasInstance,
+  indicatorCandles,
   instanceLabel,
   macdSeries,
   makeInstance,
@@ -536,6 +537,36 @@ describe('buildPlots', () => {
   it('does not call a levels-only indicator cold — it has no series to warm up', () => {
     const pivots = instance('pivots')
     expect(coldInstances([pivots], buildPlots([pivots], CTX))).toEqual([])
+  })
+
+  it('skips halted and closed sessions while keeping every other session’s time', () => {
+    // A Tehran share halted at index 2 (its close is the carried reference
+    // price) and an index session at 4 repeating the previous close exactly.
+    const sessions: ChartCandle[] = CANDLES.map((c, i) =>
+      i === 2
+        ? { ...c, open: null, high: null, low: null, close: 999, traded: false }
+        : i === 4
+          ? { ...c, unchanged: true, close: 777 }
+          : c
+    )
+    const [sma] = buildPlots([instance('ma', { method: 'sma', period: 3 })], {
+      candles: sessions,
+      overlays: null,
+      overlayTimes: []
+    })
+    const times = sma.data.map((p) => p.time)
+    expect(times).not.toContain(CANDLES[2].t)
+    expect(times).not.toContain(CANDLES[4].t)
+    // The first three REAL sessions are 0, 1 and 3: the mean lands on 3's time
+    // and never includes the carried 999 or the repeated 777.
+    expect(sma.data[0]).toEqual({
+      time: CANDLES[3].t,
+      value: expect.closeTo((CANDLES[0].close + CANDLES[1].close + CANDLES[3].close) / 3, 10)
+    })
+  })
+
+  it('leaves a series with nothing to skip exactly as it was', () => {
+    expect(indicatorCandles(CANDLES)).toBe(CANDLES)
   })
 })
 

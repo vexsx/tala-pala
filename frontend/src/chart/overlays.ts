@@ -239,7 +239,7 @@ function bucketAt(candles: ChartCandle[], seconds: number): number | null {
 }
 
 /**
- * Attach event markers to the candle series.
+ * Attach event markers to the price series (candles or a close-only line).
  *
  * Every marker carries a glyph AND its headline as text, so the row is never
  * distinguished by colour alone. Markers are cleared on unmount and whenever
@@ -247,7 +247,7 @@ function bucketAt(candles: ChartCandle[], seconds: number): number | null {
  * chart the user switched away from.
  */
 export function useEventMarkers(
-  series: ISeriesApi<'Candlestick'> | null,
+  series: ISeriesApi<'Candlestick' | 'Line'> | null,
   events: ChartEvent[],
   enabled: boolean
 ): void {

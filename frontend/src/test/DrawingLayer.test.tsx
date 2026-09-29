@@ -172,7 +172,7 @@ function makeHandle(): ChartHandle {
   viewportListeners = new Set()
   return {
     chart: {} as ChartHandle['chart'],
-    candleSeries: {} as ChartHandle['candleSeries'],
+    mainSeries: {} as ChartHandle['mainSeries'],
     container,
     timeToX: (t: number) => xOf(t),
     priceToY: (price: number) => yOf(price),

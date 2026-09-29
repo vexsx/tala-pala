@@ -488,20 +488,25 @@ export interface Candle {
   close: number
 }
 
-/** Index-aligned overlay arrays (null during indicator warm-up). */
+/**
+ * Index-aligned overlay arrays (null entries during indicator warm-up, and at
+ * a halted or closed Tehran session). A WHOLE field is null when the series
+ * cannot carry that overlay at all: a Tehran index is close-only, so
+ * SuperTrend, PSAR and Ichimoku — which need a high and a low — are null.
+ */
 export interface CandleOverlays {
-  sma_20: Array<number | null>
-  sma_50: Array<number | null>
-  bollinger_upper: Array<number | null>
-  bollinger_mid: Array<number | null>
-  bollinger_lower: Array<number | null>
-  supertrend: Array<number | null>
-  supertrend_dir: number[]
-  psar: Array<number | null>
-  ichimoku_tenkan: Array<number | null>
-  ichimoku_kijun: Array<number | null>
-  ichimoku_senkou_a: Array<number | null>
-  ichimoku_senkou_b: Array<number | null>
+  sma_20: Array<number | null> | null
+  sma_50: Array<number | null> | null
+  bollinger_upper: Array<number | null> | null
+  bollinger_mid: Array<number | null> | null
+  bollinger_lower: Array<number | null> | null
+  supertrend: Array<number | null> | null
+  supertrend_dir: number[] | null
+  psar: Array<number | null> | null
+  ichimoku_tenkan: Array<number | null> | null
+  ichimoku_kijun: Array<number | null> | null
+  ichimoku_senkou_a: Array<number | null> | null
+  ichimoku_senkou_b: Array<number | null> | null
 }
 
 export interface PivotLevels {
@@ -767,28 +772,52 @@ export interface TrendAlignmentResponse {
 // ---------- Candles v2 (trading chart) ----------
 
 /**
- * One time bucket of the tick stream in `prices`. These are NOT exchange OHLC
- * bars: the API buckets observations by time, so a bucket that saw a single
- * observation has open == high == low == close and no traded range at all.
- * `ticks` and `synthetic` are how the chart tells the two apart honestly.
+ * One bar on the trading chart.
+ *
+ * For a registry symbol it is one time bucket of the tick stream in `prices`.
+ * Those are NOT exchange OHLC bars: the API buckets observations by time, so a
+ * bucket that saw a single observation has open == high == low == close and no
+ * traded range at all. `ticks` and `synthetic` are how the chart tells the two
+ * apart honestly.
+ *
+ * For a Tehran symbol (IDX:/EQ:) it is one settled TSETMC session. An index is
+ * CLOSE-ONLY — open/high/low are null, because the exchange publishes no open
+ * and its stored low/high are not a traded range. A share's halted session
+ * carries `traded: false`, its carried reference close and null open/high/low.
  */
 export interface ChartCandle {
   /** Unix seconds, bucket start (UTC). */
   t: number
   open_time?: string
   close_time?: string
-  open: number
-  high: number
-  low: number
+  open: number | null
+  high: number | null
+  low: number | null
+  /** For a Tehran share: the official closing price (قیمت پایانی), adjusted. */
   close: number
-  /** Always null — this data source carries no volume. Never invent one. */
+  /**
+   * Null for every tick bucket (`prices` carries no volume — never invent one)
+   * and for an index; shares traded for a Tehran share.
+   */
   volume?: number | null
-  /** Observations that fell in the bucket. */
+  /** Observations that fell in the bucket. Tick buckets only. */
   ticks?: number
   /** The bucket has ended; a false value is a still-forming bar. */
   confirmed?: boolean
   /** ticks <= 1: the high/low "range" is an artefact of a single observation. */
   synthetic?: boolean
+  /** Index: the close repeats the previous session exactly — a closed market. */
+  unchanged?: boolean
+  /** Index: TSETMC stored this close off by a power of ten; shown corrected. */
+  rescaled?: boolean
+  /** Share: false on a halted session (no trade, no range). */
+  traded?: boolean
+  /** Share: the back-adjustment factor applied, when it is not 1. */
+  adjustment_factor?: number
+  /** Share: the last trade price, adjusted; absent on a halt. */
+  last_trade?: number
+  /** Share: the official close lies outside the session's traded range. */
+  close_outside_range?: boolean
 }
 
 /**
@@ -806,6 +835,36 @@ export interface CandleCoverage {
   note: string
 }
 
+/** A Tehran index as the chart labels it — `prices.indexInstrument`. */
+export interface ChartIndexInstrument {
+  ins_code: string
+  name_fa: string
+  name_en: string
+  /** 'bourse' | 'farabourse' */
+  market: string
+  /** 'headline' | 'market' | 'segment' | 'sector' */
+  kind: string
+  sector_code: string
+  weighting: string
+  return_basis: string
+  /** 'validated' | 'refused' | 'never_ingested' */
+  check_status: string
+  rows_rescaled: number
+  refusal_reason: string
+}
+
+/** A Tehran share as the chart labels it — `equities.ChartMeta`. */
+export interface ChartEquityInstrument {
+  ins_code: string
+  symbol: string
+  name_fa: string
+  market: string
+  board: string
+  sector_code: string
+  sector_fa: string
+  adjustment: StockAdjustment
+}
+
 /** GET /market/candles — paginated buckets plus chart-ready overlays. */
 export interface ChartCandlesResponse {
   symbol: string
@@ -817,11 +876,25 @@ export interface ChartCandlesResponse {
   /** Pagination cursor: pass back verbatim as `before` to fetch older buckets. */
   next_before: string | null
   coverage?: CandleCoverage
-  overlays?: CandleOverlays
-  pivots?: PivotLevels
+  overlays?: CandleOverlays | null
+  pivots?: PivotLevels | null
   support: number | null
   resistance: number | null
+  /** When the response was built — NOT how old the data is (see data_age). */
   as_of: string
+  // The fields below travel on a Tehran series (IDX:/EQ:) only.
+  /** ['close'] for an index: draw a line, not candles. */
+  price_fields?: string[]
+  /** 'index_points' | 'IRR' */
+  unit?: string
+  /** 'TSETMC' */
+  source?: string
+  instrument?: ChartIndexInstrument | ChartEquityInstrument
+  /** The age of the stored Tehran data, with the server's 10-day stale bound. */
+  data_age?: StockDataAge
+  notes?: string[]
+  /** Changes when stored sessions are restated; a changed revision means reload. */
+  revision?: string
 }
 
 // ---------- Chart drawings ----------
@@ -1527,6 +1600,32 @@ export const STOCK_NUMERAIRE_LABELS: Record<StockNumeraire, string> = {
   IRR: 'Rial (IRR) — the exchange’s own unit',
   USD: 'US dollar (free-market proxy)',
   GOLD: 'Grams of 18k gold'
+}
+
+/** One roster row — `equities.stockItem`. */
+export interface StockRosterItem {
+  ins_code: string
+  symbol: string
+  name_fa: string
+  market: string
+  board: string
+  sector_code: string
+  sector_fa: string
+  isin: string
+  instrument_code?: string
+  first_bar?: string
+  last_bar?: string
+  bar_count: number
+  enabled: boolean
+  notes?: string
+  adjustment: StockAdjustment
+}
+
+/** GET /stocks — the roster, unfiltered unless asked — `equities.stocksResponse`. */
+export interface StocksResponse {
+  items: StockRosterItem[]
+  count: number
+  data_age: StockDataAge
 }
 
 /** The adjustment verdict block, shared verbatim by /stocks, /bars and /screen. */

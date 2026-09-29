@@ -15,6 +15,7 @@ import {
   type IntervalId
 } from '../chart/intervals'
 import type { CandleCoverage } from '../api/types'
+import { TSE_COVERAGE } from '../chart/symbols'
 
 /** Production shape: 5-minute ticks since 2026-07-20, daily backfill before it. */
 function coverage(overrides: Partial<CandleCoverage> = {}): CandleCoverage {
@@ -132,6 +133,25 @@ describe('isSupported', () => {
 
   it('lists only the timeframes a daily-only symbol can serve', () => {
     expect(supportedIntervals(DAILY_ONLY)).toEqual(['1d', '2d', '3d', '1w'])
+  })
+
+  it('offers a Tehran series its one timeframe and says why each other is missing', () => {
+    // Exactly what /market/candles answers for IDX:/EQ: — and what the page
+    // passes before the first response, so the strip is never permissive.
+    expect(TSE_COVERAGE).toEqual({
+      base_granularity_seconds: 86_400,
+      intraday_from: null,
+      history_from: null,
+      supported_intervals: ['1d'],
+      note: expect.any(String)
+    })
+    expect(supportedIntervals(TSE_COVERAGE)).toEqual(['1d'])
+    const twoDay = isSupported('2d', TSE_COVERAGE)
+    expect(twoDay.ok).toBe(false)
+    if (!twoDay.ok) expect(twoDay.reason).toBe('2D is not available for the current data source.')
+    const fourHour = isSupported('4h', TSE_COVERAGE)
+    if (fourHour.ok) throw new Error('4H must be refused')
+    expect(fourHour.reason).toContain('finer than the daily source data')
   })
 })
 

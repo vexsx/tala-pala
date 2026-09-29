@@ -5,7 +5,10 @@ import type {
   CandleOverlays,
   ChartCandle,
   ChartCandlesResponse,
-  PivotLevels
+  ChartEquityInstrument,
+  ChartIndexInstrument,
+  PivotLevels,
+  StockDataAge
 } from '../api/types'
 import { defaultBars, intervalSeconds, type IntervalId } from './intervals'
 
@@ -38,6 +41,29 @@ export interface CandleStore {
   loadOlder: () => void
   reload: () => void
   asOf: string | null
+  /**
+   * The price fields the series actually has; null means full OHLC (every
+   * tick response). ['close'] is a close-only series — a Tehran index.
+   */
+  priceFields: string[] | null
+  /** 'index_points' | 'IRR' for a Tehran series; null for ticks. */
+  unit: string | null
+  /** The data's own source, when the response names one ('TSETMC'). */
+  source: string | null
+  instrument: ChartIndexInstrument | ChartEquityInstrument | null
+  /** How old the stored Tehran data is; null for ticks. */
+  dataAge: StockDataAge | null
+  notes: string[]
+  /** Changes when stored sessions are restated; see the live tail. */
+  revision: string | null
+  /**
+   * The `${symbol}|${interval}` the coverage, overlays and error above belong
+   * to; null until the first page for the current pair has answered. For one
+   * render after a switch the store still holds the PREVIOUS pair's answer, so
+   * anything that acts on coverage or on a refusal must check this first — a
+   * Tehran symbol's ['1d'] read against gold's 4H would reset it to 1D.
+   */
+  loadedFor: string | null
 }
 
 interface Meta {
@@ -50,6 +76,14 @@ interface Meta {
   asOf: string | null
   hasMore: boolean
   nextBefore: string | null
+  priceFields: string[] | null
+  unit: string | null
+  source: string | null
+  instrument: ChartIndexInstrument | ChartEquityInstrument | null
+  dataAge: StockDataAge | null
+  notes: string[]
+  revision: string | null
+  loadedFor: string | null
 }
 
 const EMPTY_META: Meta = {
@@ -61,7 +95,15 @@ const EMPTY_META: Meta = {
   resistance: null,
   asOf: null,
   hasMore: false,
-  nextBefore: null
+  nextBefore: null,
+  priceFields: null,
+  unit: null,
+  source: null,
+  instrument: null,
+  dataAge: null,
+  notes: [],
+  revision: null,
+  loadedFor: null
 }
 
 function buildPath(
@@ -91,7 +133,9 @@ function sameBar(a: ChartCandle, b: ChartCandle): boolean {
     a.low === b.low &&
     a.close === b.close &&
     a.ticks === b.ticks &&
-    a.confirmed === b.confirmed
+    a.confirmed === b.confirmed &&
+    a.traded === b.traded &&
+    a.unchanged === b.unchanged
   )
 }
 
@@ -113,13 +157,24 @@ export function indexOfTime(candles: ChartCandle[], t: number): number {
  * A bucket that saw one observation has no traded range: its high and low are
  * just that one print. The server says so with `synthetic`/`ticks`; when an
  * older build omits both, the geometry still gives it away.
+ *
+ * A Tehran session is never one: it is an exchange's settled row, not a tick
+ * bucket. A close-only index has no range at all (null, not one print), and a
+ * share that traded at a single price had a real session at that price.
  */
 export function isSingleObservation(candle: ChartCandle): boolean {
   if (typeof candle.synthetic === 'boolean') return candle.synthetic
   if (typeof candle.ticks === 'number') return candle.ticks <= 1
+  if (typeof candle.traded === 'boolean') return false
+  if (candle.open === null || candle.high === null || candle.low === null) return false
   return (
     candle.open === candle.high && candle.high === candle.low && candle.low === candle.close
   )
+}
+
+/** A session with no traded price — drawn as a gap, skipped by indicators. */
+export function isHalted(candle: ChartCandle): boolean {
+  return candle.traded === false
 }
 
 export function countSingleObservation(candles: ChartCandle[]): number {
@@ -199,6 +254,8 @@ export function useCandles(
   const readyRef = useRef(false)
   const candlesRef = useRef<ChartCandle[]>([])
   candlesRef.current = candles
+  /** The revision the loaded pages were served under; null for ticks. */
+  const revisionRef = useRef<string | null>(null)
   const keyRef = useRef(`${symbol}|${interval}`)
 
   const reload = useCallback(() => setReloadTick((t) => t + 1), [])
@@ -217,6 +274,7 @@ export function useCandles(
       keyRef.current = key
       setCandles([])
       setMeta(EMPTY_META)
+      revisionRef.current = null
     }
 
     // A symbol/interval switch invalidates any older page still in flight.
@@ -253,8 +311,17 @@ export function useCandles(
           resistance: res.resistance ?? null,
           asOf: res.as_of ?? null,
           hasMore: res.has_more === true,
-          nextBefore: res.next_before ?? null
+          nextBefore: res.next_before ?? null,
+          priceFields: Array.isArray(res.price_fields) ? res.price_fields : null,
+          unit: res.unit ?? null,
+          source: res.source ?? null,
+          instrument: res.instrument ?? null,
+          dataAge: res.data_age ?? null,
+          notes: Array.isArray(res.notes) ? res.notes : [],
+          revision: res.revision ?? null,
+          loadedFor: key
         })
+        revisionRef.current = res.revision ?? null
         hasMoreRef.current = res.has_more === true
         nextBeforeRef.current = res.next_before ?? null
         readyRef.current = true
@@ -265,7 +332,7 @@ export function useCandles(
         // Keep no stale bars around: an error on a new (symbol, interval) must
         // not leave the previous symbol's candles on screen.
         setCandles([])
-        setMeta(EMPTY_META)
+        setMeta({ ...EMPTY_META, loadedFor: key })
         setError(errorMessage(err))
         setLoading(false)
       })
@@ -352,6 +419,15 @@ export function useCandles(
       )
         .then((res) => {
           if (signal.aborted) return
+          // A Tehran series can be restated under pages already loaded — an
+          // ingest recomputes an index's corrections and a share's adjustment
+          // over its whole history — and three fresh sessions cannot show
+          // that. The revision can: when it moves, reload everything.
+          const revision = res.revision ?? null
+          if (revision !== null && revisionRef.current !== null && revision !== revisionRef.current) {
+            reload()
+            return
+          }
           const fresh = sortedByTime(res.candles ?? [])
           setMeta((m) => (m.asOf === (res.as_of ?? null) ? m : { ...m, asOf: res.as_of ?? null }))
           if (fresh.length === 0) return
@@ -391,6 +467,14 @@ export function useCandles(
     hasMore: meta.hasMore,
     loadOlder,
     reload,
-    asOf: meta.asOf
+    asOf: meta.asOf,
+    priceFields: meta.priceFields,
+    unit: meta.unit,
+    source: meta.source,
+    instrument: meta.instrument,
+    dataAge: meta.dataAge,
+    notes: meta.notes,
+    revision: meta.revision,
+    loadedFor: meta.loadedFor
   }
 }

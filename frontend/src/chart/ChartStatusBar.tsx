@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import type { CandleCoverage, ChartCandle } from '../api/types'
-import { formatTime, relativeTime } from '../lib/format'
+import type { CandleCoverage, ChartCandle, StockDataAge } from '../api/types'
+import { useSettings } from '../lib/settings'
+import { formatDate, formatTime, relativeTime } from '../lib/format'
 import { intervalLabel, intervalSeconds, type IntervalId } from './intervals'
-import { countSingleObservation } from './useCandles'
+import { countSingleObservation, isHalted } from './useCandles'
 
 export interface ChartStatusBarProps {
   asOf: string | null
@@ -13,6 +14,13 @@ export interface ChartStatusBarProps {
   source?: string | null
   /** Server-side staleness flag; overrides the age heuristic when true. */
   stale?: boolean
+  /**
+   * A Tehran series' data_age. When present it decides freshness outright:
+   * the server's 10-day bound, measured on the newest stored session. Null is
+   * a Tehran series whose age has not arrived (loading, or refused): its age
+   * is unknown, which is not the same as fresh. Omit it for a tick series.
+   */
+  dataAge?: StockDataAge | null
 }
 
 /**
@@ -34,7 +42,8 @@ export function ChartStatusBar({
   candles,
   coverage,
   source,
-  stale
+  stale,
+  dataAge
 }: ChartStatusBarProps) {
   const [now, setNow] = useState(() => Date.now())
 
@@ -44,18 +53,67 @@ export function ChartStatusBar({
     return () => window.clearInterval(id)
   }, [])
 
-  const stale_ = isStale(asOf, interval, stale)
-  const singles = countSingleObservation(candles)
-
   return (
     <div className="tchart-status">
       <span className="muted small">Tehran {formatTime(new Date(now))}</span>
-      <span className="freshness" title={asOf ?? 'no data yet'}>
-        <span className={`dot dot-${stale_ ? 'bad' : 'ok'}`} aria-hidden="true" />
-        <span className="muted small">{relativeTime(asOf)}</span>
-        {stale_ && <span className="badge badge-bad">STALE</span>}
-      </span>
+      {dataAge ? (
+        <SessionAge age={dataAge} />
+      ) : dataAge === null ? (
+        <span className="muted small">data age not known yet</span>
+      ) : candles.length === 0 ? (
+        // as_of is when the RESPONSE was built; with nothing stored it would
+        // read "0s ago" beside an empty chart.
+        <span className="muted small">no data</span>
+      ) : (
+        <TickAge asOf={asOf} stale={isStale(asOf, interval, stale)} />
+      )}
       <span className="muted small">{intervalLabel(interval)}</span>
+      {dataAge !== undefined ? (
+        <SessionCounts candles={candles} />
+      ) : (
+        <BucketCounts candles={candles} coverage={coverage} />
+      )}
+      {source && <span className="muted small mono">{source}</span>}
+    </div>
+  )
+}
+
+function TickAge({ asOf, stale }: { asOf: string | null; stale: boolean }) {
+  return (
+    <span className="freshness" title={asOf ?? 'no data yet'}>
+      <span className={`dot dot-${stale ? 'bad' : 'ok'}`} aria-hidden="true" />
+      <span className="muted small">{relativeTime(asOf)}</span>
+      {stale && <span className="badge badge-bad">STALE</span>}
+    </span>
+  )
+}
+
+/**
+ * The age of the newest stored SESSION, as the server measured it. A Tehran
+ * series is refreshed by hand and the exchange shuts Thursday, Friday and for
+ * Nowruz, so "3 × the interval" would flag every Saturday morning; the server's
+ * bound is the one the Tehran market page and the alerts use.
+ */
+function SessionAge({ age }: { age: StockDataAge }) {
+  const { calendar } = useSettings()
+  const newest = age.newest_trade_date
+  return (
+    <span className="freshness" title={age.warning ?? age.note}>
+      <span className={`dot dot-${age.stale ? 'bad' : 'ok'}`} aria-hidden="true" />
+      <span className="muted small">
+        {newest
+          ? `last session ${formatDate(newest, calendar)} · ${age.age_days ?? '—'} day(s) old`
+          : 'no stored session'}
+      </span>
+      {age.stale && <span className="badge badge-bad">STALE</span>}
+    </span>
+  )
+}
+
+function BucketCounts({ candles, coverage }: { candles: ChartCandle[]; coverage: CandleCoverage | null }) {
+  const singles = countSingleObservation(candles)
+  return (
+    <>
       <span className="muted small">{candles.length} candles</span>
       {singles > 0 && (
         <span
@@ -68,7 +126,37 @@ export function ChartStatusBar({
           {singles} of {candles.length} bars are single-observation
         </span>
       )}
-      {source && <span className="muted small mono">{source}</span>}
-    </div>
+    </>
+  )
+}
+
+/** Sessions, closed-market repeats and halts, counted out loud. */
+function SessionCounts({ candles }: { candles: ChartCandle[] }) {
+  let unchanged = 0
+  let halted = 0
+  for (const c of candles) {
+    if (c.unchanged === true) unchanged++
+    if (isHalted(c)) halted++
+  }
+  return (
+    <>
+      <span className="muted small">{candles.length} sessions</span>
+      {unchanged > 0 && (
+        <span
+          className="muted small tchart-singles"
+          title="These sessions repeat the previous close exactly — a closed market, or a sector nothing in traded. Drawn flat, left out of every indicator."
+        >
+          {unchanged} of {candles.length} repeat the previous close
+        </span>
+      )}
+      {halted > 0 && (
+        <span
+          className="muted small tchart-singles"
+          title="Nothing traded in these sessions: they are drawn as gaps and left out of every indicator."
+        >
+          {halted} of {candles.length} had no trade
+        </span>
+      )}
+    </>
   )
 }

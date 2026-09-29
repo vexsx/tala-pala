@@ -12,14 +12,24 @@ import {
   type ISeriesApi,
   type LineData,
   type LogicalRange,
-  type UTCTimestamp
+  type UTCTimestamp,
+  type WhitespaceData
 } from 'lightweight-charts'
 import type { CandleOverlays, ChartCandle, PivotLevels } from '../api/types'
 import { useSettings } from '../lib/settings'
 import { formatDateTime, formatTime, shortDate, type DisplayUnit } from '../lib/format'
 import { isIntraday, type IntervalId } from './intervals'
-import { indexOfTime, isSingleObservation } from './useCandles'
+import { indexOfTime, isHalted, isSingleObservation } from './useCandles'
 import { formatChartPrice } from './OhlcHeader'
+
+/**
+ * How the main series is drawn. 'line' is for a close-only series — a Tehran
+ * index has one value per session and no range, and a candle would invent one.
+ */
+export type SeriesMode = 'candles' | 'line'
+
+/** The price series: candles, or the line a close-only series is drawn as. */
+export type MainSeries = ISeriesApi<'Candlestick' | 'Line'>
 
 /**
  * The imperative seam the drawing and indicator layers build on.
@@ -30,7 +40,8 @@ import { formatChartPrice } from './OhlcHeader'
  */
 export interface ChartHandle {
   chart: IChartApi
-  candleSeries: ISeriesApi<'Candlestick'>
+  /** The price series — candles, or a line for a close-only series. */
+  mainSeries: MainSeries
   container: HTMLDivElement
   timeToX(t: number): number | null
   priceToY(price: number): number | null
@@ -65,6 +76,13 @@ export interface TradingChartProps {
   levels?: ChartLevels
   /** Called when the user pans within LOAD_OLDER_BARS of the oldest bucket. */
   onLoadOlder?: () => void
+  /**
+   * Read ONCE, at mount: a series cannot change type in place, so the caller
+   * remounts (key={seriesMode}) when it changes.
+   */
+  seriesMode?: SeriesMode
+  /** Logarithmic price axis — TEDPIX runs from about 9k to 3.7M. */
+  logScale?: boolean
 }
 
 /** How close to the left edge a pan has to get before older history is fetched. */
@@ -77,6 +95,13 @@ const LOAD_OLDER_BARS = 20
  * rather than importing the enum so the test file's module mock stays minimal.
  */
 const TICK_MARK_TIME = 3
+
+/**
+ * lightweight-charts PriceScaleMode: Normal=0, Logarithmic=1. Local for the
+ * same reason as TICK_MARK_TIME.
+ */
+const PRICE_SCALE_NORMAL = 0
+const PRICE_SCALE_LOG = 1
 
 interface Palette {
   text: string
@@ -131,17 +156,38 @@ const OVERLAY_STYLES: Record<OverlayField, OverlayStyle> = {
   ichimoku_senkou_b: { color: 'purple', width: 1, style: LineStyle.Dashed }
 }
 
+type SeriesPoint =
+  | CandlestickData<UTCTimestamp>
+  | LineData<UTCTimestamp>
+  | WhitespaceData<UTCTimestamp>
+
 /**
- * Single-observation buckets are drawn hollow and muted.
+ * One candle as the series draws it.
  *
- * 1198 of the 1224 daily buckets in this data set hold exactly one tick, so a
- * green or red body on one of them would claim a day of trading that never
- * happened. A muted outline says "one print, no range" at a glance; the status
- * bar puts a number on it.
+ * Single-observation buckets are drawn hollow and muted. 1198 of the 1224
+ * daily buckets of 18k gold hold exactly one tick, so a green or red body on
+ * one of them would claim a day of trading that never happened. A muted
+ * outline says "one print, no range" at a glance; the status bar puts a number
+ * on it.
+ *
+ * A halted Tehran session is WHITESPACE: the time exists on the axis, nothing
+ * is drawn. Its stored close is the carried reference price, and a candle or a
+ * line through it would draw a price nobody transacted at.
+ *
+ * In line mode a session that repeats the previous close exactly — a closed
+ * market — is drawn in the muted colour, flat, as TSETMC published it.
  */
-function toBar(candle: ChartCandle, colors: Palette): CandlestickData<UTCTimestamp> {
+function toData(candle: ChartCandle, mode: SeriesMode, colors: Palette): SeriesPoint {
+  const time = candle.t as UTCTimestamp
+  if (isHalted(candle)) return { time }
+  if (mode === 'line') {
+    const point: LineData<UTCTimestamp> = { time, value: candle.close }
+    if (candle.unchanged) point.color = colors.muted
+    return point
+  }
+  if (candle.open === null || candle.high === null || candle.low === null) return { time }
   const bar: CandlestickData<UTCTimestamp> = {
-    time: candle.t as UTCTimestamp,
+    time,
     open: candle.open,
     high: candle.high,
     low: candle.low,
@@ -162,7 +208,9 @@ function sameBar(a: ChartCandle, b: ChartCandle): boolean {
     a.high === b.high &&
     a.low === b.low &&
     a.close === b.close &&
-    a.ticks === b.ticks
+    a.ticks === b.ticks &&
+    a.traded === b.traded &&
+    a.unchanged === b.unchanged
   )
 }
 
@@ -204,14 +252,17 @@ export function TradingChart({
   onReady,
   children,
   levels,
-  onLoadOlder
+  onLoadOlder,
+  seriesMode = 'candles',
+  logScale = false
 }: TradingChartProps) {
   const { calendar } = useSettings()
 
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const seriesRef = useRef<MainSeries | null>(null)
+  const modeRef = useRef<SeriesMode>(seriesMode)
   const handleRef = useRef<ChartHandle | null>(null)
   const listenersRef = useRef<Set<() => void>>(new Set())
   const paintedRef = useRef<ChartCandle[]>([])
@@ -267,16 +318,24 @@ export function TradingChart({
     })
     chartRef.current = chart
 
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: colors.pos,
-      downColor: colors.neg,
-      borderUpColor: colors.pos,
-      borderDownColor: colors.neg,
-      wickUpColor: colors.pos,
-      wickDownColor: colors.neg,
-      priceLineVisible: true,
-      lastValueVisible: true
-    })
+    const series: MainSeries =
+      modeRef.current === 'line'
+        ? chart.addSeries(LineSeries, {
+            color: colors.accent,
+            lineWidth: 2,
+            priceLineVisible: true,
+            lastValueVisible: true
+          })
+        : chart.addSeries(CandlestickSeries, {
+            upColor: colors.pos,
+            downColor: colors.neg,
+            borderUpColor: colors.pos,
+            borderDownColor: colors.neg,
+            wickUpColor: colors.pos,
+            wickDownColor: colors.neg,
+            priceLineVisible: true,
+            lastValueVisible: true
+          })
     seriesRef.current = series
 
     const notify = () => {
@@ -314,7 +373,7 @@ export function TradingChart({
 
     handleRef.current = {
       chart,
-      candleSeries: series,
+      mainSeries: series,
       container: wrap,
       timeToX: (t: number) => chart.timeScale().timeToCoordinate(t as UTCTimestamp),
       priceToY: (price: number) => series.priceToCoordinate(price),
@@ -377,17 +436,21 @@ export function TradingChart({
           vertLine: { labelBackgroundColor: colors.accent }
         }
       })
-      series.applyOptions({
-        upColor: colors.pos,
-        downColor: colors.neg,
-        borderUpColor: colors.pos,
-        borderDownColor: colors.neg,
-        wickUpColor: colors.pos,
-        wickDownColor: colors.neg
-      })
+      if (modeRef.current === 'line') {
+        series.applyOptions({ color: colors.accent })
+      } else {
+        series.applyOptions({
+          upColor: colors.pos,
+          downColor: colors.neg,
+          borderUpColor: colors.pos,
+          borderDownColor: colors.neg,
+          wickUpColor: colors.pos,
+          wickDownColor: colors.neg
+        })
+      }
       // Per-bar colors are baked into the data, so the muted single-observation
-      // treatment has to be re-pushed with the new palette.
-      series.setData(paintedRef.current.map((c) => toBar(c, colors)))
+      // (and closed-session) treatment has to be re-pushed with the new palette.
+      series.setData(paintedRef.current.map((c) => toData(c, modeRef.current, colors)))
     }
 
     const observer = new MutationObserver(repaint)
@@ -397,6 +460,13 @@ export function TradingChart({
     })
     return () => observer.disconnect()
   }, [])
+
+  // ---- price scale ---------------------------------------------------------
+  useEffect(() => {
+    chartRef.current?.applyOptions({
+      rightPriceScale: { mode: logScale ? PRICE_SCALE_LOG : PRICE_SCALE_NORMAL }
+    })
+  }, [logScale])
 
   // ---- price / time formatting -------------------------------------------
   useEffect(() => {
@@ -437,7 +507,7 @@ export function TradingChart({
     } else if (isTailPatch(prev, candles)) {
       for (let i = Math.max(prev.length - 1, 0); i < candles.length; i++) {
         if (i < prev.length && sameBar(prev[i], candles[i])) continue
-        series.update(toBar(candles[i], colors))
+        series.update(toData(candles[i], modeRef.current, colors))
       }
     } else {
       // Prepending older history shifts every logical index; shift the visible
@@ -445,7 +515,7 @@ export function TradingChart({
       const prepended =
         prev.length > 0 && candles[0].t < prev[0].t ? Math.max(indexOfTime(candles, prev[0].t), 0) : 0
       const before = prepended > 0 ? chart.timeScale().getVisibleLogicalRange() : null
-      series.setData(candles.map((c) => toBar(c, colors)))
+      series.setData(candles.map((c) => toData(c, modeRef.current, colors)))
       if (before && prepended > 0) {
         chart.timeScale().setVisibleLogicalRange({
           from: before.from + prepended,

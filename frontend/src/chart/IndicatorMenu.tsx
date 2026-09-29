@@ -30,6 +30,15 @@ import {
 export interface IndicatorMenuProps {
   state: ChartIndicatorState
   onChange: (next: ChartIndicatorState) => void
+  /**
+   * Why an indicator cannot be computed on the charted series (a close-only
+   * index has no high or low), or null when it can. A refused item cannot be
+   * switched ON; one that is already on stays removable. The board itself is
+   * global and is never pruned by a symbol that happens to refuse part of it.
+   */
+  indicatorRefusal?: (kind: IndicatorKind) => string | null
+  /** Why an overlay cannot be drawn on the charted symbol, or null when it can. */
+  overlayRefusal?: (key: keyof OverlayToggles) => string | null
 }
 
 const OVERLAY_LABELS: Array<{ key: keyof OverlayToggles; label: string; hint: string }> = [
@@ -50,7 +59,12 @@ const OVERLAY_LABELS: Array<{ key: keyof OverlayToggles; label: string; hint: st
   }
 ]
 
-export function IndicatorMenu({ state, onChange }: IndicatorMenuProps) {
+export function IndicatorMenu({
+  state,
+  onChange,
+  indicatorRefusal = () => null,
+  overlayRefusal = () => null
+}: IndicatorMenuProps) {
   const [open, setOpen] = useState(false)
   const [refusal, setRefusal] = useState<string | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
@@ -73,6 +87,14 @@ export function IndicatorMenu({ state, onChange }: IndicatorMenuProps) {
 
   const active = matchingPreset(state)
   const count = state.instances.length
+  const unavailable = Array.from(
+    new Set(
+      [
+        ...INDICATOR_DEFS.map((def) => indicatorRefusal(def.kind)),
+        ...OVERLAY_LABELS.map((o) => overlayRefusal(o.key))
+      ].filter((r): r is string => r !== null)
+    )
+  )
 
   const has = (kind: IndicatorKind) => state.instances.some((i) => i.kind === kind)
 
@@ -151,6 +173,7 @@ export function IndicatorMenu({ state, onChange }: IndicatorMenuProps) {
           <div className="tchart-imenu-head">Indicators</div>
           {INDICATOR_DEFS.map((def) => {
             const on = has(def.kind)
+            const refusal = indicatorRefusal(def.kind)
             return (
               <button
                 key={def.kind}
@@ -159,42 +182,63 @@ export function IndicatorMenu({ state, onChange }: IndicatorMenuProps) {
                 className="tchart-menu-item tchart-imenu-item"
                 aria-checked={def.kind === 'ma' ? undefined : on}
                 aria-label={def.kind === 'ma' ? 'Add moving average' : def.label}
-                title={def.hint}
+                disabled={refusal !== null && !on}
+                title={refusal ?? def.hint}
                 onClick={() => toggleKind(def.kind)}
               >
                 <span className="tchart-imenu-mark" aria-hidden="true">
                   {def.kind === 'ma' ? '+' : on ? '✓' : ''}
                 </span>
                 <span>{def.kind === 'ma' ? 'Add moving average' : def.label}</span>
-                {def.server && (
-                  <span className="badge badge-off tchart-imenu-badge" title="Computed by the server">
-                    server
-                  </span>
+                {refusal !== null ? (
+                  <span className="badge badge-off tchart-imenu-badge">n/a</span>
+                ) : (
+                  def.server && (
+                    <span className="badge badge-off tchart-imenu-badge" title="Computed by the server">
+                      server
+                    </span>
+                  )
                 )}
               </button>
             )
           })}
 
           <div className="tchart-imenu-head">Overlays</div>
-          {OVERLAY_LABELS.map((overlay) => (
-            <button
-              key={overlay.key}
-              type="button"
-              role="menuitemcheckbox"
-              className="tchart-menu-item tchart-imenu-item"
-              aria-checked={state.overlays[overlay.key]}
-              aria-label={overlay.label}
-              title={overlay.hint}
-              onClick={() => {
-                setRefusal(null)
-                onChange(setOverlay(state, overlay.key, !state.overlays[overlay.key]))
-              }}
-            >
-              <span className="tchart-imenu-mark" aria-hidden="true">
-                {state.overlays[overlay.key] ? '✓' : ''}
-              </span>
-              <span>{overlay.label}</span>
-            </button>
+          {OVERLAY_LABELS.map((overlay) => {
+            const on = state.overlays[overlay.key]
+            const refused = overlayRefusal(overlay.key)
+            return (
+              <button
+                key={overlay.key}
+                type="button"
+                role="menuitemcheckbox"
+                className="tchart-menu-item tchart-imenu-item"
+                aria-checked={on}
+                aria-label={overlay.label}
+                disabled={refused !== null && !on}
+                title={refused ?? overlay.hint}
+                onClick={() => {
+                  setRefusal(null)
+                  onChange(setOverlay(state, overlay.key, !on))
+                }}
+              >
+                <span className="tchart-imenu-mark" aria-hidden="true">
+                  {on ? '✓' : ''}
+                </span>
+                <span>{overlay.label}</span>
+                {refused !== null && (
+                  <span className="badge badge-off tchart-imenu-badge">n/a</span>
+                )}
+              </button>
+            )
+          })}
+
+          {/* Why the n/a items are n/a, in words and not only in a tooltip
+              that a touch screen never shows. */}
+          {unavailable.map((reason) => (
+            <p key={reason} className="muted small tchart-imenu-note">
+              {reason}
+            </p>
           ))}
 
           {refusal !== null && (

@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
-import type { CandleCoverage, ChartCandle, ChartCandlesResponse } from '../api/types'
+import { fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import type {
+  CandleCoverage,
+  ChartCandle,
+  ChartCandlesResponse,
+  CurrentPricesResponse,
+  StockDataAge
+} from '../api/types'
 
 /**
  * lightweight-charts drives a real canvas, which jsdom has none of. Mocking the
@@ -16,6 +23,8 @@ const lw = vi.hoisted(() => ({
   crosshairHandlers: [] as Array<(p: { time?: number; point?: { x: number; y: number } }) => void>,
   visibleRangeCalls: [] as Array<{ from: number; to: number }>,
   chartOptions: [] as Array<Record<string, any>>,
+  /** Every series definition passed to addSeries, in order: [0] is the price series. */
+  seriesDefs: [] as unknown[],
   reset() {
     lw.createChartCalls = 0
     lw.removeCalls = 0
@@ -25,6 +34,7 @@ const lw = vi.hoisted(() => ({
     lw.crosshairHandlers = []
     lw.visibleRangeCalls = []
     lw.chartOptions = []
+    lw.seriesDefs = []
   }
 }))
 
@@ -56,7 +66,10 @@ vi.mock('lightweight-charts', () => {
     removePriceLine: vi.fn()
   }
   const chart = {
-    addSeries: () => series,
+    addSeries: (def: unknown) => {
+      lw.seriesDefs.push(def)
+      return series
+    },
     removeSeries: vi.fn(),
     applyOptions: (o: Record<string, any>) => lw.chartOptions.push(o),
     remove: () => {
@@ -79,6 +92,7 @@ vi.mock('lightweight-charts', () => {
     },
     CandlestickSeries: 'Candlestick',
     LineSeries: 'Line',
+    AreaSeries: 'Area',
     ColorType: { Solid: 'solid', VerticalGradient: 'gradient' },
     CrosshairMode: { Normal: 0, Magnet: 1, Hidden: 2, MagnetOHLC: 3 },
     LineStyle: { Solid: 0, Dotted: 1, Dashed: 2, LargeDashed: 3, SparseDotted: 4 }
@@ -98,8 +112,10 @@ import TradePanel from '../pages/TradePanel'
 import { ChartToolbar } from '../chart/ChartToolbar'
 import { ChartStatusBar } from '../chart/ChartStatusBar'
 import { OhlcHeader } from '../chart/OhlcHeader'
+import { useCandles } from '../chart/useCandles'
 import { SettingsProvider } from '../lib/settings'
 import { INTERVALS } from '../chart/intervals'
+import { TSE_COVERAGE, TSE_INDEX } from '../chart/symbols'
 
 const DAY = 86_400
 const BASE_T = Date.parse('2026-08-10T00:00:00Z') / 1000
@@ -298,7 +314,7 @@ describe('TradingChart lifecycle', () => {
     expect(onReady).toHaveBeenCalledTimes(1)
     const handle = onReady.mock.calls[0][0] as ChartHandle
     expect(handle.chart).toBeTruthy()
-    expect(handle.candleSeries).toBeTruthy()
+    expect(handle.mainSeries).toBeTruthy()
     expect(handle.container).toBe(container.querySelector('.tchart'))
     expect(handle.timeToX(CANDLES[0].t)).toBe(42)
     expect(handle.priceToY(8_000_000)).toBe(7)
@@ -560,5 +576,549 @@ describe('ChartStatusBar', () => {
       />
     )
     expect(screen.queryByText('STALE')).not.toBeInTheDocument()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The Tehran market on the chart
+// ---------------------------------------------------------------------------
+
+const TEDPIX = TSE_INDEX.TEDPIX
+const FOOLAD = 'EQ:46348559193224090'
+
+/** One settled index session: close-only, as /market/candles serves it. */
+function indexBar(index: number, close: number, extra: Partial<ChartCandle> = {}): ChartCandle {
+  return {
+    t: BASE_T + index * DAY,
+    open_time: new Date((BASE_T + index * DAY) * 1000).toISOString(),
+    open: null,
+    high: null,
+    low: null,
+    close,
+    volume: null,
+    confirmed: true,
+    ...extra
+  }
+}
+
+/** One adjusted share session; a halt has no range and traded:false. */
+function shareBar(index: number, close: number, traded = true): ChartCandle {
+  return {
+    t: BASE_T + index * DAY,
+    open_time: new Date((BASE_T + index * DAY) * 1000).toISOString(),
+    open: traded ? close - 10 : null,
+    high: traded ? close + 20 : null,
+    low: traded ? close - 20 : null,
+    close,
+    volume: traded ? 1000 : 0,
+    confirmed: true,
+    traded,
+    ...(traded ? { last_trade: close + 1 } : {})
+  }
+}
+
+function dataAge(overrides: Partial<StockDataAge> = {}): StockDataAge {
+  return {
+    newest_trade_date: '2026-09-28',
+    age_days: 3,
+    as_of: '2026-10-01',
+    stale: false,
+    stale_after_days: 10,
+    refresh_command: 'make refresh-equities',
+    note: 'Tehran market data does not refresh itself.',
+    ...overrides
+  }
+}
+
+const INDEX_BARS = [
+  indexBar(0, 3_650_000),
+  indexBar(1, 3_713_955.9),
+  indexBar(2, 3_713_955.9, { unchanged: true })
+]
+
+function indexResponse(): Partial<ChartCandlesResponse> {
+  const nulls = [null, null, null]
+  return {
+    symbol: TEDPIX,
+    candles: INDEX_BARS,
+    coverage: { ...TSE_COVERAGE, history_from: '2008-12-06T00:00:00Z' },
+    overlays: {
+      sma_20: nulls,
+      sma_50: nulls,
+      bollinger_upper: nulls,
+      bollinger_mid: nulls,
+      bollinger_lower: nulls,
+      supertrend: null,
+      supertrend_dir: null,
+      psar: null,
+      ichimoku_tenkan: null,
+      ichimoku_kijun: null,
+      ichimoku_senkou_a: null,
+      ichimoku_senkou_b: null
+    },
+    pivots: null,
+    price_fields: ['close'],
+    unit: 'index_points',
+    source: 'TSETMC',
+    instrument: {
+      ins_code: '32097828799138957',
+      name_fa: 'شاخص کل',
+      name_en: 'TEDPIX, all-share (price and dividends)',
+      market: 'bourse',
+      kind: 'headline',
+      sector_code: '',
+      weighting: 'cap',
+      return_basis: 'total',
+      check_status: 'validated',
+      rows_rescaled: 0,
+      refusal_reason: ''
+    },
+    data_age: dataAge(),
+    notes: ['Index points, not a price.'],
+    revision: 'r1'
+  }
+}
+
+describe('TradingChart for a Tehran series', () => {
+  it('draws a close-only index as a line of closes, closed sessions muted', () => {
+    render(
+      <TradingChart
+        {...chartProps({ candles: INDEX_BARS, symbol: TEDPIX })}
+        seriesMode="line"
+      />
+    )
+    expect(lw.seriesDefs[0]).toBe('Line')
+    const pushed = lw.setDataCalls[0] as Array<Record<string, unknown>>
+    expect(pushed[0]).toEqual({ time: INDEX_BARS[0].t, value: 3_650_000 })
+    // No invented open/high/low anywhere on the series.
+    for (const point of pushed) {
+      expect(point).not.toHaveProperty('open')
+      expect(point).not.toHaveProperty('high')
+    }
+    // The closure repeat is drawn — flat, as published — but muted.
+    expect(pushed[2].value).toBe(3_713_955.9)
+    expect(pushed[2].color).toBeTruthy()
+    expect(pushed[1].color).toBeUndefined()
+  })
+
+  it('draws a halted share session as a gap, never as a candle', () => {
+    const bars = [shareBar(0, 2_800), shareBar(1, 2_800, false), shareBar(2, 2_881)]
+    render(<TradingChart {...chartProps({ candles: bars, symbol: FOOLAD })} />)
+    expect(lw.seriesDefs[0]).toBe('Candlestick')
+    const pushed = lw.setDataCalls[0] as Array<Record<string, unknown>>
+    expect(pushed[1]).toEqual({ time: bars[1].t })
+    expect(pushed[2]).toMatchObject({ open: 2_871, high: 2_901, low: 2_861, close: 2_881 })
+  })
+
+  it('puts the price axis on a log scale when asked', () => {
+    const { rerender } = render(<TradingChart {...chartProps()} />)
+    expect(lw.chartOptions).toContainEqual({ rightPriceScale: { mode: 0 } })
+    rerender(<TradingChart {...chartProps()} logScale />)
+    expect(lw.chartOptions).toContainEqual({ rightPriceScale: { mode: 1 } })
+  })
+})
+
+describe('OhlcHeader for a Tehran series', () => {
+  it('shows only the close of a close-only index, in points whatever the toggle', () => {
+    render(
+      <OhlcHeader
+        symbol={TEDPIX}
+        label="TEDPIX"
+        interval="1d"
+        candles={INDEX_BARS.slice(0, 2)}
+        hovered={null}
+        unit="IRR"
+        priceFields={['close']}
+      />
+    )
+    expect(screen.getByText('TEDPIX')).toBeInTheDocument()
+    expect(screen.getByText('C')).toBeInTheDocument()
+    for (const key of ['O', 'H', 'L']) expect(screen.queryByText(key)).not.toBeInTheDocument()
+    // Index points: the ×10 rial view does not apply.
+    expect(screen.getByText('3,713,956')).toBeInTheDocument()
+    expect(screen.getByText('index points')).toBeInTheDocument()
+    expect(screen.queryByText('1 obs')).not.toBeInTheDocument()
+    // A session is a trade date: no 03:30 (Tehran's rendering of UTC midnight).
+    expect(screen.queryByText(/\d{2}:\d{2}$/)).not.toBeInTheDocument()
+  })
+
+  it('marks a closed-market session', () => {
+    render(
+      <OhlcHeader
+        symbol={TEDPIX}
+        interval="1d"
+        candles={INDEX_BARS}
+        hovered={null}
+        unit="IRT"
+        priceFields={['close']}
+      />
+    )
+    expect(screen.getByText('no session')).toBeInTheDocument()
+  })
+
+  it('prints a share in rials, unscaled, with its official close and last trade', () => {
+    render(
+      <OhlcHeader
+        symbol={FOOLAD}
+        label="فولاد"
+        interval="1d"
+        candles={[shareBar(0, 2_800), shareBar(1, 2_881)]}
+        hovered={null}
+        unit="IRR"
+        priceFields={['open', 'high', 'low', 'close']}
+      />
+    )
+    expect(screen.getByText('Final')).toBeInTheDocument()
+    expect(screen.getByText('2,881')).toBeInTheDocument()
+    expect(screen.getByText('2,882')).toBeInTheDocument()
+    expect(screen.queryByText('28,810')).not.toBeInTheDocument()
+    // A share that traded at one price had a real session, not "one observation".
+    expect(screen.queryByText('1 obs')).not.toBeInTheDocument()
+  })
+
+  it('says a halted session had no trade and shows no range for it', () => {
+    render(
+      <OhlcHeader
+        symbol={FOOLAD}
+        interval="1d"
+        candles={[shareBar(0, 2_800), shareBar(1, 2_800, false)]}
+        hovered={null}
+        unit="IRT"
+        priceFields={['open', 'high', 'low', 'close']}
+      />
+    )
+    expect(screen.getByText('halted — no trade')).toBeInTheDocument()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3)
+  })
+})
+
+describe('ChartStatusBar for a Tehran series', () => {
+  it('measures freshness by the stored session, not by the clock heuristic', () => {
+    // as_of three days old would be STALE for a tick series; for a Tehran
+    // series three days is a weekend, and the server's data_age says so.
+    render(
+      <ChartStatusBar
+        asOf={new Date(Date.now() - 3 * DAY * 1000).toISOString()}
+        interval="1d"
+        candles={INDEX_BARS}
+        coverage={TSE_COVERAGE}
+        source="TSETMC"
+        dataAge={dataAge()}
+      />
+    )
+    expect(screen.queryByText('STALE')).not.toBeInTheDocument()
+    expect(screen.getByText(/last session .* 3 day\(s\) old/)).toBeInTheDocument()
+    expect(screen.getByText('3 sessions')).toBeInTheDocument()
+    expect(screen.getByText('1 of 3 repeat the previous close')).toBeInTheDocument()
+    expect(screen.getByText('TSETMC')).toBeInTheDocument()
+  })
+
+  it('does not call a Tehran series fresh before its age has arrived', () => {
+    render(
+      <ChartStatusBar asOf={null} interval="1d" candles={[]} coverage={TSE_COVERAGE} dataAge={null} />
+    )
+    expect(screen.getByText('data age not known yet')).toBeInTheDocument()
+    expect(document.querySelector('.dot-ok')).toBeNull()
+  })
+
+  it('is STALE exactly when the server says the data is', () => {
+    render(
+      <ChartStatusBar
+        asOf={new Date().toISOString()}
+        interval="1d"
+        candles={[shareBar(0, 2_800), shareBar(1, 2_800, false)]}
+        coverage={TSE_COVERAGE}
+        dataAge={dataAge({ age_days: 15, stale: true, warning: 'These prices are 15 days old.' })}
+      />
+    )
+    expect(screen.getByText('STALE')).toBeInTheDocument()
+    expect(screen.getByText('1 of 2 had no trade')).toBeInTheDocument()
+  })
+})
+
+describe('ChartToolbar picker', () => {
+  const base = {
+    onSymbolChange: vi.fn(),
+    interval: '1d' as const,
+    onIntervalChange: vi.fn(),
+    coverage: null,
+    fullscreen: false,
+    onToggleFullscreen: vi.fn()
+  }
+
+  it('groups the static catalog and renders it before any list answers', () => {
+    const { container } = render(<ChartToolbar {...base} symbol="IR_GOLD_18K" />)
+    const groups = Array.from(container.querySelectorAll('optgroup')).map((g) => g.getAttribute('label'))
+    expect(groups).toEqual(['Gold & coins', 'Global', 'Tehran · All-share'])
+    expect(screen.getByRole('option', { name: /TEDPIX/ })).toBeEnabled()
+  })
+
+  it('shows a refused entry disabled with its reason, and keeps an unlisted symbol selectable', () => {
+    render(
+      <ChartToolbar
+        {...base}
+        symbol={FOOLAD}
+        symbolLabel="فولاد"
+        groups={[
+          {
+            id: 'tse:shares',
+            label: 'Tehran · Shares',
+            options: [
+              {
+                symbol: 'EQ:18027801615184692',
+                label: 'کچاد — چادرملو (adjustment not validated)',
+                short: 'کچاد',
+                kind: 'tse_equity',
+                disabled: 'Its corporate-action adjustment was not validated.',
+                title: 'Its corporate-action adjustment was not validated.'
+              }
+            ]
+          }
+        ]}
+      />
+    )
+    const refused = screen.getByRole('option', { name: /کچاد/ })
+    expect(refused).toBeDisabled()
+    expect(refused).toHaveAttribute('title', 'Its corporate-action adjustment was not validated.')
+    expect(screen.getByLabelText('Symbol')).toHaveValue(FOOLAD)
+    expect(screen.getByRole('option', { name: 'فولاد' })).toBeInTheDocument()
+  })
+
+  it('offers the log scale as a pressed toggle', () => {
+    const onToggle = vi.fn()
+    render(<ChartToolbar {...base} symbol={TEDPIX} logScale onToggleLogScale={onToggle} />)
+    const log = screen.getByLabelText('Logarithmic price scale')
+    expect(log).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(log)
+    expect(onToggle).toHaveBeenCalled()
+  })
+})
+
+describe('TradePanel on the Tehran market', () => {
+  const GOLD_BARS = [bar(0, 8_000_000), bar(1, 8_060_000), bar(2, 8_120_000)]
+
+  /** /market/candles answers per symbol; /prices/current answers with gold. */
+  function serveMarket(bySymbol: Record<string, Partial<ChartCandlesResponse>>) {
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/market/candles')) {
+        const symbol = new URLSearchParams(path.split('?')[1]).get('symbol') ?? ''
+        return Promise.resolve({
+          symbol,
+          interval: '1d',
+          interval_seconds: DAY,
+          timezone: 'UTC',
+          candles: [],
+          has_more: false,
+          next_before: null,
+          support: null,
+          resistance: null,
+          as_of: new Date().toISOString(),
+          ...(bySymbol[symbol] ?? {})
+        })
+      }
+      if (path === '/prices/current') {
+        const prices: CurrentPricesResponse = {
+          as_of: new Date().toISOString(),
+          prices: {
+            IR_GOLD_18K: {
+              value: 8_120_000,
+              currency: 'IRT',
+              unit: 'gram',
+              source: 'hamrahgold',
+              observed_at: new Date().toISOString(),
+              stale: false,
+              change_24h_pct: 0.5
+            }
+          }
+        }
+        return Promise.resolve(prices)
+      }
+      return new Promise(() => undefined)
+    })
+  }
+
+  function paths(): string[] {
+    return apiMock.mock.calls.map((c) => String(c[0]))
+  }
+
+  function candlePaths(): string[] {
+    return paths().filter((p) => p.startsWith('/market/candles'))
+  }
+
+  function renderPanel() {
+    return render(
+      <MemoryRouter>
+        <TradePanel />
+      </MemoryRouter>
+    )
+  }
+
+  it('charts TEDPIX at 1D and leaves the stored timeframe alone', async () => {
+    window.localStorage.setItem('igp_chart_interval', '4h')
+    serveMarket({
+      IR_GOLD_18K: { candles: GOLD_BARS, coverage: coverage() },
+      [TEDPIX]: indexResponse()
+    })
+    renderPanel()
+    await waitFor(() => expect(lw.createChartCalls).toBe(1))
+    expect(candlePaths()[0]).toContain('symbol=IR_GOLD_18K&interval=4h')
+
+    fireEvent.change(screen.getByLabelText('Symbol'), { target: { value: TEDPIX } })
+
+    await waitFor(() =>
+      expect(candlePaths().some((p) => p.includes('symbol=IDX%3A32097828799138957&interval=1d'))).toBe(true)
+    )
+    expect(screen.getByText(/4H is unavailable — showing 1D instead/)).toBeInTheDocument()
+    expect(screen.getByLabelText('1D candles')).toHaveAttribute('aria-pressed', 'true')
+    // The reader's choice survives a symbol that cannot honour it.
+    expect(window.localStorage.getItem('igp_chart_interval')).toBe('4h')
+    await waitFor(() => expect(lw.seriesDefs).toContain('Line'))
+
+    // …and comes back with a symbol that can.
+    fireEvent.change(screen.getByLabelText('Symbol'), { target: { value: 'IR_GOLD_18K' } })
+    await waitFor(() => expect(screen.getByLabelText('4H candles')).toHaveAttribute('aria-pressed', 'true'))
+    expect(candlePaths()[candlePaths().length - 1]).toContain('symbol=IR_GOLD_18K&interval=4h')
+  })
+
+  it('opens a stored Tehran symbol on 1D and says why, without saving 1D', async () => {
+    window.localStorage.setItem('igp_chart_symbol', TEDPIX)
+    window.localStorage.setItem('igp_chart_interval', '4h')
+    serveMarket({ [TEDPIX]: indexResponse() })
+    renderPanel()
+
+    await waitFor(() => expect(lw.createChartCalls).toBe(1))
+    expect(candlePaths().every((p) => p.includes('interval=1d'))).toBe(true)
+    expect(screen.getByText(/4H is unavailable — showing 1D instead/)).toBeInTheDocument()
+    expect(window.localStorage.getItem('igp_chart_interval')).toBe('4h')
+    // Every finer timeframe is disabled with the source's reason.
+    expect(screen.getByLabelText('4H candles')).toBeDisabled()
+  })
+
+  it('describes the index it draws and draws nothing about gold beside it', async () => {
+    window.localStorage.setItem('igp_chart_symbol', TEDPIX)
+    serveMarket({ [TEDPIX]: indexResponse() })
+    renderPanel()
+    await waitFor(() => expect(screen.getByTestId('trade-instrument')).toBeInTheDocument())
+
+    const card = screen.getByTestId('trade-instrument')
+    expect(within(card).getByText('شاخص کل')).toBeInTheDocument()
+    expect(within(card).getByText('Index points, not a price.')).toBeInTheDocument()
+    expect(within(card).getByText(/Capitalisation-weighted, total return/)).toBeInTheDocument()
+
+    // No gold advisory, no gold forecast, no gold headlines for a Tehran index.
+    expect(paths().some((p) => p.startsWith('/predictions'))).toBe(false)
+    expect(paths()).not.toContain('/signals/current')
+    const titles = Array.from(document.querySelectorAll('.card-title')).map((el) => el.textContent)
+    expect(titles).not.toContain('Signal')
+    expect(titles).toContain('Provider quotes · 18k gold')
+    expect(screen.getByText(/the models forecast 18k gold and XAU\/USD only/)).toBeInTheDocument()
+
+    // The default board's SuperTrend and pivots are refused with the reason —
+    // not "no data", which would suggest more history might fill them.
+    for (const name of ['SuperTrend', 'Pivots']) {
+      const row = screen.getByLabelText(`Remove ${name}`).closest('li') as HTMLElement
+      expect(within(row).getByText(/needs a high and a low/)).toBeInTheDocument()
+      expect(within(row).queryByText('no data')).not.toBeInTheDocument()
+    }
+    expect(screen.getByText(/SuperTrend, Pivots: Needs each session’s high and low/)).toBeInTheDocument()
+    // Freshness from the data's own age.
+    expect(screen.getByText(/last session/)).toBeInTheDocument()
+  })
+
+  it('asks for the charted symbol’s own forecast', async () => {
+    window.localStorage.setItem('igp_chart_symbol', 'XAUUSD')
+    serveMarket({ XAUUSD: { candles: [bar(0, 2_400), bar(1, 2_410)], coverage: coverage() } })
+    renderPanel()
+    await waitFor(() => expect(paths()).toContain('/predictions?symbol=XAUUSD'))
+    // Never the bare path: that was 18k gold's forecast, drawn over XAU/USD.
+    expect(paths()).not.toContain('/predictions')
+    const titles = Array.from(document.querySelectorAll('.card-title')).map((el) => el.textContent)
+    expect(titles).toContain('Signal · 18k gold')
+  })
+
+  it('shows the SuperTrend row under the gold card only for gold itself', async () => {
+    window.localStorage.setItem('igp_chart_symbol', 'XAUUSD')
+    const bullish = {
+      candles: [bar(0, 2_400), bar(1, 2_410)],
+      coverage: coverage(),
+      overlays: { supertrend_dir: [1, 1] } as ChartCandlesResponse['overlays']
+    }
+    serveMarket({ XAUUSD: bullish, IR_GOLD_18K: { ...bullish, candles: GOLD_BARS.slice(0, 2) } })
+    renderPanel()
+    await waitFor(() => expect(lw.createChartCalls).toBe(1))
+    await waitFor(() => expect(screen.getByText('8,120,000')).toBeInTheDocument())
+    // XAU/USD's direction must not appear under the 18k gold card.
+    expect(screen.queryByText('▲ bullish')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Symbol'), { target: { value: 'IR_GOLD_18K' } })
+    await waitFor(() => expect(screen.getByText('▲ bullish')).toBeInTheDocument())
+  })
+
+  it('says plainly when a registered symbol has nothing stored yet', async () => {
+    window.localStorage.setItem('igp_chart_symbol', 'IR_SILVER_999')
+    serveMarket({ IR_SILVER_999: { candles: [], coverage: coverage({ intraday_from: null }) } })
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('No candle data')).toBeInTheDocument())
+    expect(screen.getByText(/Nothing is stored for IR_SILVER_999 yet/)).toBeInTheDocument()
+    // One request, not a retry loop.
+    expect(candlePaths()).toHaveLength(1)
+    // And no freshness claimed for data that does not exist.
+    expect(document.querySelector('.tchart-status .dot-ok')).toBeNull()
+    expect(within(document.querySelector('.tchart-status') as HTMLElement).getByText('no data')).toBeInTheDocument()
+  })
+})
+
+describe('useCandles on a Tehran series', () => {
+  function serveRevision(revision: () => string) {
+    apiMock.mockImplementation((path: string) => {
+      if (!path.startsWith('/market/candles')) return new Promise(() => undefined)
+      return Promise.resolve({
+        ...indexResponse(),
+        interval: '1d',
+        interval_seconds: DAY,
+        timezone: 'UTC',
+        has_more: false,
+        next_before: null,
+        support: null,
+        resistance: null,
+        as_of: new Date().toISOString(),
+        revision: revision()
+      })
+    })
+  }
+
+  const firstPages = () =>
+    apiMock.mock.calls.map((c) => String(c[0])).filter((p) => p.includes('limit=500'))
+
+  it('carries what the series is and how old it is', async () => {
+    serveRevision(() => 'r1')
+    const { result } = renderHook(() => useCandles(TEDPIX, '1d', { pollMs: 0 }))
+    await waitFor(() => expect(result.current.candles).toHaveLength(3))
+    expect(result.current.priceFields).toEqual(['close'])
+    expect(result.current.unit).toBe('index_points')
+    expect(result.current.source).toBe('TSETMC')
+    expect(result.current.dataAge?.newest_trade_date).toBe('2026-09-28')
+    expect(result.current.notes).toEqual(['Index points, not a price.'])
+    expect(result.current.loadedFor).toBe(`${TEDPIX}|1d`)
+  })
+
+  it('reloads every page when the stored series is restated under it', async () => {
+    let revision = 'r1'
+    serveRevision(() => revision)
+    const { result } = renderHook(() => useCandles(TEDPIX, '1d', { pollMs: 25 }))
+    await waitFor(() => expect(result.current.revision).toBe('r1'))
+    expect(firstPages()).toHaveLength(1)
+
+    // Polls under the same revision patch the tail only.
+    await waitFor(() =>
+      expect(apiMock.mock.calls.some((c) => String(c[0]).includes('limit=3'))).toBe(true)
+    )
+    expect(firstPages()).toHaveLength(1)
+
+    // An ingest recomputed the corrections: the three newest sessions cannot
+    // show it, the revision does.
+    revision = 'r2'
+    await waitFor(() => expect(result.current.revision).toBe('r2'))
+    expect(firstPages().length).toBeGreaterThanOrEqual(2)
   })
 })

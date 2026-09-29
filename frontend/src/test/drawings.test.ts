@@ -154,7 +154,10 @@ const DAY = 86_400
 const T0 = Date.parse('2026-08-01T00:00:00Z') / 1000
 const TIMES = Array.from({ length: 10 }, (_, i) => T0 + i * DAY)
 
-function candle(i: number, close: number): ChartCandle {
+/** A tick bucket with a real range; typed so the fixture's range is a number. */
+type RangedCandle = ChartCandle & { open: number; high: number; low: number }
+
+function candle(i: number, close: number): RangedCandle {
   return {
     t: T0 + i * DAY,
     open: close - 20_000,
@@ -427,6 +430,26 @@ describe('snapping', () => {
 
   it('cannot snap without candles', () => {
     expect(snapPoint(farOff, { candles: [], mode: 'strong', proj: p })).toEqual(farOff)
+  })
+
+  it('snaps a close-only index to its close, never to a missing open/high/low', () => {
+    // Math.abs(null - price) is Math.abs(-price): a null candidate would have
+    // pulled every anchor on a Tehran index chart down to a price of 0.
+    const closeOnly: ChartCandle[] = CANDLES.map((c) => ({ ...c, open: null, high: null, low: null }))
+    const snapped = snapPoint({ t: TIMES[4] + 200, price: 1 }, { candles: closeOnly, mode: 'strong', proj: p })
+    expect(snapped).toEqual({ t: TIMES[4], price: CANDLES[4].close })
+  })
+
+  it('never snaps to a halted session, whose close is a carried price', () => {
+    const halted: ChartCandle[] = CANDLES.map((c, i) =>
+      i === 4 ? { ...c, open: null, high: null, low: null, traded: false } : { ...c, traded: true }
+    )
+    const snapped = snapPoint(
+      { t: TIMES[4] + 3_600, price: CANDLES[4].close },
+      { candles: halted, mode: 'strong', proj: p }
+    )
+    expect(snapped.t).not.toBe(TIMES[4])
+    expect([TIMES[3], TIMES[5]]).toContain(snapped.t)
   })
 })
 

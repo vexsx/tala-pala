@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import type { CandleCoverage } from '../api/types'
-import { SYMBOL_LABELS, type Symbol_ } from '../api/types'
 import {
   CUSTOM_INTERVALS,
   PRESET_INTERVALS,
@@ -8,7 +7,8 @@ import {
   isSupported,
   type IntervalId
 } from './intervals'
-import { CHART_SYMBOLS, type ChartSymbol } from './prefs'
+import { STATIC_CATALOG, type ChartSymbolGroup } from './catalog'
+import { parseChartSymbol, type ChartSymbol } from './symbols'
 
 /**
  * Fullscreen for the chart shell.
@@ -69,11 +69,22 @@ export function useChartFullscreen(targetRef: RefObject<HTMLElement>): {
 export interface ChartToolbarProps {
   symbol: ChartSymbol
   onSymbolChange: (symbol: ChartSymbol) => void
+  /**
+   * The picker's groups (catalog.ts). Defaults to the static catalog — the
+   * two gold symbols and the headline Tehran indices — which is also what the
+   * page shows while the lists load.
+   */
+  groups?: ChartSymbolGroup[]
+  /** The current symbol's name, for the placeholder shown until it is listed. */
+  symbolLabel?: string
   interval: IntervalId
   onIntervalChange: (interval: IntervalId) => void
   coverage: CandleCoverage | null
   fullscreen: boolean
   onToggleFullscreen: () => void
+  /** Logarithmic price axis; the toggle is hidden when no handler is given. */
+  logScale?: boolean
+  onToggleLogScale?: () => void
   /**
    * Slots for the two parallel layers. Pass whatever trigger/menu element the
    * layer owns; the toolbar only reserves the position and never inspects it.
@@ -88,11 +99,15 @@ export interface ChartToolbarProps {
 export function ChartToolbar({
   symbol,
   onSymbolChange,
+  groups = STATIC_CATALOG,
+  symbolLabel,
   interval,
   onIntervalChange,
   coverage,
   fullscreen,
   onToggleFullscreen,
+  logScale = false,
+  onToggleLogScale,
   indicatorsSlot,
   drawSlot,
   children
@@ -136,6 +151,10 @@ export function ChartToolbar({
   }
 
   const customActive = CUSTOM_INTERVALS.includes(interval)
+  // A stored symbol the lists have not named yet (or no longer name) still
+  // needs an option, or the <select> silently shows the first entry while
+  // the chart draws something else.
+  const listed = groups.some((g) => g.options.some((o) => o.symbol === symbol))
 
   return (
     <div className="tchart-toolbar">
@@ -143,12 +162,26 @@ export function ChartToolbar({
         className="tchart-select"
         aria-label="Symbol"
         value={symbol}
-        onChange={(e) => onSymbolChange(e.target.value as ChartSymbol)}
+        onChange={(e) => {
+          const next = parseChartSymbol(e.target.value)
+          if (next !== null) onSymbolChange(next)
+        }}
       >
-        {CHART_SYMBOLS.map((s) => (
-          <option key={s} value={s}>
-            {SYMBOL_LABELS[s as Symbol_] ?? s}
-          </option>
+        {!listed && <option value={symbol}>{symbolLabel ?? symbol}</option>}
+        {groups.map((g) => (
+          <optgroup key={g.id} label={g.label}>
+            {g.options.map((o) => (
+              <option
+                key={o.symbol}
+                value={o.symbol}
+                // Shown, never hidden: "refused" must not look like "absent".
+                disabled={o.disabled !== undefined}
+                title={o.title}
+              >
+                {o.label}
+              </option>
+            ))}
+          </optgroup>
         ))}
       </select>
 
@@ -195,6 +228,19 @@ export function ChartToolbar({
           </div>
         )}
       </div>
+
+      {onToggleLogScale && (
+        <button
+          type="button"
+          className={`btn btn-sm ${logScale ? '' : 'btn-ghost'}`}
+          aria-label="Logarithmic price scale"
+          aria-pressed={logScale}
+          title="Equal distances are equal percentage moves — the only way decades of an index stay readable."
+          onClick={onToggleLogScale}
+        >
+          Log
+        </button>
+      )}
 
       <span className="tchart-spacer" />
 
