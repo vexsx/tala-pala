@@ -1029,3 +1029,10 @@ def test_a_copy_chaining_either_side_contests_the_break():
     assert [a.effective_date for a in detect_actions(bars, unrelated)] == [day3]
     series = adjust(bars, alternatives=by_close)
     assert series.actions == () and len(series.contested) == 1
+
+    # Across a halted bar the exchange restates a close in place, so a copy
+    # whose halted close is already on the new basis is the action landing
+    # on another bar, not a disagreement: the action stays.
+    halted = list(bars)
+    halted[1] = dataclasses.replace(halted[1], volume=0, trade_count=0)
+    assert day3 in [a.effective_date for a in detect_actions(halted, by_close)]

@@ -583,16 +583,25 @@ def detect_actions(
     only defined once the whole series is known.
 
     ``alternatives`` are the other statements TSETMC's copies have served of
-    these bars (migration 0032).  A reference break that one of them chains
-    is the copies disagreeing, not the exchange restating: it is no action,
-    and is appended to ``contested`` when a list is given (ContestedBreak).
+    these bars (migration 0032).  A reference break between two traded
+    sessions that one of them chains is the copies disagreeing, not the
+    exchange restating: it is no action, and is appended to ``contested``
+    when a list is given (ContestedBreak).
     """
     actions: list[CorporateAction] = []
     for index in range(1, len(bars)):
         current, previous = bars[index], bars[index - 1]
 
         if current.price_yesterday != previous.final_close:
-            chained = chained_by_a_copy(previous, current, alternatives)
+            # Only between two TRADED sessions: on a halted bar the exchange
+            # restates a close in place (close_restated below), so two copies
+            # disagreeing there can be the action itself landing on different
+            # bars, and calling it contested would drop a real one.
+            chained = (
+                chained_by_a_copy(previous, current, alternatives)
+                if previous.traded and current.traded
+                else None
+            )
             if chained is not None:
                 if contested is not None:
                     contested.append(
