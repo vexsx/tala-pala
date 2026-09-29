@@ -103,8 +103,9 @@ Both answer normally from outside that network. So `scripts/sci_fetch.py` and `s
 make refresh-offserver                       # both, equities first
 make refresh-equities                        # equities alone
 make refresh-cpi                             # CPI alone
-make refresh-equities ARGS="--dry-run"       # read the server's state, download only the small payloads,
-                                             # print what the bulk loop would fetch; ship and ingest nothing
+make refresh-equities ARGS="--dry-run"       # read the server's state, download all but the bulk loop (~104
+                                             # requests, ~60 MB: bars, indices, market files, market watch,
+                                             # funds), print what the bulk loop would fetch; ship and ingest nothing
 make refresh-cpi ARGS="--host ubuntu@1.2.3.4"
 ```
 

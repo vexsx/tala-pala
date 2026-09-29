@@ -104,7 +104,7 @@ once the ingest calls are done; the host archive under backups/tsetmc/<run>
 is what a re-ingest or a diagnosis reads, and it is kept.
 
 Usage:
-    python3 scripts/tsetmc_fetch.py --dry-run              # plan + small downloads only
+    python3 scripts/tsetmc_fetch.py --dry-run              # plan; all but the bulk loop (~104 requests)
     python3 scripts/tsetmc_fetch.py                        # ...then upload and ingest
     python3 scripts/tsetmc_fetch.py --ins-code 46348559193224090 --dry-run
     python3 scripts/tsetmc_fetch.py --bars-only
@@ -1166,9 +1166,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dry-run", action="store_true",
-                    help="read the server's rosters and state, download the small payloads "
-                         "and the market watch, print what the bulk loop would fetch; "
-                         "upload and ingest nothing")
+                    help="read the server's rosters and state, download everything but the "
+                         "bulk loop (the roster's bars, the index histories, the market files "
+                         "and watch, the fund lists: ~104 requests, ~60 MB on 2026-09-29), "
+                         "print what the bulk loop would fetch; upload and ingest nothing")
     ap.add_argument("--host", default=DEFAULT_HOST, help="ssh target for the server")
     ap.add_argument("--out", default=None,
                     help="local directory for the payloads (default: ./tsetmc-bars)")

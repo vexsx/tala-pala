@@ -98,8 +98,9 @@ export-portfolio: ## Export portfolio CSV: make export-portfolio TOKEN=<jwt> [OU
 # commodity funds' daily closes. ~1,500 requests started 0.5 s apart: expect
 # ~20 minutes for the first run and ~12 for a weekly one. ARGS="--bars-only"
 # restores the bars-only behaviour, "--no-shares" the 0029 roster-only money
-# flow, and "--dry-run" downloads only the small payloads and prints what the
-# bulk loop would fetch without fetching it.
+# flow, and "--dry-run" downloads everything but the bulk loop (the roster's
+# bars, the indices, the market files and watch, the funds: ~104 requests,
+# ~60 MB) and prints what the bulk loop would fetch without fetching it.
 refresh-equities: ## Refresh Tehran equities, the market, every share's money flow and the commodity funds from TSETMC — run OFF the server (ARGS=...)
 	python3 scripts/tsetmc_fetch.py $(ARGS)
 

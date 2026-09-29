@@ -127,9 +127,12 @@ delisted shares and the timings, and exits 1 if anything failed. The run's
 copy inside the prediction container is removed once the ingest calls are
 done; the archive under `backups/tsetmc/<run>` is kept. `--no-shares` restores
 the roster-only money flow, `--flows-since` moves the floor for non-roster
-shares and day files, and `--dry-run` reads the server's state, downloads only
-the small payloads (the market-level files and the market watch) and prints
-what the bulk loop would fetch, without fetching it.
+shares and day files, and `--dry-run` reads the server's state, downloads
+everything but the bulk loop — the roster's bar histories, the 71 index
+histories, the market-level files, the market watch and sector names, and the
+fund lists: 104 requests and ~60 MB on 2026-09-29, a third of the ~350 a day
+TSETMC is asked for — and prints what the bulk loop (~1,160 share histories
+and the day files) would fetch, without fetching it.
 
 **TSETMC serves two copies of its history.** Fetched five minutes apart on
 2026-09-29 (three runs), the CDN answered two versions of the same data: one
