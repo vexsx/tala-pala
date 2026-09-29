@@ -715,6 +715,184 @@ equity_adjustments = Table(
 )
 
 
+# --- tables mirroring database/migrations/0029_tehran_market.up.sql ---------
+#
+# The market itself: TSETMC's indices, the total market value, the حقیقی/حقوقی
+# money flow of the equity roster, and the overview as it stood when a refresh
+# ran.  0029's header records the measurements behind every rule here — above
+# all that some index values are stored off by exactly a factor of ten, which
+# is why ``scale_exp`` exists and the raw close is never rewritten.
+
+market_indices = Table(
+    "market_indices",
+    metadata,
+    Column("ins_code", Text, primary_key=True),
+    Column("name_fa", Text, nullable=False),
+    Column("name_en", Text, nullable=False, server_default=""),
+    Column("market", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("sector_code", Text, nullable=False, server_default=""),
+    Column("weighting", Text, nullable=False, server_default="unstated"),
+    Column("return_basis", Text, nullable=False, server_default="unstated"),
+    Column("display_order", Integer, nullable=False, server_default=text("1000")),
+    Column("first_date", Date),
+    Column("last_date", Date),
+    Column("value_count", Integer, nullable=False, server_default=text("0")),
+    Column("enabled", Boolean, nullable=False, server_default=text("TRUE")),
+    Column("notes", Text, nullable=False, server_default=""),
+    Column("created_at", _TS, nullable=False, server_default=func.now()),
+    Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("market IN ('bourse','farabourse')"),
+    CheckConstraint("kind IN ('headline','market','segment','sector')"),
+    CheckConstraint("weighting IN ('cap','equal','free_float','unstated')"),
+    CheckConstraint("return_basis IN ('total','price','unstated')"),
+)
+
+# The close AS SERVED, and the power of ten that corrects it.  The corrected
+# close is ``close * 10**scale_exp``; the raw close is never rewritten.
+market_index_values = Table(
+    "market_index_values",
+    metadata,
+    Column(
+        "ins_code",
+        Text,
+        ForeignKey("market_indices.ins_code", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("trade_date", Date, primary_key=True),
+    Column("close", _NUM, nullable=False),
+    # As served and NOT a band: 409 of TEDPIX's 4,294 rows close outside it.
+    Column("low", _NUM),
+    Column("high", _NUM),
+    Column("scale_exp", Integer, nullable=False, server_default=text("0")),
+    Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("close > 0"),
+    CheckConstraint("scale_exp BETWEEN -3 AND 3"),
+)
+
+market_index_checks = Table(
+    "market_index_checks",
+    metadata,
+    _big_pk(),
+    Column(
+        "ins_code",
+        Text,
+        ForeignKey("market_indices.ins_code", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("check_version", Text, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("values_total", Integer, nullable=False, server_default=text("0")),
+    Column("dropped_nonpositive", Integer, nullable=False, server_default=text("0")),
+    Column("scale_breaks", Integer, nullable=False, server_default=text("0")),
+    Column("rows_rescaled", Integer, nullable=False, server_default=text("0")),
+    Column("first_break", Date),
+    Column("last_break", Date),
+    Column("largest_move", _NUM),
+    Column("largest_move_date", Date),
+    Column("live_value", _NUM),
+    Column("live_ratio", _NUM),
+    Column("live_checked_at", _TS),
+    Column("refusal_reason", Text, nullable=False, server_default=""),
+    Column("computed_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("status IN ('validated','refused')"),
+    CheckConstraint(
+        "status <> 'refused' OR length(refusal_reason) > 0",
+        name="market_index_checks_reason",
+    ),
+    UniqueConstraint("ins_code", "check_version", name="market_index_checks_unique"),
+)
+
+# Total market capitalisation per market per session, in RIALS.
+market_values = Table(
+    "market_values",
+    metadata,
+    Column("market", Text, primary_key=True),
+    Column("trade_date", Date, primary_key=True),
+    Column("market_cap", _NUM, nullable=False),
+    Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("market IN ('bourse','farabourse')"),
+    CheckConstraint("market_cap > 0"),
+)
+
+# حقیقی (I, individuals) / حقوقی (N, institutions), per instrument per session,
+# exactly as served.  Values in RIALS.
+equity_client_flows = Table(
+    "equity_client_flows",
+    metadata,
+    Column(
+        "ins_code",
+        Text,
+        ForeignKey("equity_instruments.ins_code", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("trade_date", Date, primary_key=True),
+    Column("buy_i_count", BigInteger, nullable=False),
+    Column("buy_n_count", BigInteger, nullable=False),
+    Column("sell_i_count", BigInteger, nullable=False),
+    Column("sell_n_count", BigInteger, nullable=False),
+    Column("buy_i_volume", _NUM, nullable=False),
+    Column("buy_n_volume", _NUM, nullable=False),
+    Column("sell_i_volume", _NUM, nullable=False),
+    Column("sell_n_volume", _NUM, nullable=False),
+    Column("buy_i_value", _NUM, nullable=False),
+    Column("buy_n_value", _NUM, nullable=False),
+    Column("sell_i_value", _NUM, nullable=False),
+    Column("sell_n_value", _NUM, nullable=False),
+    Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "buy_i_count >= 0 AND buy_n_count >= 0 AND sell_i_count >= 0 "
+        "AND sell_n_count >= 0",
+        name="equity_client_flows_counts",
+    ),
+    CheckConstraint(
+        "buy_i_volume >= 0 AND buy_n_volume >= 0 AND sell_i_volume >= 0 "
+        "AND sell_n_volume >= 0 AND buy_i_value >= 0 AND buy_n_value >= 0 "
+        "AND sell_i_value >= 0 AND sell_n_value >= 0",
+        name="equity_client_flows_amounts",
+    ),
+)
+
+market_snapshots = Table(
+    "market_snapshots",
+    metadata,
+    _big_pk(),
+    Column("market", Text, nullable=False),
+    Column("activity_at", _TS, nullable=False),
+    Column("index_value", _NUM),
+    Column("index_change", _NUM),
+    Column("ew_index_value", _NUM),
+    Column("ew_index_change", _NUM),
+    Column("trade_count", BigInteger),
+    Column("trade_volume", _NUM),
+    Column("trade_value", _NUM),
+    Column("market_value", _NUM),
+    Column("market_state", Text, nullable=False, server_default=""),
+    Column("market_state_title", Text, nullable=False, server_default=""),
+    Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint("market IN ('bourse','farabourse')"),
+    UniqueConstraint("market", "activity_at", name="market_snapshots_unique"),
+)
+
+sector_breadth_snapshots = Table(
+    "sector_breadth_snapshots",
+    metadata,
+    Column("activity_at", _TS, primary_key=True),
+    Column("sector_code", Text, primary_key=True),
+    Column("sector_fa", Text, nullable=False),
+    Column("down_over_2", Integer, nullable=False),
+    Column("down_under_2", Integer, nullable=False),
+    Column("up_under_2", Integer, nullable=False),
+    Column("up_over_2", Integer, nullable=False),
+    Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    CheckConstraint(
+        "down_over_2 >= 0 AND down_under_2 >= 0 AND up_under_2 >= 0 "
+        "AND up_over_2 >= 0",
+        name="sector_breadth_snapshots_counts",
+    ),
+)
+
+
 # --- helpers ----------------------------------------------------------------
 
 

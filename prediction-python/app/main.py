@@ -132,6 +132,22 @@ class EquityBarsIngestRequest(BaseModel):
     paths: list[str] = Field(default_factory=list)
 
 
+class MarketIngestRequest(BaseModel):
+    """One fetch run's market-level TSETMC payloads, already in this container.
+
+    Paths, not payloads, for the same argv reason as the bars: the 71 index
+    histories alone are ~31 MB. Every kind is optional so a partial run can be
+    posted, and each named file is ingested in isolation from the others.
+    """
+
+    index_live: list[str] = Field(default_factory=list)
+    index_histories: list[str] = Field(default_factory=list)
+    market_values: dict[str, str] = Field(default_factory=dict)
+    client_flows: list[str] = Field(default_factory=list)
+    overviews: dict[str, str] = Field(default_factory=dict)
+    sector_summary: Optional[str] = None
+
+
 class BacktestRequest(BaseModel):
     horizon: str = "1d"
     fee_pct: float = 0.5
@@ -588,6 +604,49 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
             # Every payload failed. That IS a statement about the data: either
             # the transfer or the endpoint shape changed under us, and it
             # belongs on the provider's health row where an operator sees it.
+            registry.record_failure(engine, "tsetmc_cdn", str(exc))
+            return JSONResponse(
+                status_code=502,
+                content=exc.report
+                | {"error": {"code": "upstream_failed", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        registry.record_success(engine, "tsetmc_cdn")
+        return report
+
+    @app.get("/internal/bourse/indices/roster")
+    def bourse_index_roster(include_disabled: bool = False) -> dict:
+        """The TSETMC indices this deployment ingests (migration 0029 seeds 71).
+
+        Read by scripts/tsetmc_fetch.py so the set of indices it downloads is
+        the database's decision, exactly like the equity roster.
+        """
+        from .bourse.ingest import index_roster
+
+        items = index_roster(engine, include_disabled=include_disabled)
+        return {"items": items, "count": len(items)}
+
+    @app.post("/internal/bourse/ingest")
+    def bourse_ingest(body: MarketIngestRequest) -> dict:
+        """Ingest one run's market-level payloads: index histories (with the
+        power-of-ten correction and its verdict), total market value, the
+        حقیقی/حقوقی money flow of the roster, and the market snapshot.
+
+        Same contract as /internal/equities/bars: each item in its own
+        transaction, failures collected into ``errors``, 502 only when every
+        item failed, and a payload that contradicts a stored value fails its
+        item rather than overwriting it.
+        """
+        from .bourse.ingest import MarketIngestFailed, ingest_market_files
+        from .bourse.parse import MarketParseError
+
+        try:
+            report = ingest_market_files(engine, body.model_dump())
+        except (ValueError, MarketParseError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except MarketIngestFailed as exc:
             registry.record_failure(engine, "tsetmc_cdn", str(exc))
             return JSONResponse(
                 status_code=502,

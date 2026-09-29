@@ -5,6 +5,9 @@ nginx/certs/
 # Backups & runtime data
 backups/
 *.dump
+# scripts/tsetmc_fetch.py's default download directory: ~60 MB of TSETMC
+# payloads per run, archived on the server under backups/tsetmc/, never here.
+tsetmc-bars/
 
 # Python
 __pycache__/
