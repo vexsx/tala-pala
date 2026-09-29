@@ -10,9 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 )
 
 var newestDay = day("2026-09-28")
@@ -551,6 +554,54 @@ func TestACompanysBoardsAreSummedAndShownByItsMainBoard(t *testing.T) {
 	}
 }
 
+func TestACompanyIsShownByItsListedMainBoard(t *testing.T) {
+	// market_shares never deletes: an insCode TSETMC re-issued under the same
+	// insID leaves its old main board in the mirror, delisted and idle. The
+	// old code sorts first as a string; it must not stand for the company.
+	m := newTestMarket(5)
+	m.shares = append(m.shares, shareMeta{InsCode: "100", Symbol: "قدیم", Board: "main",
+		CompanyCode: "IRO1ABCD", SectorCode: "27", Market: "bourse", Listed: false})
+	m.share(shareMeta{InsCode: "200", Symbol: "جدید", Board: "main", CompanyCode: "IRO1ABCD", SectorCode: "27"})
+	for _, d := range m.days {
+		m.flow("200", traded(d, 600, 400, 500, 500))
+		m.prices = append(m.prices, priceRow{InsCode: "200", Day: d, Close: 1010, PriceYesterday: 1000})
+	}
+	top := m.build().resp.Top["5"].Inflow
+	if len(top) != 1 || top[0].InsCode != "200" || top[0].Symbol != "جدید" {
+		t.Fatalf("company shown by %+v, want the listed main board", top)
+	}
+	if top[0].PriceChangePct == nil {
+		t.Fatalf("the shown board traded and has closes: %q", top[0].PriceChangeReason)
+	}
+	// Two listed main boards: the one that traded more in the window.
+	m2 := newTestMarket(5)
+	m2.share(shareMeta{InsCode: "100", Symbol: "الف", Board: "main", CompanyCode: "IRO1ABCD", SectorCode: "27"})
+	m2.share(shareMeta{InsCode: "200", Symbol: "ب", Board: "main", CompanyCode: "IRO1ABCD", SectorCode: "27"})
+	m2.flow("100", traded(m2.days[0], 60, 40, 50, 50))
+	m2.flow("200", traded(m2.days[0], 600, 400, 500, 500))
+	if top := m2.build().resp.Top["5"].Inflow; len(top) != 1 || top[0].InsCode != "200" {
+		t.Fatalf("two listed main boards: shown %+v", top)
+	}
+}
+
+func TestABoardIsNamedOnlyWhenSomethingOfItWasSummed(t *testing.T) {
+	m := newTestMarket(5)
+	m.share(shareMeta{InsCode: "11", Symbol: "فولاد", Board: "main", CompanyCode: "IRO1FOLD", SectorCode: "27"})
+	m.share(shareMeta{InsCode: "12", Symbol: "فولاد2", Board: "block", CompanyCode: "IRO1FOLD", SectorCode: "27"})
+	for _, d := range m.days {
+		m.flow("11", traded(d, 600, 400, 500, 500))
+	}
+	m.flow("12", traded(m.days[0], 5000, 0, 0, 4000)) // buy 5000 against sell 4000: excluded
+	f := m.build().resp.Top["5"].Inflow[0]
+	if strings.Join(f.Boards, ",") != "main" {
+		t.Fatalf("boards %v: the block's only row was excluded and nothing of it was summed", f.Boards)
+	}
+	approx(t, "company net", f.Summary.NetIndividualToman, 5*100, 1e-9)
+	if f.Summary.Excluded != 1 {
+		t.Fatalf("the excluded block row is still counted: %+v", f.Summary)
+	}
+}
+
 func TestTheTopListsAreFifteenAndOrdered(t *testing.T) {
 	var cs []companyFlowItem
 	for i := 0; i < 20; i++ {
@@ -637,6 +688,63 @@ func TestAShareCarriesItsChainedChange(t *testing.T) {
 	if it := shareIn(t, b, fillerSector, 5, "90000"); it.PriceChangePct != nil || it.PriceChangeReason == "" {
 		t.Fatalf("filler price %+v", it)
 	}
+}
+
+// thinMarket is k consecutive dates of which date `thin` has no filler row, so
+// it is too thin to be a market session; share "1" trades every date.
+func thinMarket(k, thin int) *testMarket {
+	m := newTestMarket(k)
+	kept := m.rows[:0]
+	for _, r := range m.rows {
+		if !r.Flow.Day.Equal(m.days[thin]) {
+			kept = append(kept, r)
+		}
+	}
+	m.rows = kept
+	m.share(shareMeta{InsCode: "1", Symbol: "فولاد", SectorCode: "27"})
+	for _, d := range m.days {
+		m.flow("1", traded(d, 600, 400, 500, 500))
+	}
+	return m
+}
+
+func TestAThinDateInsideAWindowStillNeedsItsClose(t *testing.T) {
+	// A date between two market sessions with too few traded shares to be one
+	// is in no sum, but it lies inside the window's span of prices: a share
+	// that traded on it moved there, and a product that skipped the day
+	// would state a change that never happened.
+	m := thinMarket(7, 2)
+	for _, d := range m.days {
+		if !d.Equal(m.days[2]) {
+			m.prices = append(m.prices, priceRow{InsCode: "1", Day: d, Close: 1010, PriceYesterday: 1000})
+		}
+	}
+	b := m.build()
+	if b.resp.Coverage.ThinDatesSkipped != 1 || b.resp.Coverage.SessionsAvailable != 6 {
+		t.Fatalf("calendar %+v", b.resp.Coverage)
+	}
+	it := shareIn(t, b, "27", 5, "1")
+	if it.PriceChangePct != nil || !contains(it.PriceChangeReason, "1 of the 6") {
+		t.Fatalf("a traded thin date with no close: %v %q", it.PriceChangePct, it.PriceChangeReason)
+	}
+	// The flow sums still hold the five market sessions only.
+	if it.Summary.Rows != 5 {
+		t.Fatalf("rows %d: the thin date is in no sum", it.Summary.Rows)
+	}
+	// Window 1 does not reach back to it.
+	approx(t, "1 session", shareIn(t, b, "27", 1, "1").PriceChangePct, 1, 1e-6)
+
+	// With its close stored, the thin date's move is in the product.
+	m = thinMarket(7, 2)
+	for _, d := range m.days {
+		p := priceRow{InsCode: "1", Day: d, Close: 1010, PriceYesterday: 1000}
+		if d.Equal(m.days[2]) {
+			p.Close = 1500
+		}
+		m.prices = append(m.prices, p)
+	}
+	approx(t, "5 sessions and the thin date", shareIn(t, m.build(), "27", 5, "1").PriceChangePct,
+		(math.Pow(1.01, 5)*1.5-1)*100, 1e-6)
 }
 
 // --- the sector index ------------------------------------------------------------------------
@@ -806,5 +914,38 @@ func TestTheResponseSerialisesAsDocumented(t *testing.T) {
 		if !contains(notes, want) {
 			t.Fatalf("notes must say %q", want)
 		}
+	}
+}
+
+// --- the routes ---------------------------------------------------------------------------------
+
+func TestTheShareListRefusesABadSectorOrWindowBeforeReadingAnything(t *testing.T) {
+	// No pool: a refusal must come from the request alone.
+	h := &Handler{}
+	r := chi.NewRouter()
+	r.Get("/api/v1/bourse/sector-flows/{sector}", h.SectorFlowShares)
+	for _, c := range []struct{ path, want string }{
+		{"/api/v1/bourse/sector-flows/7", "two-digit"},
+		{"/api/v1/bourse/sector-flows/..%2F27", "two-digit"},
+		{"/api/v1/bourse/sector-flows/abc", "two-digit"},
+		{"/api/v1/bourse/sector-flows/27?window=7", "window must be one of"},
+		{"/api/v1/bourse/sector-flows/27?window=5d", "window must be one of"},
+	} {
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest("GET", c.path, nil))
+		if rec.Code != 400 || !contains(rec.Body.String(), c.want) {
+			t.Fatalf("%s: %d %s", c.path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestTheRosterTableNoLongerSaysTheMarketIsNotStored(t *testing.T) {
+	// Once 0030 exists the roster's note would lie if it still said this
+	// deployment stores no market-wide flow; it points at the market's route.
+	out := buildFlowRoster(nil, nil, day("2026-09-29"))
+	notes := strings.Join(out.Notes, " ")
+	if contains(notes, "does not store the market") || !contains(notes, "/api/v1/bourse/sector-flows") ||
+		!contains(notes, "not the market") {
+		t.Fatalf("roster notes: %s", notes)
 	}
 }

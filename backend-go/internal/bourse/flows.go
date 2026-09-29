@@ -326,7 +326,8 @@ func buildFlowRoster(members []rosterMember, flows map[string][]FlowSession, now
 			"the traded value on that session's daily bar. A session failing either is left " +
 			"out of every sum and counted in `excluded`.",
 		"The roster row sums the roster's shares — nineteen of some seven hundred listed — " +
-			"and is not the market's flow; this deployment does not store the market's.",
+			"and is not the market's flow. The whole market's, where its ingest has run, is " +
+			"summed by sector at /api/v1/bourse/sector-flows.",
 	}
 	return out
 }

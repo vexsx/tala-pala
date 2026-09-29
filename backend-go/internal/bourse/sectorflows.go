@@ -678,6 +678,26 @@ type sectorFlowInput struct {
 type shareWindows struct {
 	acc    map[int]*flowAcc
 	traded map[int][]time.Time
+	// thin are the share's traded days on stored dates too thin to be market
+	// sessions but lying between them. They are in no sum; they ARE inside a
+	// window's span of prices, so a price change must see them too.
+	thin []time.Time
+}
+
+// tradedIn is every day inside window w on which the share's flow shows a
+// trade: its market sessions there and any thin date between them. A price
+// change over the window needs a stored close for each of them.
+func (sw *shareWindows) tradedIn(w sessionWindow) []time.Time {
+	if sw == nil {
+		return nil
+	}
+	out := append([]time.Time(nil), sw.traded[w.N]...)
+	for _, d := range sw.thin {
+		if !d.Before(w.From) && !d.After(w.To) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // tieredRow is a row placed on the calendar.
@@ -727,10 +747,20 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 		pos[d] = i
 	}
 	byShare := map[string][]tieredRow{}
+	thinTraded := map[string][]time.Time{}
+	oldest := cal.Sessions[len(cal.Sessions)-1]
 	for _, r := range in.Rows {
 		d := dayFloor(r.Flow.Day)
 		i, ok := pos[d]
 		if !ok {
+			// A thin date between two market sessions enters no figure, but a
+			// share that traded on it moved its price inside the window, and
+			// a chained change that silently skipped the day would be wrong.
+			f := r.Flow
+			if !d.Before(oldest) && !d.After(cal.Sessions[0]) &&
+				f.BuyIValue+f.BuyNValue+f.SellIValue+f.SellNValue > 0 {
+				thinTraded[r.InsCode] = append(thinTraded[r.InsCode], d)
+			}
 			continue
 		}
 		if _, known := meta[r.InsCode]; !known {
@@ -784,7 +814,8 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 		rows := byShare[code]
 		m := meta[code]
 		sec := m.SectorCode
-		sw := &shareWindows{acc: map[int]*flowAcc{}, traded: map[int][]time.Time{}}
+		sw := &shareWindows{acc: map[int]*flowAcc{}, traded: map[int][]time.Time{},
+			thin: thinTraded[code]}
 		perShare[code] = sw
 		sectorMembers[sec] = append(sectorMembers[sec], code)
 		if sectorPrev[sec] == nil {
@@ -912,7 +943,7 @@ func buildSectorFlows(in sectorFlowInput) sectorFlowsBuilt {
 		if m.InRoster {
 			it.RosterSymbol = m.RosterSymbol
 		}
-		it.PriceChangePct, it.PriceChangeReason = chainLinkedChange(prices[code], perShare[code].traded[n], w.From, w.To)
+		it.PriceChangePct, it.PriceChangeReason = chainLinkedChange(prices[code], perShare[code].tradedIn(w), w.From, w.To)
 		return it
 	}
 	for _, sec := range secCodes {
@@ -1002,14 +1033,36 @@ var boardOrder = map[string]int{"main": 0, "block": 1, "secondary": 2, "other": 
 // company has one, because a block board's prices are negotiated blocks and a
 // second board's history is weeks old; otherwise the board that traded the
 // most. Only companies with an accepted row are returned. Pure (unit tested).
+//
+// A company can carry more than one main-board insCode: market_shares never
+// deletes, so an instrument TSETMC re-issued under the same insID keeps its
+// old row, delisted. The one shown is then the listed one, then the one that
+// traded more in the window — never an arbitrary old code whose symbol and
+// "did not trade" price change would stand for the company.
 func buildCompanies(meta map[string]shareMeta, names map[string]sectorName,
 	perShare map[string]*shareWindows, prices map[string][]priceRow, n int,
 	w sessionWindow, marketValue float64) []companyFlowItem {
+	valueOf := func(code string) float64 {
+		if sw := perShare[code]; sw != nil {
+			return sw.acc[n].value
+		}
+		return 0
+	}
+	better := func(a, b string) bool { // a is a better main board to show than b
+		ma, mb := meta[a], meta[b]
+		if ma.Listed != mb.Listed {
+			return ma.Listed
+		}
+		if va, vb := valueOf(a), valueOf(b); va != vb {
+			return va > vb
+		}
+		return a < b
+	}
 	mainBoard := map[string]string{}
 	for code, m := range meta {
 		if m.Board == "main" {
 			k := companyKey(m)
-			if cur, ok := mainBoard[k]; !ok || code < cur {
+			if cur, ok := mainBoard[k]; !ok || better(code, cur) {
 				mainBoard[k] = code
 			}
 		}
@@ -1028,7 +1081,9 @@ func buildCompanies(meta map[string]shareMeta, names map[string]sectorName,
 		for _, code := range codes {
 			a := *perShare[code].acc[n]
 			acc.merge(a)
-			if b := meta[code].Board; a.rows > 0 && !seen[b] {
+			// A board is named only when something of it was summed: one whose
+			// rows were all excluded or idle added nothing to the figures.
+			if b := meta[code].Board; a.consistent() > 0 && !seen[b] {
 				seen[b] = true
 				boards = append(boards, b)
 			}
@@ -1041,7 +1096,7 @@ func buildCompanies(meta map[string]shareMeta, names map[string]sectorName,
 		if !ok {
 			shown = codes[0]
 			for _, code := range codes[1:] {
-				if perShare[code].acc[n].value > perShare[shown].acc[n].value {
+				if valueOf(code) > valueOf(shown) {
 					shown = code
 				}
 			}
@@ -1061,11 +1116,7 @@ func buildCompanies(meta map[string]shareMeta, names map[string]sectorName,
 		}
 		// The main board may not have traded in the window at all while a
 		// block did; its change is then stated as such, not borrowed.
-		var traded []time.Time
-		if sw := perShare[shown]; sw != nil {
-			traded = sw.traded[n]
-		}
-		it.PriceChangePct, it.PriceChangeReason = chainLinkedChange(prices[shown], traded, w.From, w.To)
+		it.PriceChangePct, it.PriceChangeReason = chainLinkedChange(prices[shown], perShare[shown].tradedIn(w), w.From, w.To)
 		out = append(out, it)
 	}
 	return out

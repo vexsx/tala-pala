@@ -163,6 +163,26 @@ describe('the market over a window', () => {
     const chip = screen.getByRole('button', { name: '60 sessions' })
     expect(chip).toBeDisabled()
     expect(chip).toHaveAttribute('title', reason)
+    // A disabled button takes no focus or hover everywhere: the reason is text too.
+    expect(screen.getByTestId('mf-window-unavailable').textContent).toBe(`60 sessions: ${reason}`)
+  })
+
+  it('states nothing about unavailable windows when every window is stored', async () => {
+    await renderPage()
+    expect(screen.queryByTestId('mf-window-unavailable')).toBeNull()
+    expect(screen.queryByTestId('mf-thin-after')).toBeNull()
+  })
+
+  it('says when newer stored dates are too thin to be in any figure', async () => {
+    const thin: SectorFlowsResponse = {
+      ...FLOWS,
+      coverage: { ...FLOWS.coverage, thin_dates_after_newest: 1, newest_stored_date: '2026-09-29', newest_stored_traded_shares: 19 }
+    }
+    await renderPage(thin)
+    const text = screen.getByTestId('mf-thin-after').textContent ?? ''
+    expect(text).toContain('1 stored date(s) after 2026-09-28, up to 2026-09-29,')
+    expect(text).toContain('fewer than 200 traded shares')
+    expect(text).toContain('Every figure ends at 2026-09-28')
   })
 
   it('flags a newest session that looks partly ingested', async () => {
@@ -193,20 +213,34 @@ describe('the sector table', () => {
     expect(sectorRowOrder()).toEqual(byValue)
 
     const table = screen.getByTestId('mf-sector-table')
-    fireEvent.click(within(table).getByRole('columnheader', { name: /Net individual/ }))
+    const sortBy = (name: RegExp) => fireEvent.click(within(table).getByRole('button', { name }))
+    sortBy(/Net individual/)
     const byNet = [...FLOWS.sectors]
       .sort((a, b) => (b.windows['5'].net_individual_toman ?? 0) - (a.windows['5'].net_individual_toman ?? 0))
       .map((s) => s.sector_code)
     expect(sectorRowOrder()).toEqual(byNet)
     expect(within(table).getByRole('columnheader', { name: /Net individual/ })).toHaveAttribute('aria-sort', 'descending')
-    fireEvent.click(within(table).getByRole('columnheader', { name: /Net individual/ }))
+    sortBy(/Net individual/)
     expect(sectorRowOrder()).toEqual([...byNet].reverse())
 
     // Wholesale trade has no sector index: it sorts last both ways.
-    fireEvent.click(within(table).getByRole('columnheader', { name: /Sector index/ }))
+    sortBy(/Sector index/)
     expect(sectorRowOrder().slice(-1)[0]).toBe('46')
-    fireEvent.click(within(table).getByRole('columnheader', { name: /Sector index/ }))
+    sortBy(/Sector index/)
     expect(sectorRowOrder().slice(-1)[0]).toBe('46')
+  })
+
+  it('sorts from the keyboard: every sortable header is a button', async () => {
+    await renderPage()
+    const table = screen.getByTestId('mf-sector-table')
+    const sortable = within(table)
+      .getAllByRole('columnheader')
+      .filter((th) => th.hasAttribute('aria-sort'))
+    expect(sortable).toHaveLength(8)
+    for (const th of sortable) {
+      const button = within(th).getByRole('button')
+      expect(button).toHaveAttribute('type', 'button')
+    }
   })
 
   it('draws net flow as a diverging bar and states the rotation in points', async () => {
@@ -305,6 +339,28 @@ describe('the heatmap', () => {
     // Readable as a table: the sectors are its rows, the blocks its columns.
     expect(within(heat).getAllByRole('columnheader')).toHaveLength(FLOWS.blocks.length + 1)
   })
+
+  it('orders its rows by the longest window stored, even before sixty sessions exist', async () => {
+    // With the sixty-session window unavailable its figures are empty; the
+    // rows must still be ordered by size (here: the twenty-session share).
+    const sectors = FLOWS.sectors.map((s) => {
+      const { '60': _drop, ...windows } = s.windows
+      return { ...s, windows }
+    })
+    const short: SectorFlowsResponse = {
+      ...FLOWS,
+      sectors,
+      sessions: { ...FLOWS.sessions, '60': { ...FLOWS.sessions['60'], available: false, reason: 'short' } }
+    }
+    await renderPage(short)
+    const heat = screen.getByTestId('mf-heatmap')
+    // The English label is each name cell's first text node; the Persian follows.
+    const names = Array.from(heat.querySelectorAll('tbody tr td.mf-heat-name')).map((td) => td.firstChild?.textContent)
+    const byShare20 = [...FLOWS.sectors]
+      .sort((a, b) => (b.windows['20'].value_share_pct ?? 0) - (a.windows['20'].value_share_pct ?? 0))
+      .map((s) => s.name_en || `Sector ${s.sector_code}`)
+    expect(names).toEqual(byShare20)
+  })
 })
 
 describe('what the page says the flow is', () => {
@@ -342,8 +398,11 @@ describe('before the market-wide flows exist', () => {
     await renderPage(ROSTER_ONLY, 'mf-not-ingested')
     const card = screen.getByTestId('mf-not-ingested')
     expect(card.textContent).toContain('Market-wide flows have not been ingested yet')
-    expect(card.textContent).toContain('the roster, not the market')
-    expect(card.textContent).toContain('The newest stored date, 2026-09-28, carries 19')
+    // It does not claim to know WHICH shares those are: a first market-wide
+    // ingest that stopped part-way looks the same as the roster alone.
+    expect(card.textContent).toContain('The newest stored date, 2026-09-28, carries 19 — the roster alone, or a market-wide ingest still under way')
+    expect(card.textContent).toContain('not the market, so nothing is summed here')
+    expect(card.textContent).not.toContain('That is the roster')
     expect(within(card).getByRole('link', { name: 'Tehran market' })).toHaveAttribute('href', '/bourse')
     expect(screen.queryByTestId('mf-sector-table')).toBeNull()
     expect(screen.queryByTestId('mf-tiles')).toBeNull()

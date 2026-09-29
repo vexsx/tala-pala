@@ -353,16 +353,28 @@ function SectorTable({
     () => Math.max(0, ...data.sectors.map((s) => Math.abs(s.windows[w]?.net_individual_toman ?? 0))),
     [data.sectors, w]
   )
+  // A button inside each header, as on the Stocks screen, so the sort is
+  // reachable from the keyboard and announced as a control.
   const header = (key: SectorSortKey, label: string, title?: string, cls = 'num') => (
     <th
       key={key}
-      className={`${cls} bx-sortable`}
-      title={title}
+      className={cls || undefined}
+      scope="col"
       aria-sort={sort.key === key ? (sort.desc ? 'descending' : 'ascending') : 'none'}
-      onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : key !== 'name' }))}
     >
-      {label}
-      {sort.key === key ? (sort.desc ? ' ↓' : ' ↑') : ''}
+      <button
+        type="button"
+        className="th-sort mf-sort"
+        title={title}
+        onClick={() => setSort((s) => ({ key, desc: s.key === key ? !s.desc : key !== 'name' }))}
+      >
+        {label}
+        {sort.key === key ? (
+          <span className="th-sort-mark" aria-hidden="true">
+            {sort.desc ? '↓' : '↑'}
+          </span>
+        ) : null}
+      </button>
     </th>
   )
   const columns = SECTOR_COLUMNS.length + 4
@@ -576,9 +588,14 @@ function HeatCell({
 }
 
 function Heatmap({ data, calendar }: { data: SectorFlowsResponse; calendar: 'jalali' | 'gregorian' }) {
-  // Largest sectors first, by their share of the newest sixty sessions, so the
-  // order does not move when the window chips do.
-  const rows = useMemo(() => sortSectors(data.sectors, '60', 'share', true), [data.sectors])
+  // Largest sectors first, by their share of the longest window stored (sixty
+  // sessions once there are that many), so the order does not move when the
+  // window chips do. Before sixty sessions exist the sixty-session figure is
+  // empty for every sector, and ordering by it would be ordering by code.
+  const rows = useMemo(() => {
+    const longest = [...WINDOWS].reverse().find((k) => data.sessions[k]?.available) ?? '60'
+    return sortSectors(data.sectors, longest, 'share', true)
+  }, [data.sectors, data.sessions])
   if (data.blocks.length === 0) return null
   return (
     <div className="card" data-testid="mf-heatmap">
@@ -758,12 +775,12 @@ function NotIngested({ data, calendar }: { data: SectorFlowsResponse; calendar: 
         {c.newest_stored_date ? (
           <>
             The newest stored date, {formatDate(c.newest_stored_date, calendar)}, carries{' '}
-            {formatGrouped(c.newest_stored_traded_shares)}.
+            {formatGrouped(c.newest_stored_traded_shares)} — the roster alone, or a market-wide ingest still under way.
+            Either is part of the market, not the market, so nothing is summed here.
           </>
         ) : (
-          <>No money-flow row is stored at all.</>
-        )}{' '}
-        That is the roster, not the market, so nothing is summed here.
+          <>No money-flow row is stored at all, so nothing is summed here.</>
+        )}
       </p>
       <p className="muted small">
         The roster's own table — {formatGrouped(c.roster_instruments)} shares, labelled as the roster — is on the{' '}
@@ -797,6 +814,7 @@ export default function MoneyFlow() {
   if (!data) return null
 
   const available = WINDOWS.filter((k) => data.sessions[k]?.available)
+  const unavailable = WINDOWS.filter((k) => !data.sessions[k]?.available)
   const w: WindowKey = available.includes(chosen) ? chosen : available[0] ?? chosen
   const span = data.sessions[w]
   const market = data.market[w]
@@ -834,6 +852,15 @@ export default function MoneyFlow() {
               it: it looks partly ingested, so the 1-session figures and the newest block undercount the market.
             </div>
           ) : null}
+          {cov.thin_dates_after_newest > 0 ? (
+            <div className="callout callout-warn" data-testid="mf-thin-after" role="status">
+              {formatGrouped(cov.thin_dates_after_newest)} stored date(s) after{' '}
+              {formatDate(cov.newest_session, calendar)}
+              {cov.newest_stored_date ? `, up to ${formatDate(cov.newest_stored_date, calendar)},` : ''} carry flow for
+              fewer than {formatGrouped(cov.min_traded_shares)} traded shares — the roster alone, or a market-wide ingest
+              still under way — and are in no figure here. Every figure ends at {formatDate(cov.newest_session, calendar)}.
+            </div>
+          ) : null}
 
           <div className="row wrap bx-filter" role="group" aria-label="Window">
             <span className="field-label">Window</span>
@@ -858,6 +885,13 @@ export default function MoneyFlow() {
                   ? `; compared with ${formatDate(span.previous_from, calendar)} → ${formatDate(span.previous_to, calendar)}`
                   : '; no earlier window of this length is stored'}
                 .
+              </span>
+            ) : null}
+            {/* A disabled button can be neither focused nor hovered on every
+                device, so its reason is stated as text, not only as a title. */}
+            {unavailable.length > 0 ? (
+              <span className="muted small" data-testid="mf-window-unavailable">
+                {unavailable.map((k) => `${windowLabel(k)}: ${data.sessions[k]?.reason ?? 'not available'}`).join(' · ')}
               </span>
             ) : null}
           </div>

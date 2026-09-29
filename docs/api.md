@@ -343,7 +343,11 @@ toman; percentages in percent.
 **Companies.** `top` sums every board of a company (`company_code`, TSETMC's
 `insID[:8]`): main, block (بلوک) and second board are separate instruments, all
 real trades, and all counted in their sector. A company is shown by its
-**main-board** symbol (`board`, `ins_code`; `boards` lists what was summed).
+**main-board** symbol (`board`, `ins_code`; `boards` lists the boards with a
+row in the sums — one whose rows were all excluded is not named). Where the
+mirror holds more than one main-board insCode for a company (it never deletes,
+so an instrument TSETMC re-issued keeps its old row, delisted), the listed one
+is shown, then the one that traded more in the window.
 `in_roster` is true only for an enabled roster share, and only then does
 `roster_symbol` name the `/stocks/{symbol}` page; no other symbol has one.
 
@@ -353,9 +357,10 @@ share's sessions in the window, less one. TSETMC lowers `price_yesterday` on an
 ex-date, so a capital increase or a dividend is not read as a fall — a 100%
 capital increase followed by a +4% session is +4%, not −48%. Closes come from
 `market_share_sessions` and, for a roster share where that is missing, its
-traded `equity_bars` row. If any session the share traded in has no stored
-close, the change is `null` with `price_change_reason` rather than a product
-that silently skipped a session.
+traded `equity_bars` row. If any day inside the window the share traded on —
+a market session, or a stored date too thin to be one that lies between two —
+has no stored close, the change is `null` with `price_change_reason` rather
+than a product that silently skipped a session.
 
 **Notes carried.** Zero-sum (above); the check tiers; the calendar rule;
 sector membership is TSETMC's classification at the last fetch applied to every

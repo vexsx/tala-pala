@@ -3607,6 +3607,18 @@ input[type='checkbox'] {
   min-width: 150px;
 }
 
+/* The sort control keeps .th-sort's look and focus ring but flows as text, so
+ * a header that wraps to two lines keeps its arrow beside the label, on the
+ * side the column is aligned to. */
+.mf-table .mf-sort {
+  display: inline-block;
+  text-align: inherit;
+}
+
+.mf-sort .th-sort-mark {
+  margin-inline-start: 3px;
+}
+
 .mf-open td {
   background: var(--panel-2);
 }
