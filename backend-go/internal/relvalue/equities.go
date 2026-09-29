@@ -39,6 +39,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/equitygate"
 )
 
 const (
@@ -76,10 +78,15 @@ const (
 // LEFT, so an instrument that has never been adjusted still arrives and can be
 // excluded WITH A REASON. Dropping it in SQL would make it vanish from the
 // warnings too, and a reader would never learn it exists.
+//
+// The stale-action count is internal/equitygate's, the same expression the
+// chart and the screener read: a verdict whose stored actions the stored bars
+// contradict is out of date here too, not only on the chart.
 const equityRosterSelect = `
 	SELECT i.symbol_fa, i.name_fa, i.sector_fa, i.enabled, i.bar_count,
 	       COALESCE(a.status, ''), COALESCE(a.refusal_reason, ''),
-	       COALESCE(a.adjustment_version, '')
+	       COALESCE(a.adjustment_version, ''),
+	       ` + equitygate.StaleActionsSQL + `
 	FROM equity_instruments i
 	LEFT JOIN LATERAL (
 	    SELECT status, refusal_reason, adjustment_version
@@ -96,7 +103,9 @@ const equityRosterSelect = `
 // The factor subquery is the same one internal/equities' screenBarsSelect uses:
 // the cumulative factor of the first action effective strictly AFTER this bar,
 // and 1.0 when none follows. Bars before the adjustment's own first_bar are
-// excluded, because the chain was never validated across them.
+// excluded, because the chain was never validated across them. Only the
+// symbols equityEligibility admitted ($3) are read: the roster decides, once,
+// and the status test stays here as a second guard, not as a second rule.
 const equityBarsSelect = `
 	SELECT i.symbol_fa, b.trade_date,
 	       b.final_close * COALESCE((
@@ -119,6 +128,7 @@ const equityBarsSelect = `
 	) a ON TRUE
 	WHERE i.enabled
 	  AND a.status = $1
+	  AND i.symbol_fa = ANY($3::text[])
 	  AND (a.first_bar IS NULL OR b.trade_date >= a.first_bar)
 	  AND b.trade_date <= $2::date
 	  AND (b.volume > 0 OR b.trade_count > 0)
@@ -149,9 +159,9 @@ func (h *Handler) loadEquityInstruments(ctx context.Context) ([]instrumentRow, [
 	for rows.Next() {
 		var symbol, nameFA, sectorFA, status, refusal, version string
 		var enabled bool
-		var barCount int
+		var barCount, stale int
 		if err := rows.Scan(&symbol, &nameFA, &sectorFA, &enabled, &barCount,
-			&status, &refusal, &version); err != nil {
+			&status, &refusal, &version, &stale); err != nil {
 			return nil, nil, err
 		}
 
@@ -159,6 +169,7 @@ func (h *Handler) loadEquityInstruments(ctx context.Context) ([]instrumentRow, [
 			Symbol: symbol, NameFA: nameFA, SectorFA: sectorFA,
 			Enabled: enabled, BarCount: barCount,
 			Status: status, Refusal: refusal, Version: version,
+			StaleActions: stale,
 		})
 		if !ok {
 			excluded = append(excluded, ex)
@@ -172,9 +183,10 @@ func (h *Handler) loadEquityInstruments(ctx context.Context) ([]instrumentRow, [
 	return out, excluded, nil
 }
 
-// loadEquitySeries returns the adjusted daily close per symbol, in toman.
-func (h *Handler) loadEquitySeries(ctx context.Context, asOf time.Time) (map[string]dailySeries, error) {
-	rows, err := h.Pool.Query(ctx, equityBarsSelect, equityStatusValidated, asOf.UTC())
+// loadEquitySeries returns the adjusted daily close per symbol, in toman, for
+// the symbols loadEquityInstruments admitted.
+func (h *Handler) loadEquitySeries(ctx context.Context, asOf time.Time, symbols []string) (map[string]dailySeries, error) {
+	rows, err := h.Pool.Query(ctx, equityBarsSelect, equityStatusValidated, asOf.UTC(), symbols)
 	if err != nil {
 		return nil, err
 	}
@@ -215,6 +227,9 @@ type equityRosterRow struct {
 	Enabled                  bool
 	BarCount                 int
 	Status, Refusal, Version string
+	// StaleActions counts stored actions the stored bars contradict
+	// (equitygate.StaleActionsSQL).
+	StaleActions int
 }
 
 // equityEligibility decides whether one instrument may be measured here, and
@@ -251,6 +266,14 @@ func equityEligibility(r equityRosterRow) (instrumentRow, equityExclusion, bool)
 			reason += " " + r.Refusal
 		}
 		return instrumentRow{}, equityExclusion{r.Symbol, reason}, false
+	case r.StaleActions > 0:
+		// Checked after the verdict, so a refused series keeps its own
+		// reason; and with the chart's own sentence, so the two pages say the
+		// same thing about the same share.
+		return instrumentRow{}, equityExclusion{r.Symbol, fmt.Sprintf(
+			"%s's corporate-action adjustment is %s: %s, and every return here is taken "+
+				"from adjusted closes.", r.Symbol, equitygate.StatusOutOfDate,
+			equitygate.OutOfDateReason(r.StaleActions))}, false
 	}
 
 	return instrumentRow{

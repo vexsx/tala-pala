@@ -852,7 +852,9 @@ other symbol keeps the Addendum 1 rule.
   raw route); the chart offers no Retry on a 409.
 - An equity adjustment whose stored corporate actions the stored bars contradict (an action measured
   across a session stored after it was detected) is served as `status: "out_of_date"`,
-  `adjusted_servable: false`, until the next ingest re-derives it.
+  `adjusted_servable: false`, until the next ingest re-derives it — by the chart, the bars and the
+  screener, and by `/markets/performance`, which excludes the share with the same sentence (one rule,
+  `internal/equitygate`, read by both packages).
 
 **Derived series (0031).** `instruments.derived_from` names the instrument a row's SOURCE publishes it
 as a fixed multiple of (`IR_GOLD_24K`, `IR_GOLD_MESGHAL` → `IR_GOLD_18K`); `GET /instruments` carries

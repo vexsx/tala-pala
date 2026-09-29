@@ -918,7 +918,11 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(equityInstruments) > 0 {
-		equitySeries, err := h.loadEquitySeries(ctx, now)
+		admitted := make([]string, 0, len(equityInstruments))
+		for _, inst := range equityInstruments {
+			admitted = append(admitted, inst.Code)
+		}
+		equitySeries, err := h.loadEquitySeries(ctx, now, admitted)
 		if err != nil {
 			h.Log.Error("performance_equity_series", "error", err)
 			httpserver.Internal(w, "database error")

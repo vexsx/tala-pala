@@ -7,6 +7,8 @@ package relvalue
 import (
 	"strings"
 	"testing"
+
+	"github.com/danaix/iran-gold-predictor/backend-go/internal/equitygate"
 )
 
 func validatedRow() equityRosterRow {
@@ -157,5 +159,32 @@ func TestRialsPerTomanIsTen(t *testing.T) {
 	// فملی printed 25,330 rials on 2026-09-09; that is 2,533 toman.
 	if got := 25330.0 / rialsPerToman; got != 2533.0 {
 		t.Errorf("25,330 rials = %v toman, want 2533", got)
+	}
+}
+
+// An adjustment whose stored actions the stored bars contradict is out of
+// date on EVERY reader, not only on the chart: in the deploy window this
+// guard exists for, a branch-built API answered 409 out_of_date for شپنا's
+// chart while Performance still served its five-year return, +1,229.68%, from
+// a phantom ×1.0287 action (+1,267.89% once the action was retired).
+func TestAnOutOfDateAdjustmentIsExcludedAsItIsFromTheChart(t *testing.T) {
+	r := validatedRow()
+	r.StaleActions = 2
+	_, ex, ok := equityEligibility(r)
+	if ok {
+		t.Fatal("an adjustment the stored bars contradict must not be measured")
+	}
+	if !strings.Contains(ex.Reason, equitygate.StatusOutOfDate) ||
+		!strings.Contains(ex.Reason, equitygate.OutOfDateReason(2)) {
+		t.Errorf("reason = %q, want the chart's own out-of-date sentence", ex.Reason)
+	}
+	// The one rule, read by both packages: the roster counts the stale
+	// actions with the shared fragment, and the bars are read only for the
+	// instruments the roster admitted.
+	if !strings.Contains(equityRosterSelect, equitygate.StaleActionsSQL) {
+		t.Error("the roster must count stale actions with equitygate.StaleActionsSQL")
+	}
+	if !strings.Contains(equityBarsSelect, "= ANY($3") {
+		t.Error("the bars must be read only for the instruments the roster admitted")
 	}
 }
