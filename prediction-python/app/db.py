@@ -388,6 +388,14 @@ instruments = Table(
     Column("notes", Text, nullable=False, server_default=""),
     Column("created_at", _TS, nullable=False, server_default=func.now()),
     Column("updated_at", _TS, nullable=False, server_default=func.now()),
+    # Migration 0031: the instrument this one's SOURCE publishes as a fixed
+    # multiple of (TGJU's geram24 and mesghal are geram18 x 4/3 and x 4.3318).
+    # Measured against that instrument it is constant by construction.
+    Column("derived_from", Text, ForeignKey("instruments.code", ondelete="RESTRICT")),
+    CheckConstraint(
+        "derived_from IS NULL OR derived_from <> code",
+        name="instruments_derived_from_not_self",
+    ),
     CheckConstraint(
         "kind IN ('market_price','economic_series','equity','index','basket','fx')"
     ),

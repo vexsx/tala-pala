@@ -60,6 +60,93 @@ export function tierLabel(tier: string | null | undefined): string {
   return (tier ?? 'unknown').replace(/_/g, ' ')
 }
 
+// --- instrument domains -------------------------------------------------------
+//
+// `instruments.domain` is free text in the registry (migration 0024 lists gold,
+// fx, global and fund; 0031 adds silver; the purchasing-power table adds
+// ir_equity for Tehran shares). These helpers give each a readable name and one
+// fixed order, and fall back to the raw domain for one a later migration adds,
+// so a new asset class shows up under its own name instead of vanishing.
+
+/** Readable names for `instruments.domain`, in the order pickers list them. */
+export const DOMAIN_LABELS: Record<string, string> = {
+  gold: 'Gold & coins',
+  silver: 'Silver',
+  fund: 'Commodity funds',
+  fx: 'Currency',
+  global: 'Global markets',
+  ir_equity: 'Tehran equities'
+}
+
+const DOMAIN_ORDER = Object.keys(DOMAIN_LABELS)
+
+/** The label for a domain; the raw domain itself when this build has no name for it. */
+export function domainLabel(domain: string | null | undefined): string {
+  const key = (domain ?? '').trim()
+  if (key === '') return 'Other'
+  return DOMAIN_LABELS[key] ?? key
+}
+
+/** Known domains in DOMAIN_LABELS order, then any other domain alphabetically. */
+export function compareDomains(a: string, b: string): number {
+  const ia = DOMAIN_ORDER.indexOf(a)
+  const ib = DOMAIN_ORDER.indexOf(b)
+  if (ia !== -1 || ib !== -1) {
+    if (ia === -1) return 1
+    if (ib === -1) return -1
+    return ia - ib
+  }
+  return a.localeCompare(b)
+}
+
+export interface DomainGroup<T> {
+  domain: string
+  label: string
+  items: T[]
+}
+
+/**
+ * Group rows by domain, groups in the fixed domain order, rows keeping the
+ * order they arrived in. A row with no domain lands in one group of its own
+ * rather than being dropped.
+ */
+export function groupByDomain<T extends { domain?: string | null }>(items: T[]): DomainGroup<T>[] {
+  const groups = new Map<string, T[]>()
+  for (const item of items) {
+    const key = (item.domain ?? '').trim()
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(item)
+    else groups.set(key, [item])
+  }
+  return Array.from(groups.keys())
+    .sort(compareDomains)
+    .map((domain) => ({ domain, label: domainLabel(domain), items: groups.get(domain) ?? [] }))
+}
+
+/** The distinct domains present, in the fixed order: the filter chips' vocabulary. */
+export function domainsPresent(items: Array<{ domain?: string | null }>): string[] {
+  return groupByDomain(items).map((g) => g.domain)
+}
+
+/**
+ * Whether GET /relative-value can serve a registry row as a leg.
+ *
+ * The endpoint reads daily closes from `prices` and refuses a disabled row or a
+ * rate (quote_currency PCT) with a 400 — relvalue.legRefusal. An economic
+ * series (CPI, money supply) is refused by nothing but has no `prices` rows,
+ * so picking one only ever produced "these two share no day". None of the
+ * three is offered.
+ */
+export function isRelativeValueLeg(item: {
+  kind?: string | null
+  quote_currency?: string | null
+  enabled?: boolean | null
+}): boolean {
+  return (
+    item.kind !== 'economic_series' && item.quote_currency !== 'PCT' && item.enabled !== false
+  )
+}
+
 /** The backend's own explanation for this row, joined for a title attribute. */
 export function noteText(notes: string[] | null | undefined): string {
   if (!notes || notes.length === 0) return ''

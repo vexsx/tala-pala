@@ -495,6 +495,21 @@ func buildRelativeResponse(in relativeInputs) relativeResponse {
 			"The requested `to` is later than as_of; the window was served to as_of, "+
 				"because no observation can exist after it.")
 	}
+	// A pair whose ratio its source fixes (migration 0031: 24k gold and melted
+	// gold per mesghal are TGJU's 18k price times a constant) has no gap to
+	// measure. Both legs are still drawn -- each one's own growth is real -- but
+	// the gap, its percentile and the ratio drawdown are withheld, for the reason
+	// ?a=X&b=X is refused outright: what would move in them is the spread
+	// between two sources, and printed as a gap it would read as relative
+	// performance.
+	constant := constantByConstruction(in.A, in.B)
+	if constant != "" {
+		out.Warnings = append(out.Warnings, fmt.Sprintf(
+			"%s, so their ratio is constant by construction. No gap, percentile or ratio "+
+				"drawdown is reported: any movement between the two legs below is the "+
+				"difference between the sources' prices on each day, not relative "+
+				"performance.", constant))
+	}
 
 	paired := pairSeries(in.SeriesA, in.SeriesB)
 	full := paired.Points
@@ -582,6 +597,16 @@ func buildRelativeResponse(in relativeInputs) relativeResponse {
 	out.RatioDrawdownPct = maxDrawdownPct(ratios)
 
 	windowDays := daysBetween(base.Day, end.Day)
+	if constant != "" {
+		out.GapPct = nil
+		out.RatioDrawdownPct = nil
+		out.PercentileBasis = percentileBasis{
+			WindowDays:            windowDays,
+			MinIndependentWindows: minIndependentWindows,
+			Note:                  "No percentile: the ratio between these two instruments is fixed by their source.",
+		}
+		return out
+	}
 	if ok {
 		out.GapPercentile, out.PercentileBasis = gapDistribution(full, windowDays, current)
 	} else {

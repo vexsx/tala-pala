@@ -23,7 +23,7 @@ import {
 } from '../api/types'
 import { unwrapList } from '../lib/unwrap'
 import { useSettings } from '../lib/settings'
-import { finiteOrNull } from '../lib/markets'
+import { finiteOrNull, groupByDomain, isRelativeValueLeg } from '../lib/markets'
 import { formatDate, formatDateTime, formatPct, pctClass, shortDate } from '../lib/format'
 import { ChartTip } from '../components/PriceChart'
 import Provenance from '../components/Provenance'
@@ -34,10 +34,31 @@ import EmptyState from '../components/EmptyState'
 interface AssetOption {
   code: string
   label: string
+  domain: string
+}
+
+interface QuickPair {
+  a: string
+  b: string
+  label: string
 }
 
 const DEFAULT_A = 'IR_GOLD_18K'
 const DEFAULT_B = 'USD_IRT'
+
+/**
+ * Pairs a reader of this page commonly sets side by side, one click each.
+ * The labels name the two legs and nothing else. A chip is offered only when
+ * both of its codes are among the selectable assets, so a deployment that has
+ * not stored a series yet shows no chip for it.
+ */
+const QUICK_PAIRS: QuickPair[] = [
+  { a: 'IR_GOLD_18K', b: 'IR_SILVER_999', label: '18k gold vs silver 999' },
+  { a: 'IR_COIN_EMAMI', b: 'IR_COIN_BAHAR', label: 'Emami vs Bahar Azadi coin' },
+  { a: 'IR_COIN_EMAMI', b: 'IR_GOLD_18K', label: 'Emami coin vs 18k gold' },
+  { a: 'IR_SILVER_999', b: 'USD_IRT', label: 'Silver 999 vs US dollar' },
+  { a: 'IR_GOLD_FUND_AYAR', b: 'IR_GOLD_18K', label: 'Ayar gold fund vs 18k gold' }
+]
 
 function legName(leg: RelativeValueLeg | undefined, fallback: string): string {
   return leg?.name_en || leg?.code || fallback
@@ -154,16 +175,55 @@ export default function RelativeValue() {
   const [b, setB] = useState<string>(DEFAULT_B)
   const [period, setPeriod] = useState<MarketPeriod>('1y')
 
-  // The symbol vocabulary. When the registry is unavailable the page falls back
-  // to the symbol list the app already ships rather than to an empty selector.
+  // The symbol vocabulary: every registry row the endpoint can actually pair.
+  // An economic series has no daily closes to pair and a rate is refused with
+  // a 400, so neither is offered (isRelativeValueLeg). When the registry is
+  // unavailable the page falls back to the symbol list the app already ships
+  // rather than to an empty selector.
   const instruments = useApi<unknown>('/instruments?enabled=true')
-  const options = useMemo<AssetOption[]>(() => {
+  const { options, fromRegistry } = useMemo<{
+    options: AssetOption[]
+    fromRegistry: boolean
+  }>(() => {
     const items = unwrapList<InstrumentItem>(instruments.data, 'items', 'instruments')
     if (items.length > 0) {
-      return items.map((i) => ({ code: i.code, label: i.name_en || i.code }))
+      return {
+        fromRegistry: true,
+        options: items
+          .filter(isRelativeValueLeg)
+          .map((i) => ({ code: i.code, label: i.name_en || i.code, domain: i.domain }))
+      }
     }
-    return SYMBOLS.map((code) => ({ code, label: SYMBOL_LABELS[code] }))
+    return {
+      fromRegistry: false,
+      options: SYMBOLS.map((code) => ({ code, label: SYMBOL_LABELS[code], domain: '' }))
+    }
   }, [instruments.data])
+  // Grouped by asset class for the pickers; the fallback list has no domains
+  // and is shown flat.
+  const groups = useMemo(() => (fromRegistry ? groupByDomain(options) : []), [fromRegistry, options])
+  const quickPairs = useMemo(() => {
+    const offered = new Set(options.map((o) => o.code))
+    return QUICK_PAIRS.filter((p) => offered.has(p.a) && offered.has(p.b))
+  }, [options])
+  const labelOf = (code: string) => options.find((o) => o.code === code)?.label ?? code
+
+  const renderOptions = () =>
+    fromRegistry
+      ? groups.map((g) => (
+          <optgroup key={g.domain || 'other'} label={g.label}>
+            {g.items.map((o) => (
+              <option key={o.code} value={o.code}>
+                {o.label}
+              </option>
+            ))}
+          </optgroup>
+        ))
+      : options.map((o) => (
+          <option key={o.code} value={o.code}>
+            {o.label}
+          </option>
+        ))
 
   const samePair = a === b
   const rv = useApi<RelativeValueResponse>(
@@ -203,21 +263,13 @@ export default function RelativeValue() {
         <div className="field">
           <label htmlFor="rv-a">Asset A</label>
           <select id="rv-a" value={a} onChange={(e) => setA(e.target.value)}>
-            {options.map((o) => (
-              <option key={o.code} value={o.code}>
-                {o.label}
-              </option>
-            ))}
+            {renderOptions()}
           </select>
         </div>
         <div className="field">
           <label htmlFor="rv-b">Asset B</label>
           <select id="rv-b" value={b} onChange={(e) => setB(e.target.value)}>
-            {options.map((o) => (
-              <option key={o.code} value={o.code}>
-                {o.label}
-              </option>
-            ))}
+            {renderOptions()}
           </select>
         </div>
         <div className="field">
@@ -238,6 +290,32 @@ export default function RelativeValue() {
           </div>
         </div>
       </div>
+
+      {quickPairs.length > 0 && (
+        <div className="field rv-quick-pairs">
+          <span className="field-label">Quick pairs</span>
+          <div className="chip-row" role="group" aria-label="Quick pairs">
+            {quickPairs.map((p) => {
+              const active = a === p.a && b === p.b
+              return (
+                <button
+                  key={`${p.a}|${p.b}`}
+                  type="button"
+                  className={`chip ${active ? 'active' : ''}`}
+                  aria-pressed={active}
+                  title={`A: ${labelOf(p.a)} · B: ${labelOf(p.b)}`}
+                  onClick={() => {
+                    setA(p.a)
+                    setB(p.b)
+                  }}
+                >
+                  {p.label}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {samePair ? (
         <EmptyState

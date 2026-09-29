@@ -918,7 +918,9 @@ func TestSignalsOverviewFixtureMatchesTheWireShape(t *testing.T) {
 		"IR_GOLD_FUND_KAHRABA": unavailableNotScored,
 		// Never collected at all.
 		"cars": unavailableNotCollected, "housing": unavailableNotCollected,
-		"tehran_equities": unavailableNotCollected, "ir_silver": unavailableNotCollected,
+		"tehran_equities": unavailableNotCollected,
+		// Collected since migration 0031, as one TGJU close a day; not scored.
+		"IR_SILVER_999": unavailableNotScored,
 	} {
 		entry, ok := byClass[class]
 		if !ok {

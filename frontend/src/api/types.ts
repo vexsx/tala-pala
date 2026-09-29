@@ -1087,6 +1087,13 @@ export interface MarketPerformanceItem {
   quality_tier: string
   is_proxy: boolean
   is_derived?: boolean
+  /**
+   * The instrument this one's source publishes it as a fixed multiple of
+   * (migration 0031: 24k and melted gold are TGJU's 18k x a constant), null
+   * for an instrument observed in its own right. Returns measured against it
+   * arrive null with the reason in `notes`.
+   */
+  derived_from?: string | null
   /** In the selected numéraire. */
   start_value: number | null
   /** In the selected numéraire. */

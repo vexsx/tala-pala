@@ -38,6 +38,16 @@ SYMBOL_META: dict[str, tuple[str, str]] = {
     "BRENT_OIL": ("USD", "bbl"),
     "DXY": ("INDEX", "index"),
     "US10Y": ("PCT", "pct"),
+    # TGJU daily settled closes only (app/jobs/tgju_daily.py, migration 0031);
+    # never collected live.  A coin is priced per coin, silver and 24k per
+    # gram, melted gold per MESGHAL (4.6083 g) — never converted into each other.
+    "IR_SILVER_999": ("IRT", "gram"),
+    "IR_COIN_BAHAR": ("IRT", "coin"),
+    "IR_COIN_HALF": ("IRT", "coin"),
+    "IR_COIN_QUARTER": ("IRT", "coin"),
+    "IR_COIN_GERAMI": ("IRT", "coin"),
+    "IR_GOLD_24K": ("IRT", "gram"),
+    "IR_GOLD_MESGHAL": ("IRT", "mesghal"),
 }
 
 

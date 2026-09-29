@@ -193,3 +193,32 @@ func TestIngestEconomicPostsToItsOwnPath(t *testing.T) {
 		t.Fatalf("X-Internal-Token = %q", gotToken)
 	}
 }
+
+// Same contract for the TGJU daily-close job: its own path, POST, the token.
+func TestTGJUDailyPostsToItsOwnPath(t *testing.T) {
+	var gotPath, gotMethod, gotToken string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod, gotToken = r.URL.Path, r.Method, r.Header.Get("X-Internal-Token")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok", testLogger())
+	if _, err := c.TGJUDaily(context.Background()); err != nil {
+		t.Fatalf("TGJUDaily: %v", err)
+	}
+	if gotPath != "/internal/tgju/daily" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotToken != "tok" {
+		t.Fatalf("X-Internal-Token = %q", gotToken)
+	}
+	// A first pass reads whole tables; the 60s default would cut it off
+	// mid-write and record a failure while the Python side kept working.
+	if TGJUDailyTimeout <= DefaultTimeout {
+		t.Fatalf("TGJUDailyTimeout %v must exceed the %v default", TGJUDailyTimeout, DefaultTimeout)
+	}
+}

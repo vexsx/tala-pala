@@ -526,12 +526,14 @@ func TestPriceableSymbolsAlwaysIncludeBothConversionSeries(t *testing.T) {
 func TestSortInstrumentsIsDomainThenCode(t *testing.T) {
 	rows := []instrumentRow{
 		{Code: "XAUUSD", Domain: "global"},
+		{Code: "IR_SILVER_999", Domain: "silver"},
 		{Code: "IR_GOLD_18K", Domain: "gold"},
 		{Code: "DXY", Domain: "global"},
+		{Code: "IR_COIN_BAHAR", Domain: "gold"},
 		{Code: "USD_IRT", Domain: "fx"},
 	}
 	sortInstruments(rows)
-	want := []string{"USD_IRT", "DXY", "XAUUSD", "IR_GOLD_18K"}
+	want := []string{"USD_IRT", "DXY", "XAUUSD", "IR_COIN_BAHAR", "IR_GOLD_18K", "IR_SILVER_999"}
 	for i, code := range want {
 		if rows[i].Code != code {
 			t.Fatalf("order = %v, want %v", rows, want)
@@ -874,5 +876,117 @@ func TestPerformance_VolatilityFieldIsNamedPerObservation(t *testing.T) {
 	if bytes.Contains(blob, []byte("annualis")) && !bytes.Contains(blob, []byte("not annualised")) &&
 		!bytes.Contains(blob, []byte("NOT annualised")) {
 		t.Errorf("nothing here is annualised and the note must say so:\n%s", blob)
+	}
+}
+
+// --- a series its source derives from the numeraire's own series ----------------------
+
+// TGJU publishes 24k gold as its 18k gram price x 4/3 (migration 0031,
+// derived_from). In grams of 18k gold that is a constant at the source, and
+// what is left of it in this table is the spread between TGJU's 18k and the
+// live 18k feed. The fixture gives the two a 1% disagreement on the last day
+// precisely so a naive computation would print a "+1%" that is no return.
+func derivedFixture(t *testing.T, numeraire string) performanceResponse {
+	t.Helper()
+	spec, perr := parseNumeraire(numeraire)
+	if perr != nil {
+		t.Fatalf("fixture numeraire %q: %v", numeraire, perr)
+	}
+	instruments := append(testInstruments(),
+		instrumentRow{Code: "IR_GOLD_24K", Kind: "market_price", Domain: "gold",
+			QuoteCurrency: quoteIRT, Unit: "gram", QualityTier: "official_mirror", Enabled: true,
+			DerivedFrom: "IR_GOLD_18K", Notes: "TGJU DERIVES it from its 18k gram price (x 4/3)."})
+	series := testSeries()
+	series["IR_GOLD_24K"] = dailySeries{
+		pt(2024, time.January, 1, 500*4.0/3),
+		pt(2025, time.January, 1, 1000*4.0/3),
+		pt(2026, time.January, 1, 2020*4.0/3),
+	}
+	from := day(2024, time.January, 1)
+	prov := testCPIProvenance()
+	return buildPerformanceResponse(performanceInputs{
+		Query: performanceQuery{
+			Numeraire: spec,
+			Window:    window{From: &from, To: day(2026, time.January, 1), Period: ptr("max")},
+		},
+		Instruments:   instruments,
+		Series:        series,
+		CPI:           testCPI(),
+		CPIProvenance: &prov,
+		AsOf:          day(2026, time.January, 1),
+	})
+}
+
+func TestPerformance_ADerivedSeriesHasNoReturnInTheUnitItIsDerivedFrom(t *testing.T) {
+	got := derivedFixture(t, "IRT")
+	k24 := itemFor(t, got, "IR_GOLD_24K")
+
+	// In toman and in dollars it is an asset like any other: 666.67 -> 2693.33.
+	if v := mustFloat(t, k24.NominalReturnPct, "24k nominal"); math.Abs(v-304) > 1e-6 {
+		t.Errorf("IR_GOLD_24K nominal = %v, want 304", v)
+	}
+	if k24.USDReturnPct == nil {
+		t.Error("a USD return is still a measurement for a derived series")
+	}
+	// In grams of 18k gold it would be +1.00%: TGJU's 18k disagreeing with the
+	// live 18k by one percent on the last day. That is not a return.
+	if k24.GoldReturnPct != nil {
+		t.Errorf("IR_GOLD_24K in grams of 18k gold = %v, want null by construction", *k24.GoldReturnPct)
+	}
+	if !notesMentioning(k24, "fixed multiple of IR_GOLD_18K") {
+		t.Errorf("the withheld cell must explain itself: %v", k24.Notes)
+	}
+	// The registry's own caveat still leads.
+	if len(k24.Notes) == 0 || !strings.Contains(k24.Notes[0], "DERIVES") {
+		t.Errorf("the registry note must come first: %v", k24.Notes)
+	}
+}
+
+func TestPerformance_ADerivedSeriesInItsOwnBaseUnitIsWithheldLikeTheIdentity(t *testing.T) {
+	got := derivedFixture(t, "GOLD")
+	k24 := itemFor(t, got, "IR_GOLD_24K")
+
+	for name, v := range map[string]*float64{
+		"nominal_return_pct":         k24.NominalReturnPct,
+		"observation_volatility_pct": k24.ObservationVolatilityPct,
+		"max_drawdown_pct":           k24.MaxDrawdownPct,
+		"real_return_pct":            k24.RealReturnPct,
+		"gold_return_pct":            k24.GoldReturnPct,
+	} {
+		if v != nil {
+			t.Errorf("%s = %v, want null: a constant by construction measures nothing", name, *v)
+		}
+	}
+	if !notesMentioning(k24, "constant by construction") {
+		t.Errorf("the withheld row must say why: %v", k24.Notes)
+	}
+	if !notesMentioning(k24, "No real return") {
+		t.Errorf("the withheld real return must say why: %v", k24.Notes)
+	}
+	// The value itself is still what it is: grams of 18k gold per gram of 24k.
+	if v := mustFloat(t, k24.EndValue, "24k in grams of 18k"); math.Abs(v-2020*4.0/3/2000) > 1e-6 {
+		t.Errorf("end value = %v, want %v", v, 2020*4.0/3/2000)
+	}
+	// An instrument that is NOT derived keeps its measured return.
+	xau := itemFor(t, got, "XAUUSD")
+	if xau.NominalReturnPct == nil {
+		t.Error("the guard must not touch an instrument observed in its own right")
+	}
+}
+
+func TestInstrumentRef_PublishesWhatASeriesIsDerivedFrom(t *testing.T) {
+	blob, err := json.Marshal(refOf(instrumentRow{Code: "IR_GOLD_MESGHAL", DerivedFrom: "IR_GOLD_18K"}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(blob, []byte(`"derived_from":"IR_GOLD_18K"`)) {
+		t.Fatalf("derived_from must reach the wire:\n%s", blob)
+	}
+	plain, err := json.Marshal(refOf(instrumentRow{Code: "IR_COIN_BAHAR"}))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(plain, []byte(`"derived_from":null`)) {
+		t.Fatalf("an observed series must carry derived_from null, not omit it:\n%s", plain)
 	}
 }

@@ -28,7 +28,7 @@ const (
 	// fires mid-run is worse than a slow run: the handler keeps computing
 	// (sync def in a threadpool), so the job is recorded failed while the work
 	// continues, and the next tick can overlap it.
-	TrainTimeout   = 180 * time.Minute
+	TrainTimeout = 180 * time.Minute
 	// A healthy sequential pass over every provider measured ~49s in
 	// production, so a 60s budget failed on any network variance. The circuit
 	// breaker removes the persistent time sinks; this headroom covers the rest.
@@ -51,7 +51,13 @@ const (
 	// annual, low-volume data: the headroom is for slow or retrying sources,
 	// not for volume, and not for archiving.
 	EconomicIngestTimeout = 10 * time.Minute
-	DefaultTimeout        = 60 * time.Second
+	// The TGJU daily-close job reads one history table per instrument (eight),
+	// ~2 s each from the production host plus the courtesy delay. A symbol's
+	// FIRST pass reads its whole table -- up to ~3,500 bars, each written with
+	// its audit row -- so the budget is sized for that first run, not for the
+	// forty-row passes that follow it.
+	TGJUDailyTimeout = 10 * time.Minute
+	DefaultTimeout   = 60 * time.Second
 )
 
 // Client talks to the prediction-service internal API.
@@ -267,4 +273,13 @@ func (c *Client) TrendAlignment(ctx context.Context) (json.RawMessage, error) {
 // so a failure here must leave collect, predict and train untouched.
 func (c *Client) IngestEconomic(ctx context.Context) (json.RawMessage, error) {
 	return c.Post(ctx, "/internal/economic/ingest", nil, EconomicIngestTimeout)
+}
+
+// TGJUDaily stores TGJU's daily settled closes for the migration 0031
+// instruments (Iranian silver, the Azadi and gram coins, 24k gold, melted gold
+// per mesghal) and fills the Emami coin's EMPTY UTC days. It writes `prices`
+// rows with source 'tgju_history' and never overwrites one, so a failure or a
+// repeated run leaves collect, predict and train untouched.
+func (c *Client) TGJUDaily(ctx context.Context) (json.RawMessage, error) {
+	return c.Post(ctx, "/internal/tgju/daily", nil, TGJUDailyTimeout)
 }

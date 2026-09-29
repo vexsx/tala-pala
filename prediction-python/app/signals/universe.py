@@ -91,8 +91,8 @@ PARITY_SYMBOLS: frozenset[str] = frozenset({"IR_GOLD_18K"})
 FUND_FLOW_SYMBOL = "IR_GOLD_FUND_FLOW"
 
 # Symbols this system collects and serves, which are deliberately NOT given a
-# buy/hold/sell reading. Each reason is about the instrument, not about data
-# availability — all three have plenty of rows.
+# buy/hold/sell reading. Each reason is about the instrument or about how it is
+# collected, never about a shortage of rows.
 EXCLUDED_SYMBOLS: dict[str, str] = {
     "DXY": (
         "The dollar index is macro context, not a holding: it is a basket "
@@ -109,6 +109,19 @@ EXCLUDED_SYMBOLS: dict[str, str] = {
         "as kind='index' for exactly this reason). Nobody holds a ratio, so a "
         "'buy' on it is meaningless. It is used here as an INPUT to the two "
         "fund symbols' readings instead."
+    ),
+    # Local silver used to be listed under NOT_COLLECTED ("no local Iranian
+    # silver series exists"). Migration 0031 made that false, so it moved here
+    # with a sentence that is true of what is now collected.
+    "IR_SILVER_999": (
+        "Tehran silver 999 in toman per gram is collected, but only as TGJU's "
+        "ONE daily settled close per day (app/jobs/tgju_daily.py; TGJU's table "
+        "starts 2020-10-31), with no live quote and no second source to check "
+        "it against. It is not modelled and not scored: a single-source daily "
+        "close whose own table carries junk bars has not been evaluated as a "
+        "signal input, so it is compared under Relative value and Purchasing "
+        "power instead. XAGUSD is not a substitute: it is the COMEX front-month "
+        "future in USD per troy ounce."
     ),
 }
 
@@ -132,13 +145,6 @@ NOT_COLLECTED: tuple[dict[str, str], ...] = (
         "reason": "Not collected: `prices` holds zero rows for any "
                   "Tehran-listed share. The two gold ETFs below are the only "
                   "exchange-traded instruments collected.",
-    },
-    {
-        "symbol_or_class": "IR_SILVER",
-        "reason": "No local Iranian silver series exists. XAGUSD is the COMEX "
-                  "front-month future in USD, which is not the toman-quoted "
-                  "silver a reader in Iran would buy, and presenting it as one "
-                  "would be a substitution, not a proxy.",
     },
     {
         "symbol_or_class": "economic_series",

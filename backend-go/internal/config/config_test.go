@@ -36,6 +36,11 @@ func TestLoad_DefaultsAndRequired(t *testing.T) {
 	if cfg.Crons.Economic != "40 3 * * *" {
 		t.Fatalf("bad economic cron default: %q", cfg.Crons.Economic)
 	}
+	// TGJU publishes a day's close only after the day is over, so the job
+	// runs the next morning (00:25 UTC) and once more as a retry (12:25).
+	if cfg.Crons.TGJUDaily != "25 0,12 * * *" {
+		t.Fatalf("bad tgju-daily cron default: %q", cfg.Crons.TGJUDaily)
+	}
 	if cfg.MigrationsDir != "/app/migrations" {
 		t.Fatalf("bad migrations dir: %s", cfg.MigrationsDir)
 	}
@@ -137,6 +142,7 @@ func TestLoad_CORSAndOverrides(t *testing.T) {
 	env["ALLOW_OPEN_REGISTRATION"] = "true"
 	env["SCHEDULE_COLLECT_CRON"] = "*/5 * * * *"
 	env["SCHEDULE_ECONOMIC_CRON"] = "15 5 * * *"
+	env["SCHEDULE_TGJU_DAILY_CRON"] = "45 1 * * *"
 	cfg, err := Load(env, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -149,6 +155,9 @@ func TestLoad_CORSAndOverrides(t *testing.T) {
 	}
 	if cfg.Crons.Economic != "15 5 * * *" {
 		t.Fatalf("SCHEDULE_ECONOMIC_CRON not applied: %q", cfg.Crons.Economic)
+	}
+	if cfg.Crons.TGJUDaily != "45 1 * * *" {
+		t.Fatalf("SCHEDULE_TGJU_DAILY_CRON not applied: %q", cfg.Crons.TGJUDaily)
 	}
 }
 

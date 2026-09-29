@@ -4,9 +4,13 @@
 //   - IR_GOLD_18K and USD_IRT are ALWAYS open: their primary sources quote
 //     24/7 every day (Hamrah Gold; the USDT market). Only the plain
 //     STALE_MINUTES age rule applies.
-//   - IR_COIN_EMAMI trades Sat-Wed between MARKET_TEHRAN_OPEN and
+//   - IR_COIN_EMAMI and the TGJU daily-close instruments of migration 0031
+//     (silver 999, the Bahar Azadi, half, quarter and gram coins, 24k gold,
+//     melted gold per mesghal) trade Sat-Wed between MARKET_TEHRAN_OPEN and
 //     MARKET_TEHRAN_CLOSE (Asia/Tehran local, open inclusive, close
 //     exclusive); closed all Thursday and Friday.
+//   - Tehran-exchange commodity funds (IR_<underlying>_FUND_*: gold, silver,
+//     saffron) trade Sat-Wed 12:00-18:00 Tehran; closed Thursday and Friday.
 //   - Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y, ...) are closed
 //     from Friday 21:00 UTC until Sunday 22:00 UTC.
 //
@@ -26,7 +30,7 @@ const (
 	DefaultClose = "20:00"
 )
 
-// TSE gold-fund session (Addendum 7): Sat-Wed 12:00-18:00 Asia/Tehran,
+// TSE commodity-fund session (Addendum 7): Sat-Wed 12:00-18:00 Asia/Tehran,
 // closed Thursday AND Friday. Fixed here (display freshness only); the
 // Python service reads MARKET_TSE_OPEN/CLOSE for prediction-side rules.
 const (
@@ -34,8 +38,17 @@ const (
 	tseClose = "18:00"
 )
 
-// tseFundPrefix marks Tehran-exchange gold-fund symbols.
-const tseFundPrefix = "IR_GOLD_FUND"
+// isTSEFund reports whether symbol is a Tehran-exchange commodity fund,
+// IR_<underlying>_FUND*. It is a rule over the code rather than the old
+// "IR_GOLD_FUND" prefix so the silver and saffron funds (IR_SILVER_FUND_*,
+// IR_SAFFRON_FUND_*) get the session the gold funds always had.
+// IR_GOLD_FUND_FLOW stays on it, as it always was: the flow ratio is computed
+// from the funds' own sessions (migration 0024 files it under calendar_class
+// 'tse_session'). IR_SILVER_999 is not a fund.
+func isTSEFund(symbol string) bool {
+	parts := strings.Split(symbol, "_")
+	return len(parts) >= 3 && parts[0] == "IR" && parts[2] == "FUND"
+}
 
 // alwaysOpen: primary sources quote 24/7 every day of the week (Hamrah
 // Gold for 18k; the USDT market for the free-market dollar).
@@ -45,9 +58,19 @@ var alwaysOpen = map[string]bool{
 }
 
 // iranian is the set of symbols that follow the Tehran bazaar calendar.
-// Every other symbol follows the global (UTC weekend) calendar.
+// Every other symbol follows the global (UTC weekend) calendar. The seven
+// migration 0031 codes are one settled close per day from TGJU, but the market
+// they close is the bazaar, so the last session's close stays acceptably fresh
+// through the Thursday+Friday closure instead of reading as stale.
 var iranian = map[string]bool{
-	"IR_COIN_EMAMI": true,
+	"IR_COIN_EMAMI":   true,
+	"IR_SILVER_999":   true,
+	"IR_COIN_BAHAR":   true,
+	"IR_COIN_HALF":    true,
+	"IR_COIN_QUARTER": true,
+	"IR_COIN_GERAMI":  true,
+	"IR_GOLD_24K":     true,
+	"IR_GOLD_MESGHAL": true,
 }
 
 // tehran is the Asia/Tehran location. The runtime container installs tzdata
@@ -80,7 +103,7 @@ func IsOpen(symbol string, at time.Time, open, close string) bool {
 	if alwaysOpen[symbol] {
 		return true
 	}
-	if strings.HasPrefix(symbol, tseFundPrefix) {
+	if isTSEFund(symbol) {
 		lt := at.In(tehran)
 		if lt.Weekday() == time.Thursday || lt.Weekday() == time.Friday {
 			return false
@@ -116,7 +139,7 @@ func ClosureStartedAt(symbol string, at time.Time, open, close string) time.Time
 	if IsOpen(symbol, at, open, close) {
 		return at.UTC()
 	}
-	if strings.HasPrefix(symbol, tseFundPrefix) {
+	if isTSEFund(symbol) {
 		closeM := parseHHMM(tseClose, tseClose)
 		lt := at.In(tehran)
 		day := time.Date(lt.Year(), lt.Month(), lt.Day(), 0, 0, 0, 0, tehran)

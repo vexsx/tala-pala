@@ -57,7 +57,7 @@ const INSTRUMENTS = {
       kind: 'market',
       name_en: 'Global gold',
       name_fa: 'طلای جهانی',
-      domain: 'gold',
+      domain: 'global',
       quote_currency: 'USD',
       unit: 'ounce',
       decimals: 2,
@@ -70,6 +70,61 @@ const INSTRUMENTS = {
     }
   ],
   count: 3
+}
+
+/** A registry row as GET /instruments marshals it (economic/handlers.go). */
+function registryRow(
+  code: string,
+  domain: string,
+  name_en: string,
+  extra: Partial<(typeof INSTRUMENTS.items)[number]> = {}
+): (typeof INSTRUMENTS.items)[number] {
+  return {
+    code,
+    kind: 'market_price',
+    name_en,
+    name_fa: '',
+    domain,
+    quote_currency: 'IRT',
+    unit: 'unit',
+    decimals: 0,
+    calendar_class: 'tehran_bazaar',
+    quality_tier: 'official_mirror',
+    is_proxy: false,
+    is_derived: false,
+    enabled: true,
+    notes: '',
+    ...extra
+  }
+}
+
+/**
+ * The registry after migration 0031, in the order /instruments returns it
+ * (kind, domain, code) — including the three kinds of row the endpoint cannot
+ * pair: an economic series (no daily closes), and two rates in percent.
+ */
+const REGISTRY_0031 = {
+  items: [
+    registryRow('SCI_CPI_URBAN', 'macro', 'Urban CPI (SCI)', {
+      kind: 'economic_series',
+      quote_currency: 'INDEX'
+    }),
+    INSTRUMENTS.items[1],
+    registryRow('IR_GOLD_FUND_FLOW', 'fund', 'Gold-fund flow ratio', {
+      kind: 'index',
+      quote_currency: 'PCT'
+    }),
+    registryRow('IR_GOLD_FUND_AYAR', 'fund', 'Ayar gold ETF'),
+    registryRow('US10Y', 'global', 'US 10-year Treasury yield', { quote_currency: 'PCT' }),
+    INSTRUMENTS.items[2],
+    registryRow('IR_COIN_BAHAR', 'gold', 'Bahar Azadi gold coin'),
+    registryRow('IR_COIN_EMAMI', 'gold', 'Emami gold coin'),
+    INSTRUMENTS.items[0],
+    registryRow('IR_SILVER_999', 'silver', 'Silver 999 (gram, Tehran)', {
+      quality_tier: 'commercial'
+    })
+  ],
+  count: 10
 }
 
 /** Three years of monthly points is enough shape for the chart, not the maths. */
@@ -124,16 +179,19 @@ function response(overrides: Partial<RelativeValueResponse> = {}): RelativeValue
   }
 }
 
-function mockApi(payload: RelativeValueResponse = response()): void {
+function mockApi(payload: RelativeValueResponse = response(), registry: unknown = INSTRUMENTS): void {
   apiMock.mockImplementation((path: string) => {
-    if (path.startsWith('/instruments')) return Promise.resolve(INSTRUMENTS)
+    if (path.startsWith('/instruments')) return Promise.resolve(registry)
     if (path.startsWith('/relative-value')) return Promise.resolve(payload)
     return Promise.resolve({})
   })
 }
 
-async function renderPage(payload: RelativeValueResponse = response()): Promise<void> {
-  mockApi(payload)
+async function renderPage(
+  payload: RelativeValueResponse = response(),
+  registry: unknown = INSTRUMENTS
+): Promise<void> {
+  mockApi(payload, registry)
   render(
     <SettingsProvider>
       <RelativeValue />
@@ -298,7 +356,7 @@ describe('RelativeValue — selectors', () => {
     )
   })
 
-  it('draws its options from the instrument registry', async () => {
+  it('draws its options from the instrument registry, grouped by asset class', async () => {
     await renderPage()
     const select = screen.getByLabelText('Asset A') as HTMLSelectElement
     expect(Array.from(select.options).map((o) => o.value)).toEqual([
@@ -306,6 +364,54 @@ describe('RelativeValue — selectors', () => {
       'USD_IRT',
       'XAUUSD'
     ])
+    const groups = Array.from(select.querySelectorAll('optgroup')).map((g) => g.label)
+    expect(groups).toEqual(['Gold & coins', 'Currency', 'Global markets'])
+  })
+
+  it('offers only what the endpoint can pair, gold first and silver beside it', async () => {
+    await renderPage(response(), REGISTRY_0031)
+    const select = screen.getByLabelText('Asset A') as HTMLSelectElement
+
+    // Groups in the fixed domain order; rows keep the registry's order inside
+    // each group.
+    const groups = Array.from(select.querySelectorAll('optgroup')).map((g) => ({
+      label: g.label,
+      codes: Array.from(g.querySelectorAll('option')).map((o) => o.value)
+    }))
+    expect(groups).toEqual([
+      { label: 'Gold & coins', codes: ['IR_COIN_BAHAR', 'IR_COIN_EMAMI', 'IR_GOLD_18K'] },
+      { label: 'Silver', codes: ['IR_SILVER_999'] },
+      { label: 'Commodity funds', codes: ['IR_GOLD_FUND_AYAR'] },
+      { label: 'Currency', codes: ['USD_IRT'] },
+      { label: 'Global markets', codes: ['XAUUSD'] }
+    ])
+    // An economic series has no daily closes to pair and a rate is a 400.
+    const offered = Array.from(select.options).map((o) => o.value)
+    for (const code of ['SCI_CPI_URBAN', 'US10Y', 'IR_GOLD_FUND_FLOW']) {
+      expect(offered).not.toContain(code)
+    }
+    // Both pickers carry the same vocabulary.
+    const selectB = screen.getByLabelText('Asset B') as HTMLSelectElement
+    expect(Array.from(selectB.options).map((o) => o.value)).toEqual(offered)
+  })
+
+  it('keeps a domain it has no name for under the raw domain, not out of the list', async () => {
+    const registry = {
+      items: [...REGISTRY_0031.items, registryRow('IR_SAFFRON_999', 'saffron', 'Saffron')],
+      count: 11
+    }
+    await renderPage(response(), registry)
+    const select = screen.getByLabelText('Asset A') as HTMLSelectElement
+    const last = Array.from(select.querySelectorAll('optgroup')).pop() as HTMLOptGroupElement
+    expect(last.label).toBe('saffron')
+    expect(within(last).getByText('Saffron')).toBeInTheDocument()
+  })
+
+  it('falls back to the shipped symbol list, ungrouped, when the registry is empty', async () => {
+    await renderPage(response(), { items: [], count: 0 })
+    const select = screen.getByLabelText('Asset A') as HTMLSelectElement
+    expect(select.querySelectorAll('optgroup')).toHaveLength(0)
+    expect(Array.from(select.options).map((o) => o.value)).toContain('IR_GOLD_18K')
   })
 
   it('asks for two different assets instead of comparing a pair with itself', async () => {
@@ -328,5 +434,54 @@ describe('RelativeValue — indexed growth', () => {
   it('explains an empty pair instead of drawing a flat line', async () => {
     await renderPage(response({ series: [] }))
     expect(screen.getByText('No overlapping history for this pair')).toBeInTheDocument()
+  })
+})
+
+describe('RelativeValue — quick pairs', () => {
+  function chips(): HTMLButtonElement[] {
+    const group = screen.queryByRole('group', { name: 'Quick pairs' })
+    return group ? (within(group).getAllByRole('button') as HTMLButtonElement[]) : []
+  }
+
+  it('offers the common pairs once the registry can serve both legs', async () => {
+    await renderPage(response(), REGISTRY_0031)
+    expect(chips().map((c) => c.textContent)).toEqual([
+      '18k gold vs silver 999',
+      'Emami vs Bahar Azadi coin',
+      'Emami coin vs 18k gold',
+      'Silver 999 vs US dollar',
+      'Ayar gold fund vs 18k gold'
+    ])
+  })
+
+  it('sets both legs at once and asks for exactly that pair', async () => {
+    await renderPage(response(), REGISTRY_0031)
+    const chip = screen.getByRole('button', { name: 'Emami vs Bahar Azadi coin' })
+    expect(chip.getAttribute('aria-pressed')).toBe('false')
+
+    fireEvent.click(chip)
+
+    await waitFor(() =>
+      expect(paths()).toContain('/relative-value?a=IR_COIN_EMAMI&b=IR_COIN_BAHAR&period=1y')
+    )
+    expect((screen.getByLabelText('Asset A') as HTMLSelectElement).value).toBe('IR_COIN_EMAMI')
+    expect((screen.getByLabelText('Asset B') as HTMLSelectElement).value).toBe('IR_COIN_BAHAR')
+    expect(chip.getAttribute('aria-pressed')).toBe('true')
+    expect(chip.title).toBe('A: Emami gold coin · B: Bahar Azadi gold coin')
+  })
+
+  it('shows no chip for a leg this deployment cannot serve', async () => {
+    // The original three-row registry: no silver, no Bahar coin, no fund.
+    await renderPage()
+    expect(chips()).toEqual([])
+    expect(screen.queryByText('Quick pairs')).toBeNull()
+  })
+
+  it('labels a pair by its two legs and nothing more', () => {
+    const labels = relativeValueSource.match(/label: '[^']+'/g) ?? []
+    expect(labels.length).toBe(5)
+    for (const label of labels) {
+      expect(label).toMatch(/^label: '[^']+ vs [^']+'$/)
+    }
   })
 })

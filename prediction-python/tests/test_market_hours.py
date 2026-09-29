@@ -132,6 +132,38 @@ def test_iranian_closure_start_skips_thursday_and_friday(mh_settings):
     ) == wednesday_close
 
 
+TGJU_DAILY_CODES = (
+    "IR_SILVER_999", "IR_COIN_BAHAR", "IR_COIN_HALF", "IR_COIN_QUARTER",
+    "IR_COIN_GERAMI", "IR_GOLD_24K", "IR_GOLD_MESGHAL",
+)
+
+
+@pytest.mark.parametrize("symbol", TGJU_DAILY_CODES)
+def test_the_tgju_daily_codes_keep_the_bazaar_calendar(symbol, mh_settings):
+    """Migration 0031's codes are bazaar closes, not a 24/7 or global quote."""
+    assert is_market_open(symbol, utc(2026, 7, 20, 8, 0), mh_settings)       # Mon 11:30
+    assert not is_market_open(symbol, utc(2026, 7, 16, 8, 30), mh_settings)  # Thursday
+    assert not is_market_open(symbol, utc(2026, 7, 17, 8, 30), mh_settings)  # Friday
+    assert is_market_open(symbol, utc(2026, 7, 18, 9, 0), mh_settings)       # Saturday
+    # A close from Wednesday's session is still the latest settled one on Friday.
+    assert closure_started_at(symbol, utc(2026, 7, 17, 8, 30), mh_settings) == utc(
+        2026, 7, 15, 16, 30)
+
+
+def test_commodity_funds_of_every_underlying_follow_the_tse_session(mh_settings):
+    """Silver and saffron funds get the session the gold funds always had."""
+    from app.core.market_hours import is_tse_fund
+
+    for symbol in ("IR_GOLD_FUND_AYAR", "IR_GOLD_FUND_FLOW", "IR_SILVER_FUND_SILVER",
+                   "IR_SILVER_FUND_SIMIN", "IR_SAFFRON_FUND_SAFRON"):
+        assert is_tse_fund(symbol), symbol
+        assert is_market_open(symbol, utc(2026, 7, 21, 9, 30), mh_settings)        # Tue 13:00
+        assert not is_market_open(symbol, utc(2026, 7, 21, 14, 30), mh_settings)   # Tue 18:00
+        assert not is_market_open(symbol, utc(2026, 7, 23, 9, 30), mh_settings)    # Thursday
+    for symbol in ("IR_SILVER_999", "IR_GOLD_18K", "IR_COIN_EMAMI", "FUND", "XAUUSD"):
+        assert not is_tse_fund(symbol), symbol
+
+
 def test_closure_start_none_while_open(mh_settings):
     assert closure_started_at("IR_GOLD_18K", utc(2026, 7, 20, 12, 0), mh_settings) is None
     assert closure_started_at("USD_IRT", utc(2026, 7, 20, 12, 0), mh_settings) is None

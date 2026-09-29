@@ -174,16 +174,18 @@ func TestNewsJobIsRegisteredSeparatelyWithItsOwnTimeout(t *testing.T) {
 	cfg.Crons.News = "*/15 * * * *"
 	cfg.Crons.TrendAlignment = "7 * * * *"
 	cfg.Crons.Economic = "40 3 * * *"
+	cfg.Crons.TGJUDaily = "25 0,12 * * *"
 
 	s, err := New(cfg, nil, nil, nil, obs.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// One entry per job: collect, predict, signals, evaluate, train, alerts,
-	// cleanup, news, trend-alignment, economic. A dropped job silently stops
-	// the work it does, so the count is asserted rather than assumed.
-	if got := len(s.cron.Entries()); got != 10 {
-		t.Fatalf("registered %d cron entries, want 10 (a job was dropped?)", got)
+	// cleanup, news, trend-alignment, economic, tgju-daily. A dropped job
+	// silently stops the work it does, so the count is asserted rather than
+	// assumed.
+	if got := len(s.cron.Entries()); got != 11 {
+		t.Fatalf("registered %d cron entries, want 11 (a job was dropped?)", got)
 	}
 	if internalclient.NewsTimeout <= 0 {
 		t.Fatal("news job must declare a positive timeout")
@@ -198,6 +200,58 @@ func TestNewsJobIsRegisteredSeparatelyWithItsOwnTimeout(t *testing.T) {
 	// must not delay or fail collect, predict or train.
 	if internalclient.EconomicIngestTimeout <= 0 {
 		t.Fatal("economic job must declare a positive timeout")
+	}
+	// The TGJU daily-close job reads whole history tables on a symbol's first
+	// pass; it must not inherit the 60s per-call default.
+	if internalclient.TGJUDailyTimeout < time.Minute {
+		t.Fatalf("TGJUDailyTimeout %v is too short for a first full-table pass",
+			internalclient.TGJUDailyTimeout)
+	}
+}
+
+// The TGJU daily job is registered from ITS OWN cron setting: a spec that only
+// it carries must reach robfig/cron, or the job would be scheduled by some
+// other job's setting or not at all.
+func TestTGJUDailyJobIsRegisteredFromItsOwnCron(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Crons.Collect = "*/10 * * * *"
+	cfg.Crons.Predict = "5 * * * *"
+	cfg.Crons.Signals = "10 * * * *"
+	cfg.Crons.Evaluate = "20 * * * *"
+	cfg.Crons.Train = "30 2 * * *"
+	cfg.Crons.Alerts = "*/5 * * * *"
+	cfg.Crons.Cleanup = "0 4 * * *"
+	cfg.Crons.News = "*/15 * * * *"
+	cfg.Crons.TrendAlignment = "7 * * * *"
+	cfg.Crons.Economic = "40 3 * * *"
+	cfg.Crons.TGJUDaily = "not a cron spec"
+
+	if _, err := New(cfg, nil, nil, nil, obs.NewMetrics(),
+		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("an unparseable SCHEDULE_TGJU_DAILY_CRON was accepted")
+	}
+
+	cfg.Crons.TGJUDaily = "25 0,12 * * *"
+	s, err := New(cfg, nil, nil, nil, obs.NewMetrics(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Exactly two runs a day, at 00:25 and 12:25 UTC: the first after TGJU has
+	// published the previous Tehran day's close, the second as its retry.
+	var twiceDaily int
+	from := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
+	for _, e := range s.cron.Entries() {
+		first := e.Schedule.Next(from)
+		second := e.Schedule.Next(first)
+		third := e.Schedule.Next(second)
+		if first.Equal(from.Add(25*time.Minute)) && second.Equal(from.Add(12*time.Hour+25*time.Minute)) &&
+			third.Equal(from.Add(24*time.Hour+25*time.Minute)) {
+			twiceDaily++
+		}
+	}
+	if twiceDaily != 1 {
+		t.Fatalf("found %d entries firing at 00:25 and 12:25 UTC, want exactly 1", twiceDaily)
 	}
 }
 
@@ -216,6 +270,7 @@ func TestNewRejectsAnUnparseableCronSpec(t *testing.T) {
 	cfg.Crons.News = "*/15 * * * *"
 	cfg.Crons.TrendAlignment = "7 * * * *"
 	cfg.Crons.Economic = "every night please"
+	cfg.Crons.TGJUDaily = "25 0,12 * * *"
 
 	if _, err := New(cfg, nil, nil, nil, obs.NewMetrics(),
 		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {

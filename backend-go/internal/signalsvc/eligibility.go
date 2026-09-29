@@ -54,9 +54,10 @@ var eligibleSignalSymbolSet = func() map[string]bool {
 // refusedSignalSymbols names the registered symbols this service will not score,
 // each with the reason it is refused, in report order.
 //
-// IT IS A LIST, NOT JUST A MAP, AND IT IS ON THE WIRE. These five are collected
-// (four of them daily) and a reader can see them on the charts, so a board that
-// simply omitted them left the page's account of its own coverage incomplete:
+// IT IS A LIST, NOT JUST A MAP, AND IT IS ON THE WIRE. These six are registered
+// (all but IR_GOLD_FUND_KAHRABA hold observations) and a reader can see them
+// elsewhere in the app, so a board that simply omitted them left the page's
+// account of its own coverage incomplete:
 // the reader could not tell "we score this and it is pending" from "we
 // deliberately do not score this" from "we never heard of it". They therefore
 // appear in /signals/overview's `unavailable` block carrying the SAME sentence
@@ -97,6 +98,19 @@ var refusedSignalSymbols = []UnavailableEntry{
 		Reason: "IR_GOLD_FUND_KAHRABA is registered from TSETMC_FUNDS but has " +
 			"never collected an observation, so there is no history any factor could be read from.",
 	},
+	// Local silver used to be a structural gap ("ir_silver": no local Iranian
+	// silver series). Migration 0031 made that false -- TGJU's silver_999 close
+	// is now stored every day -- so the entry moved here, under the category
+	// that is true of it: collected, deliberately not scored.
+	{
+		SymbolOrClass: "IR_SILVER_999",
+		Category:      unavailableNotScored,
+		Reason: "IR_SILVER_999 (Tehran silver 999, toman per gram) is collected only as TGJU's " +
+			"ONE daily settled close per day -- no live quote, and no second source to check it " +
+			"against -- and it is not modelled or scored; compare it under Relative value and " +
+			"Purchasing power. XAGUSD is not a substitute: it is the COMEX front-month contract " +
+			"in USD per troy ounce, not a Tehran toman silver price.",
+	},
 }
 
 // ineligibleSignalSymbols is the membership index behind the list above, used to
@@ -119,7 +133,9 @@ var ineligibleSignalSymbols = func() map[string]string {
 // that is a real gap rather than an oversight". Verified against production on
 // 2026-09-09: `prices` has no row for any of them. When collection starts for
 // one of these, its entry is deleted here in the same change that adds it to
-// eligibleSignalSymbols.
+// eligibleSignalSymbols -- or, when it is collected but not scored, to
+// refusedSignalSymbols, which is what happened to local silver in migration
+// 0031.
 var uncollectedAssetClasses = []UnavailableEntry{
 	{
 		SymbolOrClass: "cars",
@@ -166,12 +182,6 @@ var uncollectedAssetClasses = []UnavailableEntry{
 		Category:      unavailableNotCollected,
 		Reason: "Not collected. The only Tehran-listed instruments here are the gold ETFs; no " +
 			"share price for any TSE-listed company is ingested, so no equity can be read.",
-	},
-	{
-		SymbolOrClass: "ir_silver",
-		Category:      unavailableNotCollected,
-		Reason: "Not collected. There is no local Iranian silver series: XAGUSD is the COMEX " +
-			"front-month contract quoted in USD per troy ounce, not a Tehran toman silver price.",
 	},
 }
 

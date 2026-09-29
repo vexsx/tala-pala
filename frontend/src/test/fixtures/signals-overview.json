@@ -251,6 +251,11 @@
       "reason": "IR_GOLD_FUND_KAHRABA is registered from TSETMC_FUNDS but has never collected an observation, so there is no history any factor could be read from."
     },
     {
+      "symbol_or_class": "IR_SILVER_999",
+      "category": "not_scored",
+      "reason": "IR_SILVER_999 (Tehran silver 999, toman per gram) is collected only as TGJU's ONE daily settled close per day -- no live quote, and no second source to check it against -- and it is not modelled or scored; compare it under Relative value and Purchasing power. XAGUSD is not a substitute: it is the COMEX front-month contract in USD per troy ounce, not a Tehran toman silver price."
+    },
+    {
       "symbol_or_class": "cars",
       "category": "not_collected",
       "reason": "Not collected. No vehicle price series exists in this system -- no provider in the roster publishes one, and `prices` holds zero rows for any car."
@@ -264,11 +269,6 @@
       "symbol_or_class": "tehran_equities",
       "category": "not_collected",
       "reason": "Not collected. The only Tehran-listed instruments here are the gold ETFs; no share price for any TSE-listed company is ingested, so no equity can be read."
-    },
-    {
-      "symbol_or_class": "ir_silver",
-      "category": "not_collected",
-      "reason": "Not collected. There is no local Iranian silver series: XAGUSD is the COMEX front-month contract quoted in USD per troy ounce, not a Tehran toman silver price."
     }
   ]
 }

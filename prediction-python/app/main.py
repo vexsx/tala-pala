@@ -72,6 +72,14 @@ class TGJUBackfillRequest(BaseModel):
     ignore_sources: list[str] = Field(default_factory=list)
 
 
+class TGJUDailyRequest(BaseModel):
+    """TGJU daily settled closes (empty symbols = the seven migration 0031
+    series plus the Emami coin's empty-day gap-fill)."""
+
+    symbols: list[str] = Field(default_factory=list)
+    dry_run: bool = False
+
+
 class NewsCollectRequest(BaseModel):
     """Optional narrowing of a news collection pass (empty = every collector)."""
 
@@ -388,6 +396,52 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
             return JSONResponse(
                 status_code=400,
                 content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+
+    @app.post("/internal/tgju/daily")
+    def tgju_daily(req: Optional[TGJUDailyRequest] = None) -> dict:
+        """Store TGJU's daily settled closes for the migration 0031 instruments.
+
+        Scheduled by the Go API (SCHEDULE_TGJU_DAILY_CRON, twice a day). For
+        IR_SILVER_999, the four Azadi/gram coins, 24k gold and melted gold per
+        mesghal it keeps the series current: the whole TGJU table on a
+        symbol's first pass, the forty newest rows after that. For
+        IR_COIN_EMAMI it writes TGJU's close ONLY on UTC days that hold no
+        observation from any source. Nothing here is a live quote.
+
+        Every close is CLOSE / 10 in toman, source 'tgju_history', stamped
+        23:00 UTC on its own date, and only for days strictly before today's
+        Tehran date; each carries a raw_observations row with TGJU's rial
+        number. A close more than x1.6 from the median of its seven neighbours
+        either side is held as suspect in raw_observations and never stored.
+        A refetched close that differs from the stored one is counted as a
+        restatement and left alone — nothing is ever overwritten, so re-running
+        writes nothing new.
+
+        ``dry_run`` runs every check and writes nothing. A symbol this job does
+        not handle is a 400 naming it (USD_IRT and IR_GOLD_18K with their
+        reasons). A pass in which EVERY symbol failed answers 502 with the full
+        report: the Go scheduler reads job success from the status code.
+        """
+        from .jobs.tgju_daily import DailyIngestFailed, run_tgju_daily
+
+        try:
+            return run_tgju_daily(
+                engine,
+                settings,
+                symbols=(req.symbols or None) if req else None,
+                dry_run=bool(req.dry_run) if req else False,
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except DailyIngestFailed as exc:
+            return JSONResponse(
+                status_code=502,
+                content=exc.report
+                | {"error": {"code": "upstream_failed", "message": str(exc)}},
             )  # type: ignore[return-value]
 
     @app.post("/internal/news/ingest")

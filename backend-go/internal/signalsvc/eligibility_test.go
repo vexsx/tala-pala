@@ -88,7 +88,7 @@ func TestIneligibleReasons_NameTheSymbolAndTheCause(t *testing.T) {
 
 // The coverage-gap block is the page's honesty about its own boundary. An entry
 // with no reason would be worse than no entry at all.
-func TestUncollectedAssetClasses_NameCarsHousingEquitiesAndLocalSilver(t *testing.T) {
+func TestUncollectedAssetClasses_NameCarsHousingAndEquities(t *testing.T) {
 	got := map[string]string{}
 	for _, e := range uncollectedAssetClasses {
 		if e.Reason == "" {
@@ -117,13 +117,41 @@ func TestUncollectedAssetClasses_NameCarsHousingEquitiesAndLocalSilver(t *testin
 		}
 		got[e.SymbolOrClass] = e.Reason
 	}
-	for _, class := range []string{"cars", "housing", "tehran_equities", "ir_silver"} {
+	for _, class := range []string{"cars", "housing", "tehran_equities"} {
 		if _, ok := got[class]; !ok {
 			t.Errorf("coverage gaps do not mention %q", class)
 		}
 	}
-	if !strings.Contains(got["ir_silver"], "XAGUSD") {
-		t.Errorf("the silver gap must explain that XAGUSD is not a local series: %q", got["ir_silver"])
+	// Local silver is collected since migration 0031, so it must no longer be
+	// named as a class this platform does not collect.
+	if _, ok := got["ir_silver"]; ok {
+		t.Error("ir_silver is collected now; listing it as not collected is false")
+	}
+}
+
+// Local silver moved from "not collected" to "collected, deliberately not
+// scored", and its sentence has to say what is actually true of it: a daily
+// settled close from one source, not live, not modelled -- and still not to be
+// confused with XAGUSD.
+func TestLocalSilverIsRefusedAsCollectedButNotScored(t *testing.T) {
+	symbol, verdict, reason := ParseSignalSymbol("IR_SILVER_999")
+	if symbol != "IR_SILVER_999" || verdict != verdictIneligible {
+		t.Fatalf("IR_SILVER_999 = (%q, %v), want a stated refusal", symbol, verdict)
+	}
+	for _, fragment := range []string{"daily settled close", "not modelled or scored", "XAGUSD"} {
+		if !strings.Contains(reason, fragment) {
+			t.Errorf("silver's reason must mention %q: %q", fragment, reason)
+		}
+	}
+	for _, stale := range []string{"Not collected", "no local Iranian silver series"} {
+		if strings.Contains(reason, stale) {
+			t.Errorf("silver's reason still claims %q, which migration 0031 made false", stale)
+		}
+	}
+	for _, e := range refusedSignalSymbols {
+		if e.SymbolOrClass == "IR_SILVER_999" && e.Category != unavailableNotScored {
+			t.Errorf("IR_SILVER_999 category = %q, want %q", e.Category, unavailableNotScored)
+		}
 	}
 }
 
@@ -288,7 +316,7 @@ func TestSignalCoverageGaps_AccountForEveryRefusedSymbol(t *testing.T) {
 			t.Errorf("%s: the board says %q and the 400 says %q", code, entry.Reason, reason)
 		}
 	}
-	for _, class := range []string{"cars", "housing", "tehran_equities", "ir_silver"} {
+	for _, class := range []string{"cars", "housing", "tehran_equities", "IR_SILVER_999"} {
 		if _, ok := byCode[class]; !ok {
 			t.Errorf("the coverage block dropped %q", class)
 		}

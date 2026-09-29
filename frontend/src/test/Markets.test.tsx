@@ -1082,3 +1082,137 @@ describe('Markets — how long the fall lasted, not only how deep it was', () =>
     expect(c[RECOVERY].textContent).not.toMatch(/\d+\s*(d|yr)\b/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Asset classes: every row names its domain, and the table can show one.
+// ---------------------------------------------------------------------------
+
+/**
+ * Rows the registry gained in migration 0031, plus a Tehran share and a domain
+ * this build has no name for. Shaped exactly like IRT_ROWS[1]: only identity
+ * fields and a handful of metrics differ.
+ */
+function extraRow(code: string, domain: string, name_en: string, extra: Partial<Row> = {}): Row {
+  return {
+    ...IRT_ROWS[1],
+    code,
+    name_en,
+    name_fa: '',
+    domain,
+    quality_tier: 'official_mirror',
+    is_proxy: false,
+    notes: [],
+    ...extra
+  }
+}
+
+const WITH_0031 = (): MarketPerformanceResponse => {
+  const served = performance('IRT', '1y')
+  const items = [
+    ...served.items,
+    extraRow('IR_SILVER_999', 'silver', 'Silver 999 (gram, Tehran)', {
+      quality_tier: 'commercial',
+      real_return_pct: 40
+    }),
+    extraRow('IR_GOLD_24K', 'gold', '24k gold (gram)', {
+      derived_from: 'IR_GOLD_18K',
+      gold_return_pct: null
+    }),
+    extraRow('فولاد', 'ir_equity', '', { unit: 'share', real_return_pct: -5 }),
+    extraRow('IR_SAFFRON_BULK', 'saffron', 'Saffron (bulk)')
+  ]
+  return { ...served, items, count: items.length }
+}
+
+async function renderWith0031(): Promise<void> {
+  apiMock.mockImplementation((path: string) => {
+    if (path.startsWith('/markets/numeraires')) return Promise.resolve(NUMERAIRES)
+    if (path.startsWith('/markets/performance')) return Promise.resolve(WITH_0031())
+    return Promise.resolve({})
+  })
+  render(
+    <SettingsProvider>
+      <Markets />
+    </SettingsProvider>
+  )
+  await screen.findByTestId('mkt-row-IR_SILVER_999')
+}
+
+function domainChips(): string[] {
+  const group = screen.getByRole('group', { name: 'Asset class' })
+  return within(group)
+    .getAllByRole('button')
+    .map((b) => b.textContent ?? '')
+}
+
+describe('Markets — asset classes', () => {
+  it('tags every row with its domain, not only the Tehran shares', async () => {
+    await renderWith0031()
+    const tag = (code: string) => screen.getByTestId(`mkt-domain-${code}`)
+    expect(tag('IR_GOLD_18K').textContent).toBe('Gold & coins')
+    expect(tag('IR_SILVER_999').textContent).toBe('Silver')
+    expect(tag('IR_GOLD_FUND_KAHRABA').textContent).toBe('Commodity funds')
+    expect(tag('USD_IRT').textContent).toBe('Currency')
+    expect(tag('XAUUSD').textContent).toBe('Global markets')
+    expect(tag('فولاد').textContent).toBe('Tehran equities')
+    expect(tag('فولاد').title).toBe('Tehran Stock Exchange listing, corporate-action adjusted')
+    // A domain this build has no label for keeps its own name.
+    expect(tag('IR_SAFFRON_BULK').textContent).toBe('saffron')
+  })
+
+  it('offers one chip per class present, in the fixed order, with counts', async () => {
+    await renderWith0031()
+    expect(domainChips()).toEqual([
+      'All (8)',
+      'Gold & coins (2)',
+      'Silver (1)',
+      'Commodity funds (1)',
+      'Currency (1)',
+      'Global markets (1)',
+      'Tehran equities (1)',
+      'saffron (1)'
+    ])
+  })
+
+  it('narrows the table AND the rankings to the chosen class, and back', async () => {
+    await renderWith0031()
+    const group = screen.getByRole('group', { name: 'Asset class' })
+
+    fireEvent.click(within(group).getByRole('button', { name: 'Silver (1)' }))
+
+    expect(rowOrder()).toEqual(['IR_SILVER_999'])
+    // "Best of N" counts the rows on screen, not the whole table.
+    expect(screen.getAllByText(/1 of 1 assets have one over this window/).length).toBe(2)
+    expect(
+      within(group).getByRole('button', { name: 'Silver (1)' }).getAttribute('aria-pressed')
+    ).toBe('true')
+
+    fireEvent.click(within(group).getByRole('button', { name: 'All (8)' }))
+    expect(rowOrder()).toHaveLength(8)
+  })
+
+  it('says what a derived series is derived from', async () => {
+    await renderWith0031()
+    const meta = within(row('IR_GOLD_24K')).getByText(/derived from/)
+    expect(meta.textContent).toBe('derived from IR_GOLD_18K')
+    expect(within(row('IR_SILVER_999')).queryByText(/derived from/)).toBeNull()
+  })
+
+  it('shows no class filter when every row is of one class', async () => {
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/markets/numeraires')) return Promise.resolve(NUMERAIRES)
+      if (path.startsWith('/markets/performance')) {
+        const served = performance('IRT', '1y')
+        return Promise.resolve({ ...served, items: [IRT_ROWS[3]], count: 1 })
+      }
+      return Promise.resolve({})
+    })
+    render(
+      <SettingsProvider>
+        <Markets />
+      </SettingsProvider>
+    )
+    await screen.findByTestId('mkt-row-IR_GOLD_18K')
+    expect(screen.queryByRole('group', { name: 'Asset class' })).toBeNull()
+  })
+})

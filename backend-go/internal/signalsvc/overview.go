@@ -22,8 +22,8 @@ package signalsvc
 //
 //  2. It states the boundary of its own coverage, completely and without
 //     contradicting itself. `unavailable` names the asset classes this platform
-//     does not collect at all AND the five registered symbols it collects but
-//     declines to score, each under a `category` saying which kind of absence it
+//     does not collect at all AND the registered symbols it holds but declines
+//     to score, each under a `category` saying which kind of absence it
 //     is -- so seven items cannot be mistaken for the whole investable universe,
 //     and "not collected" is never claimed about a symbol that is.
 //

@@ -23,6 +23,7 @@ type CronConfig struct {
 	News           string
 	TrendAlignment string
 	Economic       string
+	TGJUDaily      string
 }
 
 // Config is the fully-parsed application configuration.
@@ -179,6 +180,14 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 			// (02:30) and cleanup (04:00) so the ingest does not contend with
 			// them for the prediction service.
 			Economic: get("SCHEDULE_ECONOMIC_CRON", "40 3 * * *"),
+			// Twice a day at :25 -- 00:25 and 12:25 UTC, 03:55 and 15:55
+			// Tehran. TGJU's table holds only SETTLED days (the day in
+			// progress is never in it), so a Tehran day's close can first be
+			// stored the next morning, which the 00:25 run does; the 12:25 run
+			// is the retry for a morning TGJU did not answer. More often would
+			// re-read the same forty rows. The minute is offset from collect
+			// (*/10), predict (:05), trend alignment (:07) and signals (:10).
+			TGJUDaily: get("SCHEDULE_TGJU_DAILY_CRON", "25 0,12 * * *"),
 		},
 	}
 

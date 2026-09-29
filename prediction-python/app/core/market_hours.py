@@ -6,9 +6,13 @@ Pure functions, no I/O.  Two calendars:
   24/7 every day of the week (Hamrah Gold for 18k, the USDT market for the
   free-market dollar). Update frequency drops on Iranian off-days, but the
   plain STALE_MINUTES age rule handles that honestly.
-* IR_COIN_EMAMI: open Sat-Wed between ``MARKET_TEHRAN_OPEN`` and
+* IR_COIN_EMAMI and the TGJU daily-close instruments of migration 0031
+  (silver 999, the Bahar Azadi, half, quarter and gram coins, 24k gold, melted
+  gold per mesghal): open Sat-Wed between ``MARKET_TEHRAN_OPEN`` and
   ``MARKET_TEHRAN_CLOSE`` (Asia/Tehran local time, a fixed UTC+03:30 since
   Iran abolished DST); closed all Thursday and Friday.
+* Tehran-exchange commodity funds — gold, silver and saffron alike — trade
+  Sat-Wed between ``MARKET_TSE_OPEN`` and ``MARKET_TSE_CLOSE``.
 * Global symbols (XAUUSD, XAGUSD, BRENT_OIL, DXY, US10Y): closed from
   Friday 21:00 UTC to Sunday 22:00 UTC, open otherwise.
 
@@ -34,14 +38,39 @@ FRIDAY = 4
 # Always-open symbols: primary sources quote 24/7 every day (Hamrah Gold
 # for 18k, the USDT market for USD). Only the plain age rule applies.
 ALWAYS_OPEN_SYMBOLS = frozenset({"IR_GOLD_18K", "USD_IRT"})
-IRANIAN_SYMBOLS = frozenset({"IR_COIN_EMAMI"})
+# The Tehran bazaar calendar.  The seven migration 0031 codes are one settled
+# close per day from TGJU, but the market they close is this one, so a close
+# from the last session stays acceptably fresh through the Thu+Fri closure.
+IRANIAN_SYMBOLS = frozenset({
+    "IR_COIN_EMAMI",
+    "IR_SILVER_999",
+    "IR_COIN_BAHAR",
+    "IR_COIN_HALF",
+    "IR_COIN_QUARTER",
+    "IR_COIN_GERAMI",
+    "IR_GOLD_24K",
+    "IR_GOLD_MESGHAL",
+})
 GLOBAL_SYMBOLS = frozenset({"XAUUSD", "XAGUSD", "BRENT_OIL", "DXY", "US10Y"})
-# Tehran-exchange gold funds trade Sat-Wed between MARKET_TSE_OPEN and
-# MARKET_TSE_CLOSE (default 12:00-18:00 Tehran); closed Thursday AND Friday.
-TSE_FUND_PREFIX = "IR_GOLD_FUND"
 
 GLOBAL_CLOSE_UTC = time(21, 0)  # Friday
 GLOBAL_OPEN_UTC = time(22, 0)   # Sunday
+
+
+def is_tse_fund(symbol: str) -> bool:
+    """Whether ``symbol`` is a Tehran-exchange commodity fund: ``IR_<X>_FUND*``.
+
+    Such funds trade Sat-Wed between MARKET_TSE_OPEN and MARKET_TSE_CLOSE
+    (default 12:00-18:00 Tehran) and are closed Thursday AND Friday.  Written
+    as a rule over the code rather than the old ``IR_GOLD_FUND`` prefix so the
+    silver and saffron funds (``IR_SILVER_FUND_*``, ``IR_SAFFRON_FUND_*``) get
+    the session the gold funds always had.  ``IR_GOLD_FUND_FLOW`` stays on it,
+    as it always was: the flow ratio is computed from the funds' own sessions
+    (migration 0024 files it under calendar_class 'tse_session').
+    ``IR_SILVER_999`` is not a fund.
+    """
+    parts = symbol.split("_")
+    return len(parts) >= 3 and parts[0] == "IR" and parts[2] == "FUND"
 
 
 def _parse_hhmm(raw: str, default: time) -> time:
@@ -64,7 +93,7 @@ def is_market_open(symbol: str, at_utc: datetime, settings: Settings) -> bool:
     at_utc = _ensure_utc(at_utc)
     if symbol in ALWAYS_OPEN_SYMBOLS:
         return True
-    if symbol.startswith(TSE_FUND_PREFIX):
+    if is_tse_fund(symbol):
         local = at_utc.astimezone(TEHRAN)
         if local.weekday() in (THURSDAY, FRIDAY):
             return False
@@ -102,7 +131,7 @@ def closure_started_at(
     at_utc = _ensure_utc(at_utc)
     if is_market_open(symbol, at_utc, settings):
         return None
-    if symbol.startswith(TSE_FUND_PREFIX):
+    if is_tse_fund(symbol):
         close_t = _parse_hhmm(getattr(settings, "market_tse_close", "18:00"), time(18, 0))
         local = at_utc.astimezone(TEHRAN)
         for days_back in range(9):

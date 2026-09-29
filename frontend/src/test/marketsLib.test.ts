@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DOMAIN_LABELS,
+  compareDomains,
   compareNullable,
   compareText,
+  domainLabel,
+  domainsPresent,
   finiteOrNull,
+  groupByDomain,
+  isRelativeValueLeg,
   noteText,
   numeraireLabel,
   offeredNumeraires,
@@ -240,5 +246,74 @@ describe('valueUnitFor decides where the ×10 rial conversion may fire', () => {
     expect(unit.kind).toBe('other')
     expect(unit.short).toBe('troy ounces of fine gold')
     expect(unit.rialToggleApplies).toBe(false)
+  })
+})
+
+describe('instrument domains', () => {
+  it('names every domain the registry and the equity table use', () => {
+    expect(domainLabel('gold')).toBe('Gold & coins')
+    expect(domainLabel('silver')).toBe('Silver')
+    expect(domainLabel('fund')).toBe('Commodity funds')
+    expect(domainLabel('fx')).toBe('Currency')
+    expect(domainLabel('global')).toBe('Global markets')
+    expect(domainLabel('ir_equity')).toBe('Tehran equities')
+    expect(Object.keys(DOMAIN_LABELS)).toEqual(['gold', 'silver', 'fund', 'fx', 'global', 'ir_equity'])
+  })
+
+  it('falls back to the raw domain rather than hiding an unnamed one', () => {
+    expect(domainLabel('saffron')).toBe('saffron')
+    expect(domainLabel(' housing ')).toBe('housing')
+    expect(domainLabel('')).toBe('Other')
+    expect(domainLabel(null)).toBe('Other')
+  })
+
+  it('orders known domains first, in their fixed order, then the rest alphabetically', () => {
+    const domains = ['macro', 'global', 'saffron', 'gold', 'fx', 'silver', 'fund', 'ir_equity']
+    expect(domains.slice().sort(compareDomains)).toEqual([
+      'gold',
+      'silver',
+      'fund',
+      'fx',
+      'global',
+      'ir_equity',
+      'macro',
+      'saffron'
+    ])
+  })
+
+  it('groups rows without reordering them inside a group, and drops none', () => {
+    const rows = [
+      { code: 'USD_IRT', domain: 'fx' },
+      { code: 'IR_GOLD_18K', domain: 'gold' },
+      { code: 'IR_SILVER_999', domain: 'silver' },
+      { code: 'IR_COIN_EMAMI', domain: 'gold' },
+      { code: 'NO_DOMAIN', domain: '' }
+    ]
+    const groups = groupByDomain(rows)
+    expect(groups.map((g) => [g.label, g.items.map((i) => i.code)])).toEqual([
+      ['Gold & coins', ['IR_GOLD_18K', 'IR_COIN_EMAMI']],
+      ['Silver', ['IR_SILVER_999']],
+      ['Currency', ['USD_IRT']],
+      ['Other', ['NO_DOMAIN']]
+    ])
+    expect(domainsPresent(rows)).toEqual(['gold', 'silver', 'fx', ''])
+  })
+})
+
+describe('isRelativeValueLeg mirrors what /relative-value can pair', () => {
+  it('offers prices, fx and index levels', () => {
+    expect(isRelativeValueLeg({ kind: 'market_price', quote_currency: 'IRT', enabled: true })).toBe(true)
+    expect(isRelativeValueLeg({ kind: 'fx', quote_currency: 'IRT', enabled: true })).toBe(true)
+    // Indexing both legs to 100 cancels units, so an index level is a fair leg.
+    expect(isRelativeValueLeg({ kind: 'index', quote_currency: 'INDEX', enabled: true })).toBe(true)
+  })
+
+  it('refuses a rate, an economic series and a disabled row', () => {
+    expect(isRelativeValueLeg({ kind: 'market_price', quote_currency: 'PCT', enabled: true })).toBe(false)
+    expect(isRelativeValueLeg({ kind: 'index', quote_currency: 'PCT', enabled: true })).toBe(false)
+    expect(isRelativeValueLeg({ kind: 'economic_series', quote_currency: 'INDEX', enabled: true })).toBe(
+      false
+    )
+    expect(isRelativeValueLeg({ kind: 'market_price', quote_currency: 'IRT', enabled: false })).toBe(false)
   })
 })

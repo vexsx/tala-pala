@@ -139,9 +139,9 @@ type performanceItem struct {
 	UnderwaterDays       *int     `json:"underwater_days"`
 	StillUnderwater      bool     `json:"still_underwater"`
 	CurrentDrawdownPct   *float64 `json:"current_drawdown_pct"`
-	Observations   int      `json:"observations"`
-	CoverageFrom   *string  `json:"coverage_from"`
-	CoverageTo     *string  `json:"coverage_to"`
+	Observations         int      `json:"observations"`
+	CoverageFrom         *string  `json:"coverage_from"`
+	CoverageTo           *string  `json:"coverage_to"`
 	// Notes is this item's caveats, INCLUDING the registry's own note about the
 	// instrument, which buildPerformanceItem copies in from
 	// instrumentRef.RegistryNote.
@@ -211,7 +211,7 @@ type performanceResponse struct {
 	// carries no SCI components, or when the window holds fewer than two of
 	// their reference months. See costofliving.go.
 	CostOfLiving *costOfLivingBlock `json:"cost_of_living"`
-	AsOf          time.Time           `json:"as_of"`
+	AsOf         time.Time          `json:"as_of"`
 
 	Items []performanceItem `json:"items"`
 	Count int               `json:"count"`
@@ -270,6 +270,21 @@ func identityNumeraire(inst instrumentRow, key string) bool {
 	return ok && spec.Series != "" && spec.Series == inst.Code
 }
 
+// derivedNumeraire reports whether expressing `inst` in `key` divides it by
+// the series its own source multiplies to publish it.
+//
+// The same defect as identityNumeraire one step removed: TGJU publishes 24k
+// gold as its 18k gram price x 4/3 and melted gold per mesghal as x 4.3318
+// (migration 0031, `derived_from`), so in grams of 18k gold both are a
+// CONSTANT at the source. What is left in them here is the difference between
+// TGJU's 18k and the live 18k feed that defines the gram -- a spread between
+// two sources, not a return -- and printed in a return column it would read as
+// one. Those cells are null with the reason instead.
+func derivedNumeraire(inst instrumentRow, key string) bool {
+	spec, ok := lookupNumeraire(key)
+	return ok && spec.Series != "" && inst.DerivedFrom == spec.Series
+}
+
 // numeraireLeg is a cross-numeraire return TOGETHER WITH the window it was
 // actually measured over. The two are inseparable: applyStep drops every asset
 // day before the conversion series' first quote, so this window is routinely
@@ -299,6 +314,10 @@ func numeraireReturn(windowed dailySeries, inst instrumentRow, key string,
 				"0.00%%, which would be indistinguishable from an asset that went nowhere.",
 			key, inst.Code, spec.Unit)}
 	}
+	if derivedNumeraire(inst, key) {
+		spec, _ := lookupNumeraire(key)
+		return numeraireLeg{Note: derivedNote(inst, key, spec)}
+	}
 	steps, ok := conversionSteps(inst.QuoteCurrency, key)
 	if !ok {
 		return numeraireLeg{Note: fmt.Sprintf(
@@ -324,6 +343,18 @@ func numeraireReturn(windowed dailySeries, inst instrumentRow, key string,
 	from, to := first.Day, last.Day
 	leg.Pct, leg.From, leg.To, leg.Observations = r, &from, &to, len(conv.Points)
 	return leg
+}
+
+// derivedNote is the reason a cell measured against the series an instrument
+// is derived from is withheld.
+func derivedNote(inst instrumentRow, key string, spec numeraireSpec) string {
+	return fmt.Sprintf(
+		"no %s return: %s is published by its source as a fixed multiple of %s, the "+
+			"series that DEFINES this unit, so measured in %s it is constant by "+
+			"construction. Any movement left in it here is the difference between the "+
+			"two sources' %s prices, not a return, so the cell is null rather than a "+
+			"number that would read as one.",
+		key, inst.Code, spec.Series, spec.Unit, spec.Series)
 }
 
 // crossWindowNote states in words that a cross-numeraire return was measured
@@ -455,14 +486,27 @@ func buildPerformanceItem(inst instrumentRow, in performanceInputs) performanceI
 	// Nothing derived from that constant is a measurement, so nothing derived
 	// from it is published as a number.
 	identity := identityNumeraire(inst, num.Key)
-	if identity {
+	// A series its source derives from the numeraire's own series is the same
+	// constant one step removed (see derivedNumeraire), and gets the same
+	// treatment: nothing computed from it is published as a measurement.
+	derived := !identity && derivedNumeraire(inst, num.Key)
+	switch {
+	case identity:
 		item.Notes = append(item.Notes, fmt.Sprintf(
 			"%s is the series that DEFINES this numeraire, so measured in %s it is 1.000 "+
 				"on every day by construction. nominal_return_pct, "+
 				"observation_volatility_pct, max_drawdown_pct and real_return_pct are "+
 				"null rather than 0.00%%: a definitional identity and a measured zero are "+
 				"different facts and must not render the same.", inst.Code, num.Unit))
-	} else {
+	case derived:
+		item.Notes = append(item.Notes, fmt.Sprintf(
+			"%s is published by its source as a fixed multiple of %s, the series that "+
+				"DEFINES this numeraire, so measured in %s it is constant by construction. "+
+				"nominal_return_pct, observation_volatility_pct, max_drawdown_pct and "+
+				"real_return_pct are null: what moves in it here is the difference between "+
+				"two sources' %s prices, not a return.",
+			inst.Code, inst.DerivedFrom, num.Unit, inst.DerivedFrom))
+	default:
 		item.NominalReturnPct = totalReturnPct(pts)
 		dd := computeDrawdown(pts)
 		item.MaxDrawdownPct = dd.MaxPct
@@ -532,6 +576,13 @@ func buildPerformanceItem(inst instrumentRow, in performanceInputs) performanceI
 			"No real return: deflating a series that is 1.000 by construction would "+
 				"report the negative of Iranian inflation and label it this instrument's "+
 				"real return.")
+	} else if derived {
+		// The same, for a constant one step removed: deflated, it would be
+		// minus inflation plus a spread between two sources.
+		item.Notes = append(item.Notes,
+			"No real return: deflating a series that is constant by construction would "+
+				"report the negative of Iranian inflation, plus a spread between two "+
+				"sources, and label it this instrument's real return.")
 	} else {
 		from := start.Day
 		if in.Query.Window.From != nil {
@@ -884,7 +935,7 @@ func (h *Handler) Performance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := performanceInputs{
-		Query:       q,
+		Query:          q,
 		Instruments:    instruments,
 		Series:         series,
 		EquityExcluded: equityExcluded,

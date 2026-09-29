@@ -5,8 +5,8 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"runtime/debug"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
@@ -136,6 +136,17 @@ func New(cfg *config.Config, rdb *redis.Client, client *internalclient.Client,
 		// series publish monthly at best, with lags of months.
 		{"economic", cfg.Crons.Economic, internalclient.EconomicIngestTimeout, func(ctx context.Context) error {
 			_, err := client.IngestEconomic(ctx)
+			return err
+		}},
+		// TGJU daily settled closes (migration 0031): silver, the Azadi and
+		// gram coins, 24k and melted gold, plus the Emami coin's empty days.
+		// Its own job rather than part of collect: these are one close per
+		// day read from TGJU's history table, not live ticks, and a slow or
+		// unreachable TGJU must not delay the ten-minute price collection.
+		// The Python side answers 502 only when EVERY symbol failed, so one
+		// failing table is not a failed job.
+		{"tgju-daily", cfg.Crons.TGJUDaily, internalclient.TGJUDailyTimeout, func(ctx context.Context) error {
+			_, err := client.TGJUDaily(ctx)
 			return err
 		}},
 	}

@@ -686,6 +686,7 @@ def test_a_pass_where_everything_is_withheld_is_still_a_success(engine, settings
 def test_an_ineligible_symbol_is_refused_with_its_stated_reason(engine, settings):
     for symbol, fragment in (("DXY", "macro context"),
                              ("IR_GOLD_FUND_FLOW", "meaningless"),
+                             ("IR_SILVER_999", "daily settled close"),
                              ("IR_HOUSING", "Eligible symbols")):
         with pytest.raises(ValueError) as excinfo:
             run_signals(engine, settings, [symbol])
@@ -707,10 +708,17 @@ def test_the_job_publishes_the_universe_it_could_not_score(engine, settings):
     assert contract["eligible"] == list(universe.SIGNAL_SYMBOLS)
     named = {entry["symbol_or_class"] for entry in contract["unavailable"]}
     # The gap the page has to be able to state.
-    assert {"cars", "housing", "tehran_equities", "IR_SILVER"} <= named
-    assert {"DXY", "US10Y", "IR_GOLD_FUND_FLOW"} <= named
+    assert {"cars", "housing", "tehran_equities"} <= named
+    assert {"DXY", "US10Y", "IR_GOLD_FUND_FLOW", "IR_SILVER_999"} <= named
     for entry in contract["unavailable"]:
         assert len(entry["reason"]) > 40, entry
+    # Local silver IS collected since migration 0031 — as a daily settled close,
+    # not scored. A reason saying no series exists would now be false.
+    silver = next(e["reason"] for e in contract["unavailable"]
+                  if e["symbol_or_class"] == "IR_SILVER_999")
+    assert "daily settled close" in silver and "not scored" in silver
+    assert "No local Iranian silver series" not in silver
+    assert "IR_SILVER" not in named
     # The two funds have no rows in this fixture, so they report why.
     withheld = {e["symbol"]: e["reason"] for e in contract["withheld"]}
     assert "IR_GOLD_FUND_AYAR" in withheld and withheld["IR_GOLD_FUND_AYAR"]

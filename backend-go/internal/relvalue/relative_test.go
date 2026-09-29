@@ -524,3 +524,78 @@ func TestLegRefusal_MatchesWhatThePerformanceTableExcludes(t *testing.T) {
 		}
 	}
 }
+
+// --- a pair whose ratio its source fixes ---------------------------------------------------
+
+func TestConstantByConstruction(t *testing.T) {
+	g18 := instrumentRow{Code: "IR_GOLD_18K"}
+	g24 := instrumentRow{Code: "IR_GOLD_24K", DerivedFrom: "IR_GOLD_18K"}
+	mesghal := instrumentRow{Code: "IR_GOLD_MESGHAL", DerivedFrom: "IR_GOLD_18K"}
+	coin := instrumentRow{Code: "IR_COIN_BAHAR"}
+	usd := instrumentRow{Code: "USD_IRT"}
+
+	for _, pair := range [][2]instrumentRow{{g24, g18}, {g18, g24}, {g24, mesghal}, {mesghal, g24}} {
+		if constantByConstruction(pair[0], pair[1]) == "" {
+			t.Errorf("%s vs %s is fixed by the source and must be recognised", pair[0].Code, pair[1].Code)
+		}
+	}
+	for _, pair := range [][2]instrumentRow{{g24, coin}, {g18, usd}, {coin, usd}, {mesghal, usd}} {
+		if why := constantByConstruction(pair[0], pair[1]); why != "" {
+			t.Errorf("%s vs %s can drift apart, got %q", pair[0].Code, pair[1].Code, why)
+		}
+	}
+	if got := constantByConstruction(g24, g18); !strings.Contains(got, "fixed multiple of IR_GOLD_18K") {
+		t.Errorf("the reason must name the base: %q", got)
+	}
+}
+
+func TestBuildRelativeResponse_AFixedRatioReportsNoGap(t *testing.T) {
+	from := day(2026, time.January, 1)
+	a := dailySeries{
+		pt(2026, time.January, 1, 400),
+		pt(2026, time.January, 2, 408),
+		pt(2026, time.January, 3, 404),
+	}
+	b := dailySeries{
+		pt(2026, time.January, 1, 300),
+		pt(2026, time.January, 2, 303), // the live 18k feed, 1% off TGJU's
+		pt(2026, time.January, 3, 303),
+	}
+	got := buildRelativeResponse(relativeInputs{
+		Query: relativeQuery{
+			A: "IR_GOLD_24K", B: "IR_GOLD_18K", Points: 500,
+			Window: window{From: &from, To: day(2026, time.January, 31)},
+		},
+		A: instrumentRow{Code: "IR_GOLD_24K", Domain: "gold", QuoteCurrency: quoteIRT, Unit: "gram",
+			QualityTier: "official_mirror", DerivedFrom: "IR_GOLD_18K"},
+		B:       instrumentRow{Code: "IR_GOLD_18K", Domain: "gold", QuoteCurrency: quoteIRT, Unit: "gram", QualityTier: "official_mirror"},
+		SeriesA: a,
+		SeriesB: b,
+		AsOf:    day(2026, time.January, 31),
+	})
+
+	if got.GapPct != nil || got.GapPercentile != nil || got.RatioDrawdownPct != nil {
+		t.Fatalf("gap %v / percentile %v / ratio drawdown %v: a fixed ratio has none of them",
+			got.GapPct, got.GapPercentile, got.RatioDrawdownPct)
+	}
+	if !strings.Contains(got.PercentileBasis.Note, "fixed by their source") {
+		t.Errorf("the percentile basis must say why: %q", got.PercentileBasis.Note)
+	}
+	found := false
+	for _, w := range got.Warnings {
+		if strings.Contains(w, "constant by construction") && strings.Contains(w, "IR_GOLD_18K") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the reason must be a warning: %v", got.Warnings)
+	}
+	// Each leg's own growth is still a measurement, and both are still drawn.
+	if got.AGrowthPct == nil || got.BGrowthPct == nil || len(got.Series) != 3 {
+		t.Errorf("legs must still be reported: a %v, b %v, %d points",
+			got.AGrowthPct, got.BGrowthPct, len(got.Series))
+	}
+	if got.A.DerivedFrom == nil || *got.A.DerivedFrom != "IR_GOLD_18K" {
+		t.Errorf("leg a must say what it is derived from: %+v", got.A)
+	}
+}

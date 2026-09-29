@@ -33,13 +33,13 @@ func TestIsOpen(t *testing.T) {
 
 		// Windowed Iranian symbol (the coin): Sat-Wed 12:00-20:00 Tehran;
 		// closed all Thursday and Friday.
-		{"tehran open boundary 12:00", "IR_COIN_EMAMI", utc(15, 8, 30), true},     // 12:00 Tehran inclusive
-		{"tehran before open 11:59", "IR_COIN_EMAMI", utc(15, 8, 29), false},      // 11:59 Tehran
-		{"tehran last minute 19:59", "IR_COIN_EMAMI", utc(15, 16, 29), true},      // 19:59 Tehran
-		{"tehran close boundary 20:00", "IR_COIN_EMAMI", utc(15, 16, 30), false},  // 20:00 Tehran exclusive
-		{"coin thursday closed", "IR_COIN_EMAMI", utc(16, 8, 30), false},          // Thursday noon Tehran
-		{"coin friday closed", "IR_COIN_EMAMI", utc(17, 8, 30), false},            // Friday noon Tehran
-		{"coin saturday midday open", "IR_COIN_EMAMI", utc(18, 8, 30), true},      // Saturday 12:00 Tehran
+		{"tehran open boundary 12:00", "IR_COIN_EMAMI", utc(15, 8, 30), true},    // 12:00 Tehran inclusive
+		{"tehran before open 11:59", "IR_COIN_EMAMI", utc(15, 8, 29), false},     // 11:59 Tehran
+		{"tehran last minute 19:59", "IR_COIN_EMAMI", utc(15, 16, 29), true},     // 19:59 Tehran
+		{"tehran close boundary 20:00", "IR_COIN_EMAMI", utc(15, 16, 30), false}, // 20:00 Tehran exclusive
+		{"coin thursday closed", "IR_COIN_EMAMI", utc(16, 8, 30), false},         // Thursday noon Tehran
+		{"coin friday closed", "IR_COIN_EMAMI", utc(17, 8, 30), false},           // Friday noon Tehran
+		{"coin saturday midday open", "IR_COIN_EMAMI", utc(18, 8, 30), true},     // Saturday 12:00 Tehran
 
 		// Global symbols: closed Fri 21:00 UTC -> Sun 22:00 UTC.
 		{"global wed midday open", "XAUUSD", utc(15, 12, 0), true},
@@ -203,6 +203,62 @@ func TestTSEFundCalendar(t *testing.T) {
 	want := time.Date(2026, 7, 22, 14, 30, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Fatalf("closure start = %s, want %s", got, want)
+	}
+}
+
+// Silver and saffron commodity funds get the session the gold funds always had,
+// and the gold-fund flow ratio keeps it. A symbol that merely starts with IR_
+// and is not a fund -- silver 999 above all -- does not.
+func TestTSEFundRuleCoversEveryUnderlying(t *testing.T) {
+	tue13 := time.Date(2026, 7, 21, 9, 30, 0, 0, time.UTC)  // Tue 13:00 Tehran
+	tue18 := time.Date(2026, 7, 21, 14, 30, 0, 0, time.UTC) // Tue 18:00 Tehran
+	for _, code := range []string{
+		"IR_GOLD_FUND_AYAR", "IR_GOLD_FUND_FLOW",
+		"IR_SILVER_FUND_SILVER", "IR_SILVER_FUND_SIMIN", "IR_SAFFRON_FUND_SAFRON",
+	} {
+		if !isTSEFund(code) {
+			t.Errorf("%s must follow the TSE fund session", code)
+		}
+		if !IsOpen(code, tue13, DefaultOpen, DefaultClose) {
+			t.Errorf("%s: Tuesday 13:00 Tehran must be open", code)
+		}
+		// 18:00 is the fund close, two hours before the bazaar's 20:00.
+		if IsOpen(code, tue18, DefaultOpen, DefaultClose) {
+			t.Errorf("%s: 18:00 Tehran must be closed for a fund", code)
+		}
+	}
+	for _, code := range []string{"IR_SILVER_999", "IR_GOLD_18K", "IR_COIN_EMAMI", "FUND", "XAUUSD"} {
+		if isTSEFund(code) {
+			t.Errorf("%s is not a fund", code)
+		}
+	}
+}
+
+// Migration 0031's TGJU daily-close codes follow the bazaar, like the Emami
+// coin: open on a Saturday session, closed Thursday and Friday, and Friday's
+// closure traces back to Wednesday's 20:00 close.
+func TestTGJUDailyCodesFollowTheBazaarCalendar(t *testing.T) {
+	for _, code := range []string{
+		"IR_SILVER_999", "IR_COIN_BAHAR", "IR_COIN_HALF", "IR_COIN_QUARTER",
+		"IR_COIN_GERAMI", "IR_GOLD_24K", "IR_GOLD_MESGHAL",
+	} {
+		if !IsOpen(code, utc(18, 9, 0), DefaultOpen, DefaultClose) { // Sat 12:30 Tehran
+			t.Errorf("%s: Saturday 12:30 Tehran must be open", code)
+		}
+		if IsOpen(code, utc(16, 8, 30), DefaultOpen, DefaultClose) { // Thursday
+			t.Errorf("%s: Thursday must be closed", code)
+		}
+		if IsOpen(code, utc(15, 16, 30), DefaultOpen, DefaultClose) { // Wed 20:00
+			t.Errorf("%s: the 20:00 Tehran close is exclusive", code)
+		}
+		if got := ClosureStartedAt(code, utc(17, 8, 30), DefaultOpen, DefaultClose); !got.Equal(utc(15, 16, 30)) {
+			t.Errorf("%s: Friday's closure began %s, want Wednesday 20:00 Tehran", code, got)
+		}
+		// A close from Wednesday's session is still acceptably fresh on Friday:
+		// there has been no session since to replace it.
+		if !AcceptablyFresh(code, utc(15, 16, 10), utc(17, 8, 30), 30, DefaultOpen, DefaultClose) {
+			t.Errorf("%s: Wednesday's close must not read as stale during the closure", code)
+		}
 	}
 }
 

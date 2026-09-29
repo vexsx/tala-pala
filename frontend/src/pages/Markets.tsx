@@ -15,6 +15,8 @@ import { useSettings } from '../lib/settings'
 import {
   compareNullable,
   compareText,
+  domainLabel,
+  domainsPresent,
   finiteOrNull,
   noteText,
   numeraireLabel,
@@ -419,6 +421,8 @@ export default function Markets() {
   const [sortKey, setSortKey] = useState<ColKey>('real')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  /** One asset class, or null for all of them. */
+  const [domainChoice, setDomainChoice] = useState<string | null>(null)
 
   // Which numéraires this deployment can actually back. Offering one it cannot
   // would fill every re-expressed column with dashes.
@@ -446,7 +450,25 @@ export default function Markets() {
   )
 
   const data = perf.data
-  const items = useMemo(() => data?.items ?? [], [data])
+  const allItems = useMemo(() => data?.items ?? [], [data])
+
+  /**
+   * The asset classes in this table, and the one being shown. DERIVED against
+   * the rows actually served: a class chosen on one window that the next
+   * window does not carry falls back to all of them instead of leaving an
+   * empty table behind a chip that no longer exists.
+   */
+  const domains = useMemo(() => domainsPresent(allItems), [allItems])
+  const domainFilter = domainChoice !== null && domains.includes(domainChoice) ? domainChoice : null
+  // The table AND the ranking cards read the same filtered rows, so "best of
+  // N assets" always counts the rows on screen.
+  const items = useMemo(
+    () =>
+      domainFilter === null
+        ? allItems
+        : allItems.filter((i) => (i.domain ?? '').trim() === domainFilter),
+    [allItems, domainFilter]
+  )
 
   /**
    * The numéraire the numbers ON SCREEN are in — the server's echo, not the
@@ -639,6 +661,36 @@ export default function Markets() {
         />
       ) : (
         <>
+          {domains.length > 1 && (
+            <div className="field mkt-domains">
+              <span className="field-label">Asset class</span>
+              <div className="chip-row" role="group" aria-label="Asset class">
+                <button
+                  type="button"
+                  className={`chip ${domainFilter === null ? 'active' : ''}`}
+                  aria-pressed={domainFilter === null}
+                  onClick={() => setDomainChoice(null)}
+                >
+                  All ({allItems.length})
+                </button>
+                {domains.map((d) => {
+                  const count = allItems.filter((i) => (i.domain ?? '').trim() === d).length
+                  return (
+                    <button
+                      key={d || 'other'}
+                      type="button"
+                      className={`chip ${domainFilter === d ? 'active' : ''}`}
+                      aria-pressed={domainFilter === d}
+                      onClick={() => setDomainChoice(d)}
+                    >
+                      {domainLabel(d)} ({count})
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="grid mkt-rankings">
             <div className="card mkt-rank">
               <div className="card-title">Best purchasing-power preservation</div>
@@ -809,18 +861,34 @@ export default function Markets() {
                           <div className="mkt-asset-meta">
                             <span className="mono muted small">{item.code}</span>
                             {/*
-                             * Tehran equities arrived in this table beside gold,
-                             * silver and the dollar, and a reader scanning
-                             * twenty-seven rows has no other way to tell that
-                             * شپنا is a listed company rather than a commodity.
-                             * Driven off the registry's own domain so a future
-                             * asset class marks itself without touching this.
+                             * Every row names its asset class. Tehran equities,
+                             * Iranian silver, the coins and the funds share this
+                             * table with the dollar, and a reader scanning forty
+                             * rows has no other way to tell that شپنا is a listed
+                             * company or that a coin is priced per coin. Driven
+                             * off the registry's own domain (DOMAIN_LABELS, the
+                             * raw domain for one this build has no name for), so
+                             * a future asset class marks itself.
                              */}
-                            {item.domain === 'ir_equity' && (
-                              <span className="tag tag-equity" title="Tehran Stock Exchange listing, corporate-action adjusted">
-                                Tehran equity
+                            <span
+                              className={`tag tag-domain${item.domain === 'ir_equity' ? ' tag-equity' : ''}`}
+                              data-testid={`mkt-domain-${item.code}`}
+                              title={
+                                item.domain === 'ir_equity'
+                                  ? 'Tehran Stock Exchange listing, corporate-action adjusted'
+                                  : `Asset class: ${domainLabel(item.domain)}`
+                              }
+                            >
+                              {domainLabel(item.domain)}
+                            </span>
+                            {item.derived_from ? (
+                              <span
+                                className="muted small"
+                                title="Its source publishes it as a fixed multiple of this instrument, so no return is measured against it."
+                              >
+                                derived from <span className="mono">{item.derived_from}</span>
                               </span>
-                            )}
+                            ) : null}
                             <span className="muted small">
                               quoted in {item.quote_currency}
                               {item.unit ? ` / ${item.unit}` : ''}

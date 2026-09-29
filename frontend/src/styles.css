@@ -3183,8 +3183,10 @@ input[type='checkbox'] {
 
 /* Tehran equities share the purchasing-power table with gold, silver and the
  * dollar. The badge is the only thing on a row that says شپنا is a listed
- * company rather than a commodity, so it is a tag rather than muted text. */
-.tag-equity {
+ * company rather than a commodity, so it is a tag rather than muted text —
+ * and every row now carries one for its asset class (.tag-domain). */
+.tag-equity,
+.tag-domain {
   background: var(--surface-2, rgba(127, 127, 127, 0.12));
   border: 1px solid var(--border);
   border-radius: 999px;

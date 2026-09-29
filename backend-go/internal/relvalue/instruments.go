@@ -9,9 +9,10 @@ package relvalue
 // Adding a new instrument must not require editing this file.
 
 import (
-	"strings"
 	"context"
+	"fmt"
 	"sort"
+	"strings"
 )
 
 // instrumentRow is the registry row as this package uses it. The provenance
@@ -32,6 +33,13 @@ type instrumentRow struct {
 	IsDerived     bool
 	Enabled       bool
 	Notes         string
+	// DerivedFrom is the instrument this one's SOURCE publishes as a fixed
+	// multiple of (migration 0031): TGJU's 24k gold is its 18k gram price x
+	// 4/3 and its melted gold per mesghal x 4.3318. Measured against that
+	// instrument it is constant by construction, so no return, ratio or gap
+	// against it is a market fact. Empty for everything observed in its own
+	// right.
+	DerivedFrom string
 	// Source names the table this instrument's prices come from. Empty means
 	// `prices`, which is every row the registry itself returns. Tehran
 	// equities are synthesised from equity_instruments (see equities.go) and
@@ -43,7 +51,8 @@ type instrumentRow struct {
 
 const instrumentSelect = `
 	SELECT code, kind, name_en, name_fa, domain, quote_currency, unit, decimals,
-	       quality_tier, is_proxy, is_derived, enabled, notes
+	       quality_tier, is_proxy, is_derived, enabled, notes,
+	       COALESCE(derived_from, '')
 	FROM instruments
 	ORDER BY domain, code`
 
@@ -60,7 +69,7 @@ func (h *Handler) loadInstruments(ctx context.Context) ([]instrumentRow, error) 
 		var it instrumentRow
 		if err := rows.Scan(&it.Code, &it.Kind, &it.NameEN, &it.NameFA, &it.Domain,
 			&it.QuoteCurrency, &it.Unit, &it.Decimals, &it.QualityTier,
-			&it.IsProxy, &it.IsDerived, &it.Enabled, &it.Notes); err != nil {
+			&it.IsProxy, &it.IsDerived, &it.Enabled, &it.Notes, &it.DerivedFrom); err != nil {
 			return nil, err
 		}
 		out = append(out, it)
@@ -108,6 +117,11 @@ type instrumentRef struct {
 	QualityTier   string `json:"quality_tier"`
 	IsProxy       bool   `json:"is_proxy"`
 	IsDerived     bool   `json:"is_derived"`
+	// DerivedFrom names the instrument this one's source multiplies (24k gold
+	// and melted gold per mesghal are TGJU's 18k price x a constant), null for
+	// an instrument observed in its own right. Published so a client can say
+	// why a cell measured against that instrument is withheld.
+	DerivedFrom *string `json:"derived_from"`
 	// Notes carries the registry's own caveat about this instrument -- that
 	// XAUUSD is a COMEX front-month future and not the London spot fix, that
 	// USD_IRT is the USDT/toman market. It travels with the numbers rather than
@@ -132,11 +146,34 @@ type instrumentRef struct {
 }
 
 func refOf(r instrumentRow) instrumentRef {
-	return instrumentRef{
+	ref := instrumentRef{
 		Code: r.Code, NameEN: r.NameEN, NameFA: r.NameFA, Domain: r.Domain,
 		QuoteCurrency: r.QuoteCurrency, Unit: r.Unit, QualityTier: r.QualityTier,
 		IsProxy: r.IsProxy, IsDerived: r.IsDerived, Notes: registryNotes(r.Notes),
 	}
+	if r.DerivedFrom != "" {
+		from := r.DerivedFrom
+		ref.DerivedFrom = &from
+	}
+	return ref
+}
+
+// constantByConstruction reports why two instruments cannot drift apart, or ""
+// when they can. They cannot when one is published as a fixed multiple of the
+// other, or both as fixed multiples of the same third instrument (24k gold
+// against melted gold per mesghal: 4/3 over 4.3318 of the same 18k price).
+// Pure function (unit tested).
+func constantByConstruction(a, b instrumentRow) string {
+	switch {
+	case a.DerivedFrom != "" && a.DerivedFrom == b.Code:
+		return fmt.Sprintf("%s is published by its source as a fixed multiple of %s", a.Code, b.Code)
+	case b.DerivedFrom != "" && b.DerivedFrom == a.Code:
+		return fmt.Sprintf("%s is published by its source as a fixed multiple of %s", b.Code, a.Code)
+	case a.DerivedFrom != "" && a.DerivedFrom == b.DerivedFrom:
+		return fmt.Sprintf("%s and %s are both published by their source as fixed multiples of %s",
+			a.Code, b.Code, a.DerivedFrom)
+	}
+	return ""
 }
 
 // registryNotes lifts the registry's single free-text caveat into the array

@@ -14,11 +14,15 @@ Endpoint layout (verified 2026-07-20):
   ``p`` is the last price as a comma-formatted **rial** string (except
   ``ons``, which is the global ounce in USD); ``ts`` is Tehran local time.
 
-* **Daily history** (used by the seed script, not the live collect loop):
+* **Daily history** (used by the seed script, the deep backfill and the
+  scheduled daily-close job, never by the live collect loop):
   ``https://api.tgju.org/v1/market/indicator/summary-table-data/<slug>``
   returns DataTables JSON ``{"recordsTotal": N, "data": [[open, low, high,
   close, "<span ...>change</span>", "<span ...>pct</span>", "2026/07/19",
-  "1405/04/28"], ...]}`` with paging params ``start``/``length``.
+  "1405/04/28"], ...]}`` with paging params ``start``/``length``, newest row
+  first.  Measured 2026-09-29: ``length=N`` returns the N newest rows, a large
+  ``length`` (or none) returns the whole table, ``length=-1`` silently DROPS
+  the oldest row, and the day in progress is never in the table.
 
 Iranian instruments are quoted in **RIALS** and normalized to IRT (÷10) per
 docs/CONTRACTS.md; ``ons`` is USD and passed through.  Requests must carry a
@@ -59,6 +63,45 @@ SLUG_MAP: dict[str, tuple[str, str, str]] = {
     "price_dollar_rl": ("USD_IRT", "IRR/usd", "IRR"),
     "ons": ("XAUUSD", "USD/ozt", "USD"),
 }
+
+# Slugs read ONLY from the daily history table, never from the live snapshot
+# (app/jobs/tgju_daily.py, migration 0031).  Same layout as SLUG_MAP, and kept
+# apart from it on purpose: parse_live walks SLUG_MAP, so a slug added there is
+# also collected live on every tick, which is exactly what these are not.  They
+# are one settled close per day, published by TGJU after the day is over.
+#
+# Units measured 2026-09-29 against the table's own numbers: silver_999 is
+# rials per GRAM (5,065,700 IRR / 244,800 IRT per USD = 64.36 USD/ozt against
+# COMEX 61.14, a +5.3% local premium); the coins are per COIN; geram24 is per
+# gram and mesghal per MESGHAL (4.6083 g at 705 per mille), both published by
+# TGJU as fixed multiples of geram18 (x4/3 and x4.3318).  Deliberately NOT
+# 'silver': that slug is the global ounce in USD and its history endpoint hangs.
+HISTORY_SLUG_MAP: dict[str, tuple[str, str, str]] = {
+    "silver_999": ("IR_SILVER_999", "IRR/gram", "IRR"),
+    "sekeb": ("IR_COIN_BAHAR", "IRR/coin", "IRR"),
+    "nim": ("IR_COIN_HALF", "IRR/coin", "IRR"),
+    "rob": ("IR_COIN_QUARTER", "IRR/coin", "IRR"),
+    "gerami": ("IR_COIN_GERAMI", "IRR/coin", "IRR"),
+    "geram24": ("IR_GOLD_24K", "IRR/gram", "IRR"),
+    "mesghal": ("IR_GOLD_MESGHAL", "IRR/mesghal", "IRR"),
+}
+
+
+def slug_meta(slug: str) -> tuple[str, str, str]:
+    """(canonical symbol, raw unit, raw currency) for a live or history-only slug.
+
+    Raises ``KeyError`` for a slug in neither map: an unknown slug has no unit,
+    and guessing one is how a mesghal price ends up stored per gram.
+    """
+    if slug in SLUG_MAP:
+        return SLUG_MAP[slug]
+    return HISTORY_SLUG_MAP[slug]
+
+
+def known_history_slug(slug: str) -> bool:
+    """Whether the daily history table may be read for ``slug``."""
+    return slug in SLUG_MAP or slug in HISTORY_SLUG_MAP
+
 
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
 _NUM_RE = re.compile(r"^-?[\d,]+(?:\.\d+)?$")
@@ -141,14 +184,31 @@ def parse_live(payload: Any) -> list[Observation]:
     return out
 
 
-def parse_history(payload: Any, slug: str) -> list[tuple[date, float]]:
-    """Parse summary-table-data rows to (gregorian_date, close) pairs.
+class HistoryRow(NamedTuple):
+    """One parsed daily bar, with the close exactly as TGJU printed it.
+
+    ``close`` is the parsed number in the provider's own unit (rials);
+    ``close_text`` is the cell itself ("5,065,700"), kept so an audit row can
+    show what was published rather than only what we made of it; ``jalali`` is
+    the table's own Jalali date for the same day, for a reader checking a bar
+    against TGJU's page.
+    """
+
+    day: date
+    close: float
+    close_text: str
+    jalali: str
+
+
+def parse_history_rows(payload: Any, slug: str) -> list[HistoryRow]:
+    """Parse summary-table-data rows, oldest first.
 
     Row layout: [open, low, high, close, change_html, change_pct_html,
-    'YYYY/MM/DD' (Gregorian), 'YYYY/MM/DD' (Jalali)].
+    'YYYY/MM/DD' (Gregorian), 'YYYY/MM/DD' (Jalali)].  Rows whose close is not
+    a positive number, or whose Gregorian date does not parse, are dropped.
     """
-    out: list[tuple[date, float]] = []
-    if slug not in SLUG_MAP or not isinstance(payload, dict):
+    out: list[HistoryRow] = []
+    if not known_history_slug(slug) or not isinstance(payload, dict):
         return out
     rows = payload.get("data")
     if not isinstance(rows, list):
@@ -164,9 +224,19 @@ def parse_history(payload: Any, slug: str) -> list[tuple[date, float]]:
             day = datetime.strptime(raw_date, "%Y/%m/%d").date()
         except ValueError:
             continue
-        out.append((day, close))
-    out.sort(key=lambda pair: pair[0])
+        jalali = strip_html(row[7]).translate(_PERSIAN_DIGITS) if len(row) > 7 else ""
+        out.append(HistoryRow(day, close, strip_html(row[3]), jalali))
+    out.sort(key=lambda r: r.day)
     return out
+
+
+def parse_history(payload: Any, slug: str) -> list[tuple[date, float]]:
+    """Parse summary-table-data rows to (gregorian_date, close) pairs.
+
+    Row layout: [open, low, high, close, change_html, change_pct_html,
+    'YYYY/MM/DD' (Gregorian), 'YYYY/MM/DD' (Jalali)].
+    """
+    return [(r.day, r.close) for r in parse_history_rows(payload, slug)]
 
 
 class HistoryPage(NamedTuple):
@@ -188,6 +258,10 @@ class HistoryPage(NamedTuple):
     rows: list[tuple[date, float]]
     returned_rows: int
     records_total: Optional[int]
+    # The same bars as ``rows`` with the published close text and Jalali date
+    # kept (see HistoryRow).  Defaulted so a page built from bare pairs — as
+    # tests of the deep backfill do — is still a valid page.
+    bars: tuple[HistoryRow, ...] = ()
 
 
 def _records_total(payload: Any) -> Optional[int]:
@@ -207,16 +281,17 @@ def _records_total(payload: Any) -> Optional[int]:
 
 def history_page(payload: Any, slug: str) -> HistoryPage:
     """Parse a history payload, keeping the counts that prove completeness."""
-    rows = parse_history(payload, slug)
+    bars = parse_history_rows(payload, slug)
+    rows = [(b.day, b.close) for b in bars]
     data = payload.get("data") if isinstance(payload, dict) else None
     returned = len(data) if isinstance(data, list) else len(rows)
     return HistoryPage(rows=rows, returned_rows=returned,
-                       records_total=_records_total(payload))
+                       records_total=_records_total(payload), bars=tuple(bars))
 
 
 def normalize_history_value(slug: str, raw_close: float) -> float:
     """Apply the same rial->toman normalization used for live quotes."""
-    _, _, raw_currency = SLUG_MAP[slug]
+    _, _, raw_currency = slug_meta(slug)
     return rial_to_toman(raw_close) if raw_currency == "IRR" else raw_close
 
 
@@ -251,7 +326,7 @@ class TGJUProvider(Provider):
 
         Raw provider units — normalize via :func:`normalize_history_value`.
         """
-        if slug not in SLUG_MAP:
+        if not known_history_slug(slug):
             raise ValueError(f"unknown tgju slug: {slug}")
         payload = self._get_json(
             HISTORY_URL.format(slug=slug),
