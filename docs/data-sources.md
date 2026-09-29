@@ -64,3 +64,25 @@ the spread stay in `raw_payload`. Fetched with the project's honest
 User-Agent at the normal collect cadence. Consistent with the repo ethics:
 public data only, no accounts, no private Hamrah Gold data (the portfolio
 deliberately never connects to Hamrah accounts).
+
+## TSETMC market data (off-server, since migration 0029)
+
+Fetched by `scripts/tsetmc_fetch.py` in the same run as the equity bars, from
+a network that can reach `cdn.tsetmc.com` (the production host cannot), and
+ingested through `POST /internal/bourse/ingest`. The endpoints were found in
+TSETMC's own public web client and each was measured before use:
+
+| Endpoint | What it gives | Measured |
+|---|---|---|
+| `Index/GetIndexB2History/{insCode}` | Daily close, low, high of one index (no open) | 71 indices, 256,419 rows. low/high are not a band (409 TEDPIX rows close outside them); 26 x10 steps across six indices; 11 zero rows in four dormant sectors |
+| `Index/GetIndexB1LastAll/All/{1,2}` | Every index's live value and % change | Used only to check the corrected history; after correction all 71 agree |
+| `MarketData/GetMarketValueByFlow/{1,2}/9999` | Total market value per session, rials, from 2019-12-24 | Restated between fetches (largest −1.73%); stored as the latest statement |
+| `ClientType/GetClientTypeHistory/{insCode}` | Individual/institutional buy/sell counts, volumes, values per session | Total equals the bar's traded value exactly on 3,835 of 3,848 فولاد sessions |
+| `MarketData/GetMarketOverview/{1,2}` | Live trade value, count, volume, market value, state (`S` open, `P` closed) | A snapshot at fetch time, labelled as such |
+| `MarketData/GetSectorsSummary` | Per sector: instruments down >2%, down <2%, up <2%, up >2% | TSETMC's own buckets; counts grow through the session (1,725 at 11:50, 2,974 after the close on 2026-09-29) |
+
+The CDN answers intermittently with HTTP 502 (the same URL: 200, 200, 200, 502,
+200 two seconds apart), which curl 8.7 reports as exit 56; the script retries
+with `--retry-all-errors`. Only settled sessions are stored: a row dated on the
+fetch's own Tehran day is kept only when the fetch ran after 15:00.
+

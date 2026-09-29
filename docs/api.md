@@ -25,6 +25,14 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `GET /stocks?enabled&sector` | Tehran equity roster: coverage per symbol plus its corporate-action adjustment verdict (`validated` / `refused` / `never_ingested`). Carries a top-level `data_age` block — see below |
 | `GET /stocks/screen?period&numeraire&sector&sort&order&limit` | Screener over the roster: return, volatility, max drawdown and liquidity per instrument from **adjusted** closes, in **rial**, with `excluded` naming every roster symbol that could not be screened and why. Carries a top-level `data_age` block — see below |
 | `GET /stocks/{symbol}/bars?adjusted&from&to&limit` | Daily OHLCV in **rial**. `adjusted` defaults to **true**; every response states the `adjustment_version` and how many actions were applied. An adjusted read of a symbol whose adjustment failed validation is `409`, never a quietly-raw series |
+| `GET /stocks/{symbol}/relative?period` | The share's adjusted return beside TEDPIX and its own sector index, rebased to 100; beta and correlation over single-session spans. `409` when the share's adjustment is not validated |
+| `GET /stocks/{symbol}/flows?period` | حقیقی/حقوقی money flow per session in **toman**, each session checked against two identities; windows of 5/20/60 sessions; cumulative net individual flow |
+| `GET /bourse/overview` | Headline indices' newest settled session, TSETMC's live overview at the last fetch (trade value/count, market value, state) and sector breadth. Carries `data_age` |
+| `GET /bourse/indices?since&kind&market` | All 71 TSETMC indices with their correction verdict and returns 1w..5y, `since` (the page sends 1 Farvardin), 1-year dispersion, 52-week range, drawdown, distance from the all-time high and SMA200 |
+| `GET /bourse/indices/{code}/history?period&from&to&unit` | One index; `unit` = `points` (default), `usd`, `gold` (both rebased to 100) or `real` (monthly, SCI CPI). `409` for an index whose verdict is refused |
+| `GET /bourse/breadth?basis&period` | Equal-weighted against cap-weighted (`basis=total`: TEDPIX vs شاخص کل هم‌وزن; `price`: the price indices), rebased, with their ratio |
+| `GET /bourse/market-value?period` | Total value of the bourse and the Farabourse per session, in toman and dollars. Size, not a return |
+| `GET /bourse/flows` | The roster's money flow over the newest 1/5/20/60 sessions, and the same summed across the roster (not the market) |
 | `GET /market/funds` | TSE gold-fund stats: prices, volume, retail buy/sell % (latest + today's averages), buyer power, retail net-flow history |
 | `GET /predictions?symbol` · `GET /predictions/{horizon}?symbol` | Latest per horizon · history incl. actuals (symbol: IR_GOLD_18K default, XAUUSD) |
 | `GET /predictions/custom?days=N` | On-demand forecast + buy/hold/sell lean for an arbitrary 1–90 day horizon (computed live, not persisted) |
@@ -193,6 +201,42 @@ The age is on the payload rather than left for the client to derive from
 `last_trade_date`, because a client that never does the subtraction is exactly
 the one that renders a fortnight-old price under today's heading — which is
 what this endpoint did for fifteen days in September 2026.
+
+## The Tehran market (`/bourse/*`, migration 0029)
+
+Everything here arrives in the same off-server fetch as the equity bars
+(`make refresh-equities`), so the `data_age` block has the same shape and the
+same 10-day bound; it follows TEDPIX's newest session. Five rules, each from a
+measurement on production data:
+
+* **A power of ten is corrected, nothing else is.** Six indices carry values
+  TSETMC stores off by exactly a factor of ten (26 steps; the second-market
+  index has been stored /10 since 2026-08-16). The raw close is kept and a
+  per-row `scale_exp` corrects it, anchored on the majority scale and checked
+  against the exchange's live figure on every ingest. Every index carries its
+  `check` (`scale_breaks`, `rows_rescaled`, `live_ratio`, `largest_move_pct`),
+  and one whose check is `refused` serves no corrected value.
+* **A repeated value is a closed market.** TEDPIX stood at 3,713,955.9 for 50
+  sessions from 2026-02-25. Those rows are served (`unchanged: true`) and drawn
+  flat, and left out of every dispersion figure — counting them would report
+  the year's session dispersion as 1.314% instead of the 1.455% it traded at.
+* **Windows end at the newest stored session**, and a return is measured from
+  the value in force when the window opened, so "since 1 Farvardin" is from the
+  last close of the previous Jalali year.
+* **Beta uses single-session spans only.** A share's return from one traded
+  session to the next is paired with the index over the same dates, and a span
+  across a halt is excluded and counted (`multi_session_spans`): one 5.5-month
+  span once put فولاد's correlation with TEDPIX at −0.09; without it, 0.77.
+* **Market value is the publisher's latest statement.** TSETMC restates this
+  aggregate — two fetches an hour apart differed on 18 bourse sessions — so it
+  is the one series here stored as last-write-wins, with every restatement
+  counted in the ingest report. Bars, index closes and money flow came back
+  identical and are never overwritten.
+
+Money flow: a session counts only when buying equals selling and the total
+equals the traded value on that session's daily bar; one failing either is
+returned with `consistent: false` and its `excluded_reason`, and left out of
+every sum. None of these figures is a forecast.
 
 ## Example
 

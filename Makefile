@@ -90,7 +90,10 @@ export-portfolio: ## Export portfolio CSV: make export-portfolio TOKEN=<jwt> [OU
 #   make refresh-equities ARGS="--ins-code 46348559193224090"
 #   make refresh-cpi ARGS="--host ubuntu@1.2.3.4"
 
-refresh-equities: ## Refresh Tehran equity bars from TSETMC — run OFF the server (ARGS=...)
+# refresh-equities also fetches the market itself since migration 0029 — all 71
+# indices, total market value, the roster's money flow and the live snapshot —
+# in the same run; ARGS="--bars-only" restores the bars-only behaviour.
+refresh-equities: ## Refresh Tehran equities AND the market's indices from TSETMC — run OFF the server (ARGS=...)
 	python3 scripts/tsetmc_fetch.py $(ARGS)
 
 refresh-cpi: ## Refresh SCI CPI from amar.org.ir — run OFF the server (ARGS=...)
