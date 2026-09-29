@@ -357,6 +357,18 @@ export function useCandles(
       )
         .then((res) => {
           if (ctrl.signal.aborted) return
+          // An older page served under a different revision belongs to a
+          // restated series: stitched under the pages already held, a share
+          // re-adjusted in between would show a step at the seam that no
+          // session ever made. Start again from the newest page instead —
+          // the rule the live tail applies.
+          const revision = res.revision ?? null
+          if (revision !== null && revisionRef.current !== null && revision !== revisionRef.current) {
+            olderInFlightRef.current = false
+            setLoadingOlder(false)
+            reload()
+            return
+          }
           const older = res.candles ?? []
           setCandles((current) => mergeOlder(older, current))
           hasMoreRef.current = res.has_more === true && older.length > 0
@@ -378,7 +390,7 @@ export function useCandles(
           setError(errorMessage(err))
         })
     },
-    [symbol, interval]
+    [symbol, interval, reload]
   )
 
   const loadOlder = useCallback(() => {

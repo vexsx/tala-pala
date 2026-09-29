@@ -239,6 +239,10 @@ func buildChartBars(meta stockRow, rows []barRow, limit int, now time.Time) Char
 		Revision: chartRevision(meta),
 		Items:    make([]ChartBar, 0, min(len(rows), limit)),
 	}
+	// The block is measured over this ONE share, so the roster's sentence —
+	// "the newest stored session across the roster" — would misstate what it
+	// measured.
+	out.DataAge.Note = chartDataAgeNote
 	limited := rows
 	if len(limited) > limit {
 		limited = limited[:limit]
@@ -254,6 +258,13 @@ func buildChartBars(meta stockRow, rows []barRow, limit int, now time.Time) Char
 	out.Notes = chartNotes(out.Meta.Adjustment, out.DefectiveBars)
 	return out
 }
+
+// chartDataAgeNote is dataAgeNote for a block measured over one share.
+const chartDataAgeNote = "Tehran equity bars do not refresh themselves: TSETMC is unreachable " +
+	"from the production host, so bars arrive only when an operator runs the fetch script " +
+	"from a network that can reach it. This block is the age of THIS share's newest stored " +
+	"session (a halted session is stored too, so it moves with every fetch), measured " +
+	"against today rather than against the page on screen."
 
 // chartBarOf is one row, adjusted. The factor multiplies every PRICE and
 // nothing that counts what happened: volume, trades and turnover stay as the

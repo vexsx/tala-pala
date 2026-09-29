@@ -20,6 +20,7 @@ package bourse
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -37,8 +38,40 @@ func (h *Handler) ChartSeries(ctx context.Context, code string) (IndexInfo, []In
 		return IndexInfo{InsCode: code}, nil, DataAge{}, "", err
 	}
 	info, series, err := chartSeriesFrom(store, code)
-	return info, series, buildDataAge(store.newestSession(), time.Now()), store.key, err
+	return info, series, chartDataAge(store, series, time.Now()), store.key, err
 }
+
+// chartDataAge is the age of the series ON the chart. Pure (unit tested).
+//
+// The Tehran market page ages the whole store by TEDPIX's newest session,
+// which is right for a page about the market. A chart draws ONE index, and its
+// status bar says "last session <date>" beside that index's line — so the date
+// must be where the line ends. An ingest isolates failures per index and per
+// day, so one index can lag the market; aged by TEDPIX, its chart would call a
+// line that stops weeks early current.
+func chartDataAge(store *indexStore, series []IndexPoint, now time.Time) DataAge {
+	market := store.newestSession()
+	if len(series) == 0 {
+		return buildDataAge(market, now)
+	}
+	last := series[len(series)-1].Day
+	age := buildDataAge(&last, now)
+	age.Note = chartDataAgeNote
+	if market != nil && last.Before(dayFloor(*market)) {
+		age.Stale = true
+		age.Warning = fmt.Sprintf(
+			"This index's newest stored session is %s, but the market's is %s: the last "+
+				"fetch did not bring this index up to date, so its line stops early. The "+
+				"missing sessions are absent, not flat.",
+			dayString(last), dayString(*market))
+	}
+	return age
+}
+
+const chartDataAgeNote = "Tehran market data does not refresh itself: TSETMC is unreachable " +
+	"from the production host, so an index arrives only when an operator runs the fetch " +
+	"from a network that can reach it. This is the age of THIS index's newest stored " +
+	"session, measured against today."
 
 // chartSeriesFrom is the lookup and the gate. Pure (unit tested).
 func chartSeriesFrom(store *indexStore, code string) (IndexInfo, []IndexPoint, error) {

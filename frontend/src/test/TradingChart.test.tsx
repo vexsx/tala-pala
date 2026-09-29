@@ -241,6 +241,22 @@ describe('TradingChart lifecycle', () => {
     expect(fmt(midnightUtc, 3)).toMatch(/^\d{1,2}:\d{2}$/)
   })
 
+  it('labels the crosshair on a daily chart with the DATE alone', () => {
+    // A daily bar is a trade date (a Tehran session) or a whole UTC day; a
+    // clock time on it would be Tehran's rendering of UTC midnight, "03:30",
+    // which no one traded at — the header already drops it, and so must the
+    // crosshair label under the axis.
+    const lastTimeFormatter = () =>
+      lw.chartOptions.filter((o) => o?.localization?.timeFormatter).pop()!.localization
+        .timeFormatter as (t: number) => string
+    const midnightUtc = Date.UTC(2026, 8, 28) / 1000
+    const { rerender } = render(<TradingChart {...chartProps({ candles: INDEX_BARS, symbol: TEDPIX })} seriesMode="line" />)
+    expect(lastTimeFormatter()(midnightUtc)).not.toMatch(/\d{1,2}:\d{2}/)
+    // An intraday bucket keeps its clock time.
+    rerender(<TradingChart {...chartProps()} interval="15m" />)
+    expect(lastTimeFormatter()(midnightUtc)).toMatch(/03:30/)
+  })
+
   it('patches the tail with update() instead of replacing the series', () => {
     const props = chartProps()
     const { rerender } = render(<TradingChart {...props} />)
@@ -563,6 +579,19 @@ describe('ChartStatusBar', () => {
         coverage={null}
       />
     )
+    expect(screen.getByText('STALE')).toBeInTheDocument()
+  })
+
+  it('lets the server’s market-hours verdict decide over the clock heuristic', () => {
+    // A TSE-session fund on a Saturday morning: its newest price is from
+    // Wednesday's session, which the server calls current for a shut market.
+    const wednesday = new Date(Date.now() - 2.6 * DAY * 1000).toISOString()
+    const { rerender } = render(
+      <ChartStatusBar asOf={wednesday} interval="1h" candles={CANDLES} coverage={null} stale={false} />
+    )
+    expect(screen.queryByText('STALE')).not.toBeInTheDocument()
+    expect(screen.getByText('2d ago')).toBeInTheDocument()
+    rerender(<ChartStatusBar asOf={wednesday} interval="1h" candles={CANDLES} coverage={null} stale />)
     expect(screen.getByText('STALE')).toBeInTheDocument()
   })
 
@@ -1054,6 +1083,85 @@ describe('TradePanel on the Tehran market', () => {
     await waitFor(() => expect(screen.getByText('▲ bullish')).toBeInTheDocument())
   })
 
+  it('does not keep saying "Loading…" beside an index the API refused', async () => {
+    const refusal = 'no validated history is served for شاخص کل (هم وزن) (67130298613737946)'
+    window.localStorage.setItem('igp_chart_symbol', TSE_INDEX.EQUAL_WEIGHTED)
+    apiMock.mockImplementation((path: string) =>
+      path.startsWith('/market/candles')
+        ? Promise.reject(new Error(refusal))
+        : new Promise(() => undefined)
+    )
+    renderPanel()
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(refusal))
+    const card = screen.getByTestId('trade-instrument')
+    // The request has answered — with a refusal — so the card must not claim
+    // an answer is still on its way.
+    expect(within(card).queryByText('Loading…')).not.toBeInTheDocument()
+    expect(within(card).getByText(/No series is served for this symbol/)).toBeInTheDocument()
+    // Nor does the status bar promise an age that is coming.
+    expect(within(document.querySelector('.tchart-status') as HTMLElement).queryByText(/not known yet/)).toBeNull()
+  })
+
+  it('ages a registry series by its newest observation, not by when the response was built', async () => {
+    // A daily settled close (TGJU) whose newest row is three days old. The
+    // candle response's as_of is "now" — the moment it was built — and read
+    // as freshness it said "0s ago" beside a three-day-old close.
+    const observed = new Date(Date.now() - 3 * DAY * 1000 - 60_000).toISOString()
+    window.localStorage.setItem('igp_chart_symbol', 'IR_SILVER_999')
+    apiMock.mockImplementation((path: string) => {
+      if (path.startsWith('/market/candles')) {
+        return Promise.resolve({
+          symbol: 'IR_SILVER_999',
+          interval: '1d',
+          interval_seconds: DAY,
+          timezone: 'UTC',
+          candles: [bar(0, 150_000), bar(1, 151_000)],
+          coverage: coverage({ intraday_from: null }),
+          has_more: false,
+          next_before: null,
+          support: null,
+          resistance: null,
+          as_of: new Date().toISOString()
+        })
+      }
+      if (path === '/prices/current') {
+        const prices: CurrentPricesResponse = {
+          as_of: new Date().toISOString(),
+          prices: {
+            IR_SILVER_999: {
+              value: 151_000,
+              currency: 'IRT',
+              unit: 'gram',
+              source: 'tgju_history',
+              observed_at: observed,
+              stale: false,
+              change_24h_pct: null
+            }
+          }
+        }
+        return Promise.resolve(prices)
+      }
+      return new Promise(() => undefined)
+    })
+    renderPanel()
+    await waitFor(() => expect(lw.createChartCalls).toBe(1))
+    const status = document.querySelector('.tchart-status') as HTMLElement
+    await waitFor(() => expect(within(status).getByText('3d ago')).toBeInTheDocument())
+    expect(within(status).queryByText(/^\d+s ago$/)).toBeNull()
+    expect(within(status).getByText('tgju_history')).toBeInTheDocument()
+  })
+
+  it('claims no age for a registry series before its newest observation is known', async () => {
+    window.localStorage.setItem('igp_chart_symbol', 'IR_SILVER_999')
+    // Candles answer; /prices/current never does.
+    serveCandles({ symbol: 'IR_SILVER_999', candles: [bar(0, 150_000)], coverage: coverage({ intraday_from: null }) })
+    renderPanel()
+    await waitFor(() => expect(lw.createChartCalls).toBe(1))
+    const status = document.querySelector('.tchart-status') as HTMLElement
+    expect(within(status).getByText('age not known yet')).toBeInTheDocument()
+    expect(status.querySelector('.dot-ok')).toBeNull()
+  })
+
   it('says plainly when a registered symbol has nothing stored yet', async () => {
     window.localStorage.setItem('igp_chart_symbol', 'IR_SILVER_999')
     serveMarket({ IR_SILVER_999: { candles: [], coverage: coverage({ intraday_from: null }) } })
@@ -1120,5 +1228,44 @@ describe('useCandles on a Tehran series', () => {
     revision = 'r2'
     await waitFor(() => expect(result.current.revision).toBe('r2'))
     expect(firstPages().length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('never stitches an older page from a restated series under the pages it holds', async () => {
+    // The first page says older sessions exist; by the time the reader pans
+    // back, an ingest has re-adjusted the share and the older page comes back
+    // under a new revision. Merged, the seam would show a step no session made.
+    const OLDER = [indexBar(-2, 1_000), indexBar(-1, 1_001)]
+    let revision = 'r1'
+    apiMock.mockImplementation((path: string) => {
+      if (!path.startsWith('/market/candles')) return new Promise(() => undefined)
+      const older = path.includes('before=')
+      return Promise.resolve({
+        ...indexResponse(),
+        candles: older ? OLDER : INDEX_BARS,
+        interval: '1d',
+        interval_seconds: DAY,
+        timezone: 'UTC',
+        has_more: !older,
+        next_before: older ? null : new Date(INDEX_BARS[0].t * 1000).toISOString(),
+        support: null,
+        resistance: null,
+        as_of: new Date().toISOString(),
+        revision: older ? 'r2' : revision
+      })
+    })
+    const newestPages = () => firstPages().filter((p) => !p.includes('before='))
+    const { result } = renderHook(() => useCandles(TEDPIX, '1d', { pollMs: 0 }))
+    await waitFor(() => expect(result.current.revision).toBe('r1'))
+    expect(newestPages()).toHaveLength(1)
+
+    revision = 'r2'
+    result.current.loadOlder()
+    await waitFor(() => expect(apiMock.mock.calls.some((c) => String(c[0]).includes('before='))).toBe(true))
+    // The whole series is fetched again under the new revision…
+    await waitFor(() => expect(result.current.revision).toBe('r2'))
+    expect(newestPages()).toHaveLength(2)
+    // …and nothing from the other revision was merged into it.
+    expect(result.current.candles.map((c) => c.t)).toEqual(INDEX_BARS.map((c) => c.t))
+    expect(result.current.loadingOlder).toBe(false)
   })
 })

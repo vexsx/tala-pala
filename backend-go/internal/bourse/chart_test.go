@@ -2,7 +2,9 @@ package bourse
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 // The Trade chart's read of one index: the store's own lookup and gate.
@@ -81,5 +83,41 @@ func TestAChartSeriesIsRefusedForTheSameReasonsAsThePage(t *testing.T) {
 	}
 	if _, _, err := chartSeriesFrom(st, "5798407779416661"); !errors.Is(err, ErrIndexRefused) {
 		t.Fatalf("validated with no stored session: %v", err)
+	}
+}
+
+func TestAChartIsAgedByTheIndexItDraws(t *testing.T) {
+	day := func(s string) time.Time {
+		d, err := time.Parse(dateLayout, s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	const sector = "11111111111111111"
+	st := &indexStore{series: map[string][]IndexPoint{
+		TEDPIX: {{Day: day("2026-09-27"), Value: 1}, {Day: day("2026-09-28"), Value: 2}},
+		// An index the last fetch did not bring up to date: its line stops on
+		// the 10th while the market's runs to the 28th.
+		sector: {{Day: day("2026-09-09"), Value: 1}, {Day: day("2026-09-10"), Value: 2}},
+	}}
+	now := day("2026-09-29").Add(9 * time.Hour)
+
+	age := chartDataAge(st, st.series[sector], now)
+	if age.NewestTradeDate == nil || *age.NewestTradeDate != "2026-09-10" {
+		t.Fatalf("the status bar says where THIS line ends: %+v", age)
+	}
+	if !age.Stale || !strings.Contains(age.Warning, "2026-09-28") ||
+		!strings.Contains(age.Warning, "did not bring this index up to date") {
+		t.Fatalf("a lagging index is stale, and says it lags the market: %+v", age)
+	}
+	if !strings.Contains(age.Note, "THIS index") {
+		t.Fatalf("note = %q", age.Note)
+	}
+
+	current := chartDataAge(st, st.series[TEDPIX], now)
+	if current.Stale || current.Warning != "" || *current.NewestTradeDate != "2026-09-28" ||
+		*current.AgeDays != 1 {
+		t.Fatalf("an index as current as the market is not stale: %+v", current)
 	}
 }

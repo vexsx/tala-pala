@@ -125,6 +125,12 @@ func TestChartBarsStateTheirAgeRevisionAndCaveats(t *testing.T) {
 		!out.DataAge.Stale {
 		t.Fatalf("fifteen days old is stale: %+v", out.DataAge)
 	}
+	// Measured over this share alone, and it says so — not the roster's
+	// "across the roster" sentence.
+	if !strings.Contains(out.DataAge.Note, "THIS share's newest stored session") ||
+		strings.Contains(out.DataAge.Note, "across the roster") {
+		t.Fatalf("data_age.note = %q", out.DataAge.Note)
+	}
 	if !strings.HasPrefix(out.Revision, "2026-09-09|priceYesterday-chain-v1|") {
 		t.Fatalf("revision = %q", out.Revision)
 	}

@@ -6,13 +6,25 @@ import { intervalLabel, intervalSeconds, type IntervalId } from './intervals'
 import { countSingleObservation, isHalted } from './useCandles'
 
 export interface ChartStatusBarProps {
+  /**
+   * When the newest DATA was observed — for a tick series the symbol's newest
+   * stored price (/prices/current `observed_at`). Never the candle response's
+   * `as_of`: that is when the response was built, and read as freshness it
+   * said "0s ago" beside a daily close three days old. Null is "not known
+   * yet", which the bar says rather than guessing.
+   */
   asOf: string | null
   interval: IntervalId
   candles: ChartCandle[]
   coverage: CandleCoverage | null
   /** Rendered only when the caller can actually name the provider. */
   source?: string | null
-  /** Server-side staleness flag; overrides the age heuristic when true. */
+  /**
+   * The server's staleness verdict for the same observation. When given it
+   * DECIDES: the server knows each symbol's market hours, and the 3×-interval
+   * heuristic below would call a TSE-session fund stale every weekend. The
+   * heuristic is for a caller with no verdict.
+   */
   stale?: boolean
   /**
    * A Tehran series' data_age. When present it decides freshness outright:
@@ -29,7 +41,7 @@ export interface ChartStatusBarProps {
  * so a daily chart does not scream on a quiet afternoon.
  */
 function isStale(asOf: string | null, interval: IntervalId, flag?: boolean): boolean {
-  if (flag === true) return true
+  if (typeof flag === 'boolean') return flag
   if (!asOf) return false
   const ageSec = (Date.now() - new Date(asOf).getTime()) / 1000
   if (Number.isNaN(ageSec)) return false
@@ -61,9 +73,9 @@ export function ChartStatusBar({
       ) : dataAge === null ? (
         <span className="muted small">data age not known yet</span>
       ) : candles.length === 0 ? (
-        // as_of is when the RESPONSE was built; with nothing stored it would
-        // read "0s ago" beside an empty chart.
         <span className="muted small">no data</span>
+      ) : asOf === null ? (
+        <span className="muted small">age not known yet</span>
       ) : (
         <TickAge asOf={asOf} stale={isStale(asOf, interval, stale)} />
       )}

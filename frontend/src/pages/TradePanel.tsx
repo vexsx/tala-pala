@@ -406,6 +406,7 @@ export default function TradePanel() {
   const st = symbol === 'IR_GOLD_18K' ? candles.overlays?.supertrend_dir : null
   const stDir = st && st.length > 0 ? st[st.length - 1] : 0
   const firstLoad = candles.loading && candles.candles.length === 0
+  const refusedEmpty = !candles.loading && candles.error !== null && candles.candles.length === 0
   const onGold = symbol === 'IR_GOLD_18K'
 
   return (
@@ -546,13 +547,18 @@ export default function TradePanel() {
             />
 
             <ChartStatusBar
-              asOf={candles.asOf}
+              // A tick series is as fresh as its newest stored price; the
+              // candle response's as_of is only when it was built. A Tehran
+              // series is aged by data_age instead, below.
+              asOf={tehran ? candles.asOf : (quote?.observed_at ?? null)}
               interval={interval}
               candles={candles.candles}
               coverage={candles.coverage}
               source={tehran ? (candles.source ?? 'TSETMC') : (quote?.source ?? null)}
               stale={tehran ? undefined : quote?.stale}
-              dataAge={tehran ? candles.dataAge : undefined}
+              // A refused series has no age to wait for: "not known yet"
+              // would promise one. It is simply a chart with no data.
+              dataAge={tehran && !refusedEmpty ? candles.dataAge : undefined}
             />
           </div>
         </div>
@@ -563,6 +569,8 @@ export default function TradePanel() {
               symbol={symbol}
               label={symbolLabel}
               instrument={candles.instrument}
+              loading={candles.loading}
+              refused={candles.error !== null && candles.candles.length === 0 ? candles.error : null}
               notes={candles.notes}
               last={lastCandle}
               ageCard={<BourseAgeNotice age={candles.dataAge ?? undefined} calendar={calendar} />}
@@ -743,6 +751,8 @@ function TehranInstrumentCard({
   symbol,
   label,
   instrument,
+  loading,
+  refused,
   notes,
   last,
   ageCard
@@ -750,6 +760,10 @@ function TehranInstrumentCard({
   symbol: ChartSymbol
   label: string
   instrument: ChartIndexInstrument | ChartEquityInstrument | null
+  /** The candle request is in flight. */
+  loading: boolean
+  /** The API's refusal, when the request answered with one and no series. */
+  refused: string | null
   notes: string[]
   last: ChartCandle | null
   ageCard: ReactNode
@@ -801,8 +815,14 @@ function TehranInstrumentCard({
             </div>
           )}
         </>
-      ) : (
+      ) : loading ? (
         <span className="muted small">Loading…</span>
+      ) : (
+        // Answered, and not with a series: a refused index or share says why
+        // beside the chart, so the card must not claim an answer is coming.
+        <span className="muted small">
+          No series is served for this symbol{refused ? ` — ${refused}` : '.'}
+        </span>
       )}
       {ageCard}
       {notes.length > 0 && (

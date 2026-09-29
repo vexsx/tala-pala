@@ -17,7 +17,7 @@ import {
 } from 'lightweight-charts'
 import type { CandleOverlays, ChartCandle, PivotLevels } from '../api/types'
 import { useSettings } from '../lib/settings'
-import { formatDateTime, formatTime, shortDate, type DisplayUnit } from '../lib/format'
+import { formatDate, formatDateTime, formatTime, shortDate, type DisplayUnit } from '../lib/format'
 import { isIntraday, type IntervalId } from './intervals'
 import { indexOfTime, isHalted, isSingleObservation } from './useCandles'
 import { formatChartPrice } from './OhlcHeader'
@@ -475,7 +475,13 @@ export function TradingChart({
     chart.applyOptions({
       localization: {
         priceFormatter: (p: number) => formatChartPrice(p, symbol, unit),
-        timeFormatter: (t: unknown) => formatDateTime(new Date(Number(t) * 1000), calendar)
+        // The crosshair's time label. A daily (or coarser) bar is a DATE — a
+        // Tehran session, or a whole UTC day — and a clock time on it would be
+        // Tehran's rendering of UTC midnight, "03:30", which no one traded at.
+        timeFormatter: (t: unknown) => {
+          const d = new Date(Number(t) * 1000)
+          return isIntraday(interval) ? formatDateTime(d, calendar) : formatDate(d, calendar)
+        }
       },
       timeScale: {
         timeVisible: isIntraday(interval),

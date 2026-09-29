@@ -781,11 +781,15 @@ included sessions or `null`, as Addendum 21.
 (`"index_points"` | `"IRR"` — rials, NOT the house toman), `source` (`"TSETMC"`), `instrument` (index:
 `ins_code, name_fa, name_en, market, kind, sector_code, weighting, return_basis, check_status,
 rows_rescaled, refusal_reason`; share: `ins_code, symbol, name_fa, market, board, sector_code,
-sector_fa, adjustment`), `data_age` (the same block and 10-day bound as `/bourse/*` and `/stocks`;
-`as_of` is when the response was built, `data_age` is how old the DATA is), `notes` (what the series
+sector_fa, adjustment`), `data_age` (the same block and 10-day bound as `/bourse/*` and `/stocks`,
+but measured on the CHARTED series — the status bar says "last session <date>" beside one line, so
+the date is where that line ends: an index the last fetch left behind the market is `stale` with a
+warning naming both dates, and a share is aged by its own newest session; `as_of` is when the
+response was built, `data_age` is how old the DATA is), `notes` (what the series
 is and is not), `revision` (changes whenever stored sessions are restated — the index store's key,
 or a share's `last_bar|adjustment_version|computed_at`; the chart reloads every page when it
-moves, because the live poll's three newest sessions cannot show a restated history). `coverage`
+moves, because the live poll's three newest sessions cannot show a restated history — and an older
+page that comes back under a different revision is not stitched on, the series is reloaded). `coverage`
 is `{base_granularity_seconds: 86400, intraday_from: null, history_from, supported_intervals:
 ["1d"], note}`.
 
@@ -803,7 +807,11 @@ gold symbols and the five headline indices render before any list answers. An en
 charted is shown DISABLED with its reason. Prices are written per kind: index points ignore the
 toman/rial toggle, share rials are never ×10, dollar-quoted codes are dollars, toman codes follow
 the toggle. The status bar's freshness for a Tehran series is `data_age`, not the 3×-interval
-heuristic that would flag every Saturday morning. SuperTrend/PSAR/Ichimoku/Pivots on a close-only
+heuristic that would flag every Saturday morning; for a registry series it is the symbol's newest
+stored observation (`/prices/current` `observed_at`) under the server's market-hours `stale`
+verdict — never the candle response's `as_of`, which only says when the response was built and
+read "0s ago" beside a daily close days old. A daily bar's crosshair label is a date, never
+"03:30" (Tehran's rendering of UTC midnight). SuperTrend/PSAR/Ichimoku/Pivots on a close-only
 series are shown as refused with the reason, never as "no data". A Tehran symbol forces 1D **without
 writing it to the stored timeframe preference** (visiting TEDPIX from 4H gold used to reset gold to
 1D for good); neither fallback writes it for any symbol any more. A registered symbol with no stored
