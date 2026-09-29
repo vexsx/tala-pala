@@ -138,14 +138,15 @@ function CoverageMark({ c, reason, testId }: { c: SectorFlowGroupCoverage | null
   const cov = groupCoverage(c)
   if (!cov) return null
   return cov.short ? (
-    <span className="badge badge-warn bx-badge" data-testid={testId} title={reason ?? cov.text}>
-      {cov.text}
-    </span>
+    <div>
+      <span className="badge badge-warn bx-badge" data-testid={testId} title={reason ?? cov.text}>
+        {cov.text}
+      </span>
+    </div>
   ) : (
-    <span className="muted small" data-testid={testId}>
-      {' '}
-      · {cov.text}
-    </span>
+    <div className="muted small" data-testid={testId}>
+      {cov.text}
+    </div>
   )
 }
 
