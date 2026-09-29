@@ -850,7 +850,9 @@ other symbol keeps the Addendum 1 rule:
 
 - `GET /prices/current`: such a series carries `cadence: "daily_close"`; no row stamped after now is
   ever the current price (the Yahoo backfill stored a forming bar at 23:00 UTC today until it was
-  fixed to skip any bar whose stamp is still ahead).
+  fixed to skip any bar whose stamp is still ahead). A forming bar a run before that fix stored is a
+  `yahoo_backfill` row collected before its own stamp: migration 0033 flags every one `suspect`, and
+  the next backfill run replaces it with the settled close (`forming_replaced`).
 - `GET /market/candles`: every response now carries `price_fields` and `cadence`. A daily-close
   registry series (its newest row from a daily-close source) is `price_fields: ["close"]`,
   `cadence: "daily_close"`; its range overlays

@@ -128,3 +128,16 @@ make smoke
 ```
 
 Migrations are forward-only and run automatically at api startup.
+
+Migration 0033 hides any forming Yahoo bar an older backfill run stored as a
+close (a `yahoo_backfill` row collected before its own 23:00 UTC stamp). The
+settled closes of those days arrive with the next backfill run; if the
+migration flagged any rows, run one:
+
+```bash
+docker compose exec api wget -qO- --header "Content-Type: application/json" \
+  --header "X-Internal-Token: $(grep '^INTERNAL_API_TOKEN=' .env | cut -d= -f2)" \
+  --post-data '{}' http://prediction-service:8500/internal/backfill/history
+```
+
+Its report names each replaced bar per symbol (`forming_replaced`).
