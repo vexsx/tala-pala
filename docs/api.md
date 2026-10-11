@@ -38,6 +38,8 @@ The full machine-readable specification is `backend-go/docs/openapi.yaml`, serve
 | `GET /bourse/sector-flows` | The حقیقی/حقوقی flow of every share with stored flow, summed by TSETMC sector over the newest 1/5/20/60 **market** sessions — sessions whose flow covers at least 90% of the shares TSETMC's day file shows trading: value share and its change, net individual flow, buyer power, sector index return, check tiers, coverage per window, a 12×5-session heatmap, top 15 companies by inflow and outflow. See below |
 | `GET /bourse/sector-flows/{sector}?window` | Every share in one sector over one window (`1`, `5` default, `20`, `60`), each board its own row |
 | `GET /market/funds` | TSE gold-fund stats: prices, volume, retail buy/sell % (latest + today's averages), buyer power, retail net-flow history |
+| `GET /liquidity/aggregates?freq` | CBI's monthly liquidity (M2), base money, M1 and quasi-money stocks in **thousand billion rial**, with m/m, y/y and since-Esfand growth by Jalali month, the M2/base multiplier, the base-money method break, and (`freq=annual`) the Jalali-year table. See below |
+| `GET /liquidity/dollar?horizon` | The dollar monthly beside M2, three **scenario** paths in which the dollar keeps pace with M2 growth (not forecasts), the dollar's own trend, a band labelled with its **measured** backtest coverage, the backtest itself with a verdict computed from it, and the liquidity-dollar range. See below |
 | `GET /predictions?symbol` · `GET /predictions/{horizon}?symbol` | Latest per horizon · history incl. actuals (symbol: IR_GOLD_18K default, XAUUSD) |
 | `GET /predictions/custom?days=N` | On-demand forecast + buy/hold/sell lean for an arbitrary 1–90 day horizon (computed live, not persisted) |
 | `GET /issues…` · `GET /issues/report` (admin only) · `POST /issues` (any user) | System issue log + debug digest are admin scope; error reporting stays open to all sessions |
@@ -442,6 +444,128 @@ many it is not. Items are ordered by traded value.
 
 (An excerpt of the hand-built frontend fixture, `bourse-sector-flows.json`:
 illustrative figures, not the market.)
+
+## Money and liquidity (`/liquidity/*`)
+
+The Central Bank of Iran's money aggregates and the free-market dollar set
+beside them (`internal/liquidity`). Everything is read — CBI's series through
+`internal/economic`'s point-in-time rule, USD_IRT's daily closes through
+`internal/relvalue`'s daily-close statement — and recomputed in Go; nothing is
+stored. The built answers are held in memory until a revision key over the data
+they read (the CBI observations, the series' registry rows and units, USD_IRT's
+stored closes, and the Tehran date) changes.
+
+### What the evidence allows
+
+The research behind these routes (2026-10-11) backtested monthly origins
+1394-01..1405-05 with M2 usable three months after each month ends:
+
+| RMSE of log error, month-end close | 3 m | 6 m | 12 m | 24 m |
+|---|---|---|---|---|
+| Random walk (no change) | 0.182 | 0.292 | 0.480 | 0.803 |
+| The dollar's own trend | 0.161 | 0.239 | 0.346 | 0.445 |
+| Dollar grows at trailing 12-month M2 growth | 0.160 | 0.236 | 0.339 | 0.419 |
+
+The M2-paced path beats "no change" at every horizon (one-sided
+Diebold–Mariano p ≤ 0.002) but **not the dollar's own trend at any** (p 0.16 to
+0.30); the level models (the liquidity dollar, regressions on M2, error
+correction) lose to the trend. So the forward lines are **scenarios** — "if the
+dollar kept pace with M2 growth of X%" — and the responses never call them
+forecasts, fair values or targets, and carry no advice. The verdict sentence is
+computed from the p-values in the response, not written in advance.
+`internal/liquidity`'s acceptance test rebuilds this table, the band quantiles,
+their calibration, the scenario paths and the liquidity-dollar range from the
+research data.
+
+### `GET /liquidity/aggregates?freq=monthly|annual`
+
+`freq` defaults to `monthly`; anything else is a 400. Series, in order:
+`CBI_LIQUIDITY` (نقدینگی), `CBI_BASE_MONEY` (پایه پولی), `CBI_MONEY_M1` (پول),
+`CBI_QUASI_MONEY` (شبه پول).
+
+* **Units.** `unit` is `thousand_billion_rial` — CBI's هزار میلیارد ریال,
+  stored as published. `display_unit_note` says how the page gets همت (÷10). A
+  series registered in any unit other than that (or `trillion_toman`, converted
+  ×10 and stated) is refused with a reason rather than shown at a guessed
+  scale.
+* **Stocks.** A value is the END-OF-MONTH stock of its Jalali month
+  (`period`, `gregorian_end`). It is not an average.
+* **Growth** steps Jalali labels: `mom_pct` against the previous month, `yoy_pct`
+  the same month a year earlier, `ytd_pct` the previous Esfand (CBI's second
+  growth column). A comparison month not stored is `null` with
+  `null_reason[field]`; before 1397-04 only quarter-end months exist
+  (`frequency: "Q"`, `source: "tsdview"`).
+* **The base-money break.** CBI redefined base money from 1399-12; each point
+  carries `method` (`old`/`revised`), and growth across two methods — or
+  touching a month whose method is unknown — is `null` with a reason, never a
+  number. `breaks[]` states the break and lists the stored months after it that
+  are still old-method prints. Where the ingest recorded no method, months before
+  1399-12 are read as old and months from 1402-01 as revised (the only
+  definition each was printed on); 1399-12..1401-12 stay unknown, and `notes`
+  says how many were inferred.
+* `multiplier[]` is M2 ÷ base money for each month both are stored, with the
+  base money's method.
+* `annual[]` (only for `freq=annual`), per Jalali year and per series:
+  `end_value` (Esfand), `end_growth_pct` (Esfand over Esfand, CBI's headline),
+  `avg_value` (only with all twelve months; `null` when no series has them),
+  `avg_growth_pct` (two complete years, one method), `months_present` (of the
+  liquidity series), `months_present_by_code`, `partial`.
+* `latest` is the newest liquidity month with its `published_at` (null: CBI
+  states none), `available_at`, `age_days` (month end → today, Tehran),
+  `source_url` and `vintage`. `data_age.stale` is set past 140 days, with a
+  warning.
+
+Not ingested yet: `200` with `available: false`, every series present with
+`available: false`, `unavailable_reason` and `points: []`, `latest: null`.
+
+### `GET /liquidity/dollar?horizon=12|24`
+
+`horizon` defaults to 12; anything but 12 or 24 is a 400 (the band is measured
+for those).
+
+| field | meaning |
+|---|---|
+| `anchor` | the latest USD_IRT daily close (toman), its date, Jalali date and source note. Every path starts here |
+| `money_as_of` | the newest M2 month published (point-in-time), with `published_at` / `available_at` |
+| `history[]` | per Jalali month: `usd_avg` (mean of daily closes), `usd_close` (last), `days`, `partial` (+ `partial_reason`: still running, or the history begins part-way through), `m2`, `usd_per_m2_index` (100 at `index_base`). Daily closes are the UTC-day closes `/market/candles` uses, placed by their civil date |
+| `scenarios[]` | `last_12m`, `three_year`, `slowest_three_year` (the slowest Esfand-to-Esfand three years since 1390): `annual_growth_pct` G and its `basis`; `path[h]` = anchor·(1+G)^(h/12), with `period`, `date` and the band edges `lo`/`hi` |
+| `trend` | the dollar's own trend: mean monthly change of the log monthly average since the first complete month (`since`), carried from the anchor. The benchmark, not a forecast |
+| `band` | `by_h[]`: the 5th/95th percentiles (`lo`/`hi`, log units, widened so the band never narrows; `raw_lo`/`raw_hi` before that) of the M2-paced path's month-end-close errors from origins `origins_from` on, only outcomes already known, at least 12 per horizon. `coverage` is how often a band built that way, from the errors known at each date, held the actual price: pooled `1-12`, `13-24`, and `24` (with `coverage_n`). It is the label — never a nominal 90% |
+| `backtest` | `rmse` per model (`random_walk`, `dollar_trend`, `m2_paced`) at 3/6/12/24 months; `dm_vs_random_walk_p` and `dm_vs_trend_p` are one-sided p-values that the **M2-paced** path's squared error is smaller (Harvey–Leybourne–Newbold corrected), `dm_trend_vs_random_walk_p` the same for the trend; `n_origins`; `verdict` |
+| `liquidity_dollar` | at the newest M2 month: every base month's dollar scaled by M2 growth since, published as `by_base.min/median/max` (each with its base; an even median names its two middle bases) over `bases_considered`, with `bases_below_actual`. Not a fair value: the base decides it |
+
+The coverage published is that of the band as drawn — widened across horizons.
+The research reported the same quantiles without the widening (about 84% at
+1–12 months, 69% at 24 on the research data); widening can only add hits, so the
+published figures are slightly higher (86% and 73% on the same data). Either
+way it is below the 90% the quantiles span, and the note says so.
+
+Degraded: no USD_IRT, or no M2 yet, is a `200` with `available: false` and
+`unavailable[]`; with the dollar alone, `history` and `trend` are still served
+and nothing M2-based is.
+
+```json
+{
+  "anchor": {"date": "2026-10-10", "jalali": "1405/07/18", "close_toman": 265100},
+  "money_as_of": {"period": "1404-12", "gregorian_end": "2026-03-20"},
+  "scenarios": [{"key": "last_12m", "annual_growth_pct": 53.2687, "basis": "M2 growth 1403-12→1404-12",
+                 "path": [{"h": 12, "period": "1406-07", "date": "2027-10-10", "value": 406315.34,
+                           "lo": 310902.85, "hi": 860388.41}]}],
+  "trend": {"annual_growth_pct": 39.5943, "since": "1390-10", "through": "1405-06"},
+  "band": {"lower_q": 0.05, "upper_q": 0.95, "by_h": [{"h": 12, "lo": -0.2676, "hi": 0.7503, "n": 126}],
+           "coverage": {"1-12": 0.859, "13-24": 0.809, "24": 0.728}},
+  "backtest": {"target": "month-end close", "from": "1394-01", "to": "1405-05",
+               "rmse": {"m2_paced": {"12": 0.3391}, "dollar_trend": {"12": 0.3464}, "random_walk": {"12": 0.4802}},
+               "dm_vs_trend_p": {"3": 0.1636, "6": 0.217, "12": 0.294, "24": 0.3047}},
+  "liquidity_dollar": {"period": "1404-12", "actual_avg": 162494.79, "bases_considered": 118,
+                       "by_base": {"min": {"base": "1396-06", "value": 43572.6},
+                                   "max": {"base": "1404-11", "value": 166207.5}}}
+}
+```
+
+(An excerpt built by `buildDollarResponse` from the research data in
+`internal/liquidity/testdata` — TGJU's cash dollar throughout, where production
+reads USD_IRT, which is the USDT/toman market from 2022-04.)
 
 ## Example
 

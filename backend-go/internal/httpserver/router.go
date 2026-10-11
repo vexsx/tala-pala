@@ -149,6 +149,17 @@ type RelativeValueHandlers interface {
 	Numeraires(http.ResponseWriter, *http.Request)
 }
 
+// LiquidityHandlers serves Iran's money aggregates (CBI's liquidity, base
+// money, M1 and quasi-money, with their growth and the multiplier) and the
+// dollar set beside them: scenario paths in which the dollar keeps pace with
+// M2 growth, the dollar's own trend, an error band labelled with its measured
+// backtest coverage, and the backtest itself. Reads and arithmetic only;
+// nothing is stored, and the paths are scenarios, not forecasts.
+type LiquidityHandlers interface {
+	Aggregates(http.ResponseWriter, *http.Request)
+	Dollar(http.ResponseWriter, *http.Request)
+}
+
 // Deps bundles everything the router needs.
 type Deps struct {
 	Logger  *slog.Logger
@@ -172,6 +183,7 @@ type Deps struct {
 	Equities     EquityHandlers
 	RelValue     RelativeValueHandlers
 	Bourse       BourseHandlers
+	Liquidity    LiquidityHandlers
 
 	// Limiters are created by the caller so it can Stop() them on shutdown.
 	GlobalLimiter *RateLimiter
@@ -317,6 +329,14 @@ func NewRouter(cfg *config.Config, d Deps) chi.Router {
 			r.Get("/api/v1/markets/numeraires", d.RelValue.Numeraires)
 			r.Get("/api/v1/markets/performance", d.RelValue.Performance)
 			r.Get("/api/v1/relative-value", d.RelValue.RelativeValue)
+
+			// Money and liquidity: CBI's monthly stocks with their growth
+			// (?freq=annual adds the Jalali-year table), and the dollar beside
+			// M2 -- scenario paths, never forecasts, with the backtest that
+			// says so. A series not ingested yet is a 200 that says what is
+			// missing, not an error.
+			r.Get("/api/v1/liquidity/aggregates", d.Liquidity.Aggregates)
+			r.Get("/api/v1/liquidity/dollar", d.Liquidity.Dollar)
 
 			r.Get("/api/v1/portfolio", d.Portfolio.Get)
 			r.Post("/api/v1/portfolio/transactions", d.Portfolio.CreateTransaction)

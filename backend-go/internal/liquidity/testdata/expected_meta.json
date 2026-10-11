@@ -1,0 +1,20 @@
+{
+ "anchor_close_toman": 265100.0,
+ "anchor_date": "2026-10-10",
+ "anchor_jalali": "1405/07/18",
+ "scenario_annual_m2_growth_pct": [
+  53.27,
+  34.97,
+  22.78
+ ],
+ "liquidity_dollar": {
+  "n_bases": 118.0,
+  "m2_1404_12": 155812.2,
+  "usd_avg_1404_12": 162494.79,
+  "ld_min": 43572.6,
+  "ld_median": 104421.21,
+  "ld_max": 166207.5,
+  "ld_min_base": "1396-06",
+  "ld_max_base": "1404-11"
+ }
+}
