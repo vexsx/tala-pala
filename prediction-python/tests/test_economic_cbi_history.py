@@ -415,6 +415,16 @@ def test_a_dry_run_from_a_saved_file_touches_neither_network_nor_server(script, 
     assert len(saved) == 1 and saved[0].read_bytes() == _fixture_bytes()
 
 
+def test_a_missing_out_dir_is_made_not_a_traceback(script, tmp_path, monkeypatch):
+    """The first production run passed an --out-dir that did not exist yet and
+    lost the fetched payload to a FileNotFoundError."""
+    monkeypatch.setattr(script.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("a dry run must not run ssh/scp")))
+    out = tmp_path / "not" / "yet"
+    assert script.main(["--from-file", FIXTURE, "--dry-run", "--out-dir", str(out)]) == 0
+    assert len(list(out.glob("tsdview_quarterly_*.json"))) == 1
+
+
 def test_a_real_run_uploads_then_ingests_inside_the_compose_network(script, tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(script.subprocess, "run", lambda argv, check: calls.append(argv))

@@ -237,6 +237,9 @@ def main(argv: list[str] | None = None) -> int:
     summary = verify(raw)
     name = payload_name(raw)
     out = Path(args.out_dir) / name
+    # The payload was fetched and verified; a missing --out-dir must not throw
+    # it away with a traceback (it did on the first production run).
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(raw)
     print(f"rows       : {summary['rows']:,}")
     print("values     : " + ", ".join(f"{code} {count}" for code, count in summary["values"].items()))
