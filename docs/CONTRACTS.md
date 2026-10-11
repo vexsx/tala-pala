@@ -604,7 +604,9 @@ whole unless `allow_older`; a year's month list with an item that is not a month
 (`502 upstream_failed`) rather than being skipped; a website run that could not get a workbook or
 refused one stops there (newer editions are not ingested past it) and answers `502`
 (`upstream_failed` / `document_refused`) with the full report; a posted workbook refused → `400`. With `data_providers.enabled = FALSE` for `cbi`
-the website modes answer `200` `status: "skipped"` without a request.
+the website modes answer `200` `status: "skipped"` without a request. Only a successful website run
+marks the `cbi` provider healthy (`last_success_at`, failures reset): a workbook posted by `path` says
+nothing about whether `www.cbi.ir` answers, so it leaves the provider row as it was.
 
 **Internal:** `POST /internal/economic/cbi-history` body `{"path":"...","dry_run":false}` — the CBI
 time-series viewer's quarter-end values of the same four series (1352 on), fetched off-server by

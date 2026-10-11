@@ -527,7 +527,15 @@ def provider_row(engine):
         with engine.connect() as conn:
             row = conn.execute(select(data_providers).where(data_providers.c.code == "cbi")).one()
             return row.consecutive_failures, row.last_error
+    health.last_success = lambda: _last_success(engine)
     return health
+
+
+def _last_success(engine):
+    with engine.connect() as conn:
+        return conn.execute(
+            select(data_providers.c.last_success_at).where(data_providers.c.code == "cbi")
+        ).scalar()
 
 
 def test_the_endpoints_require_the_internal_token(client):
@@ -546,8 +554,27 @@ def test_a_posted_workbook_is_ingested_and_reported(client, engine, tmp_path, pr
     assert body["inserted"] == 12
     assert body["series"]["CBI_LIQUIDITY"]["values"][-1] == "155812.2"
     assert provider_row() == (0, None)
+    # A posted file says nothing about whether cbi.ir answers: the provider
+    # is not marked healthy by it.
+    assert provider_row.last_success() is None
     again = client.post("/internal/economic/cbi-monetary", json={"path": str(path)}, headers=AUTH)
     assert again.status_code == 200 and again.json()["unchanged"] == 12
+    assert provider_row.last_success() is None
+
+
+def test_a_posted_workbook_does_not_clear_a_failing_website(client, engine, tmp_path, mocked,
+                                                           quiet_site, provider_row):
+    """The daily job failing against cbi.ir must stay visible on the provider
+    row when an operator ingests a workbook by hand meanwhile."""
+    with engine.begin() as conn:
+        conn.execute(data_providers.update().where(data_providers.c.code == "cbi").values(
+            consecutive_failures=3, last_error="www.cbi.ir: timed out"))
+    path = tmp_path / "140412.xls"
+    path.write_bytes(_xls(XLS_140412))
+    resp = client.post("/internal/economic/cbi-monetary", json={"path": str(path)}, headers=AUTH)
+    assert resp.status_code == 200
+    assert provider_row() == (3, "www.cbi.ir: timed out")
+    assert provider_row.last_success() is None
 
 
 def test_a_refused_workbook_answers_400_and_marks_the_provider(client, engine, tmp_path, provider_row):
@@ -612,6 +639,27 @@ def test_a_failed_website_run_answers_502_with_its_report(client, engine, tmp_pa
     assert body["editions"][0]["status"] == "error"
     failures, error = provider_row()
     assert failures == 1 and "1404-12" in error
+
+
+def test_a_website_run_that_reads_cbi_marks_the_provider_healthy(client, engine, tmp_path, mocked,
+                                                                 quiet_site, provider_row):
+    """The other side of path mode recording nothing: a run that did read
+    cbi.ir -- here finding the edition already stored -- clears the failures."""
+    with engine.begin() as conn:
+        conn.execute(data_providers.update().where(data_providers.c.code == "cbi").values(
+            consecutive_failures=2, last_error="www.cbi.ir: timed out"))
+    path = tmp_path / "140412.xls"
+    path.write_bytes(_xls(XLS_140412))
+    ingest_edition_file(engine, str(path), now=NOW)
+    _serve_section(mocked)
+    mocked.get("https://www.cbi.ir/simplelist/35569.aspx").mock(
+        return_value=httpx.Response(200, text=_month_page(35570), headers=HTML))
+    mocked.get("https://www.cbi.ir/page/35570.aspx").mock(
+        return_value=_workbook_response(_xls(XLS_140412), "140412.xls"))
+    resp = client.post("/internal/economic/cbi-monetary", json={"fetch_latest": True}, headers=AUTH)
+    assert resp.status_code == 200, resp.json()
+    assert provider_row() == (0, None)
+    assert provider_row.last_success() is not None
 
 
 def test_a_refused_fetched_workbook_answers_502_document_refused(client, engine, tmp_path, mocked,

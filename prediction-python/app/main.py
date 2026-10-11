@@ -762,7 +762,13 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
                     }
                 },
             )  # type: ignore[return-value]
-        if not body.dry_run:
+        # Success means cbi.ir answered. A workbook posted by path says nothing
+        # about that -- it was fetched by someone else, possibly elsewhere --
+        # so only a website run may mark the provider healthy, or a manual
+        # ingest would hide a site that has stopped answering the daily job.
+        # (SCI's path route records success because a posted file is SCI's
+        # only route in; CBI has a website mode that this row tracks.)
+        if website and not body.dry_run:
             registry.record_success(engine, "cbi")
         return report
 
