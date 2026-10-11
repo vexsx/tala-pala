@@ -23,7 +23,26 @@ type dollarInput struct {
 	// USD is USD_IRT's daily closes in toman, up to Now.
 	USD []dayClose
 	M2  moneySeries
+	// Splice is USD_IRT's entry in the splice register; nil when the
+	// register records none on this deployment.
+	Splice *usdSplice
 }
+
+// usdSplice is USD_IRT's entry in the splice register
+// (app_settings['series_splices'], written by prediction-python's TGJU
+// backfill): the instant the series changes definition, and what it measures
+// before and after. Where USD_IRT changes is a fact of each deployment's
+// history -- 2022-04 on one, the day of the backfill on another -- so it is
+// read, never written into a sentence here.
+type usdSplice struct {
+	At     time.Time
+	Before string // backfill_definition
+	After  string // live_definition
+}
+
+// day is the UTC day the live definition starts: daily closes are UTC-day
+// buckets (usd.go).
+func (s *usdSplice) day() time.Time { return utcDay(s.At) }
 
 type anchorBlock struct {
 	Date       string  `json:"date"`
@@ -42,6 +61,10 @@ type moneyAsOfBlock struct {
 	// seen (null when the row does not say).
 	AvailableAtApprox *bool `json:"available_at_approx"`
 	Vintage           int   `json:"vintage"`
+	// MonthlyFrom is where M2's unbroken monthly run begins (monthlyRun),
+	// the same month /liquidity/aggregates names: before it the history and
+	// the index hold only quarter-ends.
+	MonthlyFrom *string `json:"monthly_from"`
 }
 
 type historyPoint struct {
@@ -97,21 +120,31 @@ type bandBlock struct {
 	// Coverage is the measured hit rate of a band built this way, pooled over
 	// horizons 1-12 and 13-24, and at 24 alone; CoverageN the (origin,
 	// horizon) pairs each rate is over. A rate with nothing to measure is null.
-	Coverage    map[string]*float64 `json:"coverage"`
-	CoverageN   map[string]int      `json:"coverage_n"`
-	OriginsFrom string              `json:"origins_from"`
-	LagMonths   int                 `json:"lag_months"`
-	NByH        map[string]int      `json:"n_by_h"`
-	Note        string              `json:"note"`
+	Coverage  map[string]*float64 `json:"coverage"`
+	CoverageN map[string]int      `json:"coverage_n"`
+	// CoverageIndependent is, for a single-horizon rate ("24"), about how many
+	// non-overlapping outcomes its origins hold: consecutive origins share all
+	// but one month of a 24-month window, so 79 origins are about three
+	// independent outcomes, and a rate over them is that uncertain.
+	CoverageIndependent map[string]int `json:"coverage_independent"`
+	OriginsFrom         string         `json:"origins_from"`
+	LagMonths           int            `json:"lag_months"`
+	NByH                map[string]int `json:"n_by_h"`
+	Note                string         `json:"note"`
 }
 
 type backtestBlock struct {
-	Target    string                         `json:"target"`
-	From      string                         `json:"from"`
-	To        string                         `json:"to"`
-	LagMonths int                            `json:"lag_months"`
-	NOrigins  map[string]int                 `json:"n_origins"`
-	RMSE      map[string]map[string]*float64 `json:"rmse"`
+	Target string `json:"target"`
+	// From and To are the origin window: the first origin scored, and the
+	// month before the last complete one. Each horizon scores the origins in
+	// it whose outcome is known by OutcomesThrough, so its last origin is h
+	// months earlier, and NOrigins counts them.
+	From            string                         `json:"from"`
+	To              string                         `json:"to"`
+	OutcomesThrough string                         `json:"outcomes_through"`
+	LagMonths       int                            `json:"lag_months"`
+	NOrigins        map[string]int                 `json:"n_origins"`
+	RMSE            map[string]map[string]*float64 `json:"rmse"`
 	// DMVsRandomWalkP and DMVsTrendP are one-sided p-values that the
 	// M2-paced path's squared error is smaller than the random walk's / the
 	// dollar trend's. DMTrendVsRandomWalkP is the same for the trend.
@@ -121,6 +154,52 @@ type backtestBlock struct {
 	Significance         float64             `json:"significance"`
 	Verdict              string              `json:"verdict"`
 	Note                 string              `json:"note"`
+	// LagCheck is the same comparison with M2 usable only checkLagMonths
+	// after its month: later than any delay CBI is measured to have taken.
+	LagCheck *lagCheck `json:"lag_check"`
+}
+
+// lagCheck is the backtest rerun at a longer publication lag. Only the
+// M2-paced path depends on the lag; the random walk and the trend do not.
+type lagCheck struct {
+	LagMonths       int                 `json:"lag_months"`
+	RMSE            map[string]*float64 `json:"rmse_m2_paced"`
+	DMVsRandomWalkP map[string]*float64 `json:"dm_vs_random_walk_p"`
+	DMVsTrendP      map[string]*float64 `json:"dm_vs_trend_p"`
+	// SameConclusions is true when every horizon is on the same side of the
+	// significance level against both benchmarks as at the published lag.
+	SameConclusions bool   `json:"same_conclusions"`
+	Note            string `json:"note"`
+}
+
+// buildLagCheck compares the rerun with the published backtest, horizon by
+// horizon, at the significance level the verdict uses.
+func buildLagCheck(pub, late *backtestBlock) *lagCheck {
+	lc := &lagCheck{LagMonths: checkLagMonths, RMSE: late.RMSE[modelM2Paced.key()],
+		DMVsRandomWalkP: late.DMVsRandomWalkP, DMVsTrendP: late.DMVsTrendP}
+	same := func(a, b map[string]*float64) bool {
+		x, y := sigSplit(a), sigSplit(b)
+		return fmt.Sprint(x.tested, x.won) == fmt.Sprint(y.tested, y.won)
+	}
+	lc.SameConclusions = same(pub.DMVsRandomWalkP, late.DMVsRandomWalkP) && same(pub.DMVsTrendP, late.DMVsTrendP)
+	rw := sigSplit(late.DMVsRandomWalkP)
+	if len(rw.tested) == 0 {
+		lc.Note = fmt.Sprintf("With M2 usable only %d months after its month, too few forecasts could be "+
+			"scored to compare.", checkLagMonths)
+		return lc
+	}
+	lc.Note = fmt.Sprintf("Rerun with each M2 month usable only %d months after it ended -- later than "+
+		"any delay CBI is measured to have taken -- the dollar growing at M2's pace %s; %s",
+		checkLagMonths, rw.phrase("beat “no change”"), trendClause(late))
+	if lc.SameConclusions {
+		lc.Note += fmt.Sprintf(" Every horizon falls on the same side of p = %.2f as at %d months, so "+
+			"the conclusions do not rest on the %d-month assumption.", significance, publicationLagMonths,
+			publicationLagMonths)
+	} else {
+		lc.Note += fmt.Sprintf(" That differs from the result at %d months for at least one horizon, so "+
+			"those conclusions depend on when M2 is taken to be known.", publicationLagMonths)
+	}
+	return lc
 }
 
 type ldEntry struct {
@@ -200,32 +279,71 @@ type dollarResponse struct {
 // applies to a TGJU daily close.
 const usdStaleAfterDays = 4
 
-const usdSourceNote = "USD_IRT is the free-market rate: TGJU's cash-dollar daily close until the " +
-	"2022-04 join, then the 24/7 USDT/toman market (a stablecoin with its own small premium). " +
-	"It is not CBI's official or NIMA rate."
+// usdSourceNote says what USD_IRT measures, from the splice register.
+func usdSourceNote(sp *usdSplice) string {
+	if sp == nil {
+		return "USD_IRT is the stored free-market dollar rate; the splice register records no " +
+			"change of its definition on this deployment. It is not CBI's official or NIMA rate."
+	}
+	return fmt.Sprintf("USD_IRT changes definition on %s (the splice register): before it, %s; "+
+		"from it, %s. A monthly figure, path or backtest error that spans that date mixes the two. "+
+		"It is not CBI's official or NIMA rate.", sp.day().Format(dateLayout), sp.Before, sp.After)
+}
+
+// anchorNote says what the close every path starts from is: the definition
+// in force on its day, from the register.
+func anchorNote(sp *usdSplice, day time.Time) string {
+	if sp == nil {
+		return "free-market rate"
+	}
+	if day.Before(sp.day()) {
+		return fmt.Sprintf("free-market rate: %s (USD_IRT's definition until %s)", sp.Before,
+			sp.day().AddDate(0, 0, -1).Format(dateLayout))
+	}
+	return fmt.Sprintf("free-market rate: %s (USD_IRT's definition since %s)", sp.After,
+		sp.day().Format(dateLayout))
+}
 
 const scenarioNote = "Scenario paths, not forecasts: each line is where the dollar would be if, " +
-	"from the latest close, it grew as fast as M2 did over the stated span. In the backtest no " +
-	"money-based model beat the dollar's own trend, so none of these lines is a prediction, a fair " +
-	"value or a target."
+	"from the latest close, it grew as fast as M2 did over the stated span -- not a prediction, not " +
+	"a fair value and not a target. The backtest says, from its own numbers, how paths built this " +
+	"way did against the dollar's own trend."
 
 const ldNote = "Not a fair value. The liquidity dollar is a base month's dollar scaled by M2 growth " +
 	"since then, and the base month decides the answer: every month is a candidate and they " +
 	"disagree by a factor of several. In the research this level model also lost to the dollar's " +
 	"own trend as a forecast."
 
-var dollarNotes = []string{
-	scenarioNote,
-	"Correlation is not causation: M2 and the dollar both rose with Iran's inflation, and the " +
-		"growth of one did not lead the other at any stable lag.",
-	"What the model cannot see: sanctions and oil revenue, war and politics, expectations, the " +
-		"multiple exchange rates, and the central bank's foreign-exchange interventions.",
-	usdSourceNote,
-	"M2 is CBI's end-of-month stock in thousand billion rial (÷10 = همت). The backtest treats each " +
-		"month as usable three months after it ended -- CBI states no release date -- and uses " +
-		"today's figure for it; M2 has not been revised beyond rounding across CBI's editions.",
-	"Base money is not used here: its 1399-12 redefinition breaks its growth, and it forecast no " +
-		"better than M2 in the research.",
+// dollarNotes are the notes every dollar answer carries; the ones about the
+// dollar's definition and M2's revisions are read from the data.
+func dollarNotes(sp *usdSplice, m2 moneySeries) []string {
+	revised := 0
+	for _, p := range m2.Points {
+		if p.Vintage > 1 {
+			revised++
+		}
+	}
+	revisions := "no stored M2 month has been revised by a later CBI edition"
+	if revised > 0 {
+		revisions = fmt.Sprintf("%d stored M2 month(s) were revised by a later CBI edition, and the "+
+			"backtest reads the revised figure", revised)
+	}
+	return []string{
+		scenarioNote,
+		"Correlation is not causation: M2 and the dollar both rose with Iran's inflation, and the " +
+			"growth of one did not lead the other at any stable lag.",
+		"What the model cannot see: sanctions and oil revenue, war and politics, expectations, the " +
+			"multiple exchange rates, and the central bank's foreign-exchange interventions.",
+		usdSourceNote(sp),
+		fmt.Sprintf("M2 is CBI's end-of-month stock in thousand billion rial (÷10 = همت). The backtest "+
+			"treats each month as usable %d months after it ended and uses today's figure for it. CBI "+
+			"states no release date; its workbooks have arrived %d to %d days after the month ended, so "+
+			"for some origins %d months is early, and backtest.lag_check reruns the comparison at %d. "+
+			"Of the figures it reads, %s.", publicationLagMonths, cbiLagMinDays, cbiLagMaxDays,
+			publicationLagMonths, checkLagMonths, revisions),
+		"Base money is not used here: its 1399-12 redefinition breaks its growth, and it forecast no " +
+			"better than M2 in the research.",
+	}
 }
 
 // buildDollarResponse is the whole response. Pure function (unit tested).
@@ -237,7 +355,7 @@ func buildDollarResponse(in dollarInput, horizon int) dollarResponse {
 		Unavailable: []string{},
 		History:     []historyPoint{},
 		Scenarios:   []scenarioBlock{},
-		Notes:       append([]string{}, dollarNotes...),
+		Notes:       dollarNotes(in.Splice, in.M2),
 	}
 	// The running month is the one the newest UTC-day bucket falls in, not
 	// Tehran's: a day's close is the last quote of its UTC day (usd.go), so
@@ -257,6 +375,10 @@ func buildDollarResponse(in dollarInput, horizon int) dollarResponse {
 			PublishedAt: utcPtr(newestM2.PublishedAt), AvailableAt: newestM2.AvailableAt.UTC(),
 			AvailableAtApprox: newestM2.AvailableAtApprox, Vintage: newestM2.Vintage,
 		}
+		if run, ok := monthlyRun(in.M2); ok {
+			m := run.String()
+			out.MoneyAsOf.MonthlyFrom = &m
+		}
 	} else {
 		out.Unavailable = append(out.Unavailable, unavailableSeries(in.M2))
 	}
@@ -275,7 +397,7 @@ func buildDollarResponse(in dollarInput, horizon int) dollarResponse {
 	out.Anchor = &anchorBlock{
 		Date: last.Day.Format(dateLayout), Jalali: fmt.Sprintf("%04d/%02d/%02d", jy, jm, jd),
 		CloseToman: last.Close, Source: "USD_IRT (prices): the last observation of the day",
-		Note: "free-market rate (USDT/toman since 2022-04)",
+		Note: anchorNote(in.Splice, last.Day),
 	}
 	if p.iLast < 0 {
 		out.Unavailable = append(out.Unavailable, "No complete Jalali month of USD_IRT is stored yet.")
@@ -317,6 +439,11 @@ func buildDollarResponse(in dollarInput, horizon int) dollarResponse {
 
 	if bt, ok := p.runBacktest(targetClose); ok {
 		out.Backtest = buildBacktestBlock(bt)
+		out.Backtest.OutcomesThrough = p.month(p.iLast).String()
+		if late, ok := p.withLag(checkLagMonths).runBacktest(targetClose); ok {
+			out.Backtest.LagCheck = buildLagCheck(out.Backtest, buildBacktestBlock(late))
+		}
+		out.Backtest.Verdict = verdict(out.Backtest)
 	} else {
 		out.Notes = append(out.Notes, "Too few months are stored to score the backtest, so no "+
 			"comparison with the random walk or the trend is published.")
@@ -389,6 +516,7 @@ func buildBandBlock(band []bandStep, cov map[int]coverageCell, horizon int) *ban
 		LowerQ: bandLowerQ, UpperQ: bandUpperQ, ByH: []bandStepWire{}, AppliedTo: "each",
 		Target: targetClose.label(), OriginsFrom: evalStart.String(), LagMonths: publicationLagMonths,
 		NByH: map[string]int{}, Coverage: map[string]*float64{}, CoverageN: map[string]int{},
+		CoverageIndependent: map[string]int{},
 	}
 	for _, s := range band {
 		if s.H > horizon {
@@ -402,6 +530,9 @@ func buildBandBlock(band []bandStep, cov map[int]coverageCell, horizon int) *ban
 		c := pooledCoverage(cov, r[0], r[1])
 		b.Coverage[key] = fptr(c.rate(), 3)
 		b.CoverageN[key] = c.N
+		if r[0] == r[1] && c.N > 0 {
+			b.CoverageIndependent[key] = independentOutcomes(c.N, r[1])
+		}
 	}
 	short, mid, long := b.Coverage["1-12"], b.Coverage["13-24"], b.Coverage["24"]
 	switch {
@@ -420,9 +551,8 @@ func buildBandBlock(band []bandStep, cov map[int]coverageCell, horizon int) *ban
 			b.Note += fmt.Sprintf(", %s at 13–24 months", pct(*mid))
 		}
 		if long != nil {
-			n := b.CoverageN["24"]
 			b.Note += fmt.Sprintf(" and %s at 24 months (%d origins, about %d independent outcomes)",
-				pct(*long), n, max(1, int(math.Round(float64(n)/24))))
+				pct(*long), b.CoverageN["24"], b.CoverageIndependent["24"])
 		}
 		b.Note += "."
 		// Which measured rates fall short of the share the quantiles span,
@@ -474,10 +604,12 @@ func buildBacktestBlock(bt backtest) *backtestBlock {
 		DMVsTrendP:           map[string]*float64{},
 		DMTrendVsRandomWalkP: map[string]*float64{},
 		Significance:         significance,
-		Note: "Root mean square of log errors (0.10 is roughly a 10% miss). One-sided " +
-			"Diebold–Mariano tests with the Harvey–Leybourne–Newbold small-sample correction; " +
-			"forecasts from consecutive months overlap, so at 24 months the origins hold only " +
-			"about five independent outcomes.",
+	}
+	b.Note = "Root mean square of log errors (0.10 is roughly a 10% miss). One-sided " +
+		"Diebold–Mariano tests with the Harvey–Leybourne–Newbold small-sample correction."
+	if n := bt.NOrigins[24]; n > 0 {
+		b.Note += fmt.Sprintf(" Forecasts from consecutive months overlap, so the %d origins scored at "+
+			"24 months hold only about %d independent outcomes.", n, independentOutcomes(n, 24))
 	}
 	for _, m := range []model{modelRandomWalk, modelTrend, modelM2Paced} {
 		b.RMSE[m.key()] = map[string]*float64{}
@@ -498,6 +630,12 @@ func buildBacktestBlock(bt backtest) *backtestBlock {
 	}
 	b.Verdict = verdict(b)
 	return b
+}
+
+// independentOutcomes is about how many non-overlapping h-month windows n
+// consecutive origins hold.
+func independentOutcomes(n, h int) int {
+	return max(1, int(math.Round(float64(n)/float64(h))))
 }
 
 // dmP is a p-value for the wire, to four significant digits: a fixed number
@@ -531,19 +669,83 @@ func verdict(b *backtestBlock) string {
 		return "Too few forecasts could be scored to compare the models."
 	}
 	var s strings.Builder
-	fmt.Fprintf(&s, "In the backtest (origins %s to %s, %s), ", b.From, b.To, b.Target)
+	through := b.OutcomesThrough
+	if through == "" {
+		through = b.To
+	}
+	fmt.Fprintf(&s, "In the backtest (origins from %s with outcomes known by %s, %s), ", b.From, through,
+		b.Target)
 	s.WriteString("the dollar growing at M2's pace " + m2RW.phrase("beat “no change”") + "; ")
-	switch {
-	case len(m2Trend.won) == 0:
-		s.WriteString("it did not beat the dollar's own trend at any horizon tested " +
-			m2Trend.pRange() + ", so M2 growth added no measurable skill over the trend.")
-	default:
-		s.WriteString("against the dollar's own trend it " + m2Trend.phrase("was better") + ".")
+	if len(m2Trend.tested) == 0 {
+		s.WriteString("it could not be compared with the dollar's own trend.")
+	} else {
+		s.WriteString(trendClause(b))
+	}
+	if b.LagCheck != nil && !b.LagCheck.SameConclusions {
+		s.WriteString(fmt.Sprintf(" With M2 taken as known only %d months after its month, the result "+
+			"changes at some horizon (lag_check).", b.LagCheck.LagMonths))
 	}
 	if len(trendRW.tested) > 0 {
 		s.WriteString(" The trend alone " + trendRW.phrase("beat “no change”") + ".")
 	}
 	return s.String()
+}
+
+// trendClause says how the M2-paced path did against the dollar's own trend:
+// the test's verdict, and with a failure to reject, how the errors themselves
+// compared -- "not measurably better" is not "no better", and a lower RMSE that
+// chance could produce is reported as exactly that.
+func trendClause(b *backtestBlock) string {
+	sig := sigSplit(b.DMVsTrendP)
+	if len(sig.won) > 0 {
+		return "against the dollar's own trend it " + sig.phrase("was better") + "."
+	}
+	detail := strings.Trim(sig.pRange(), "()")
+	if r := rmseVsTrend(b, sig.tested); r != "" {
+		detail = r + ", one-sided " + detail
+	}
+	return "against the dollar's own trend it was not measurably better at any horizon tested (" +
+		detail + ")."
+}
+
+// rmseVsTrend compares the M2-paced RMSE with the trend's over the horizons
+// given: "RMSE 0.8% to 6.0% lower", "... higher", or the span when mixed.
+func rmseVsTrend(b *backtestBlock, hs []int) string {
+	diffs := []float64{}
+	for _, h := range hs {
+		k := fmt.Sprint(h)
+		m2, tr := b.RMSE[modelM2Paced.key()][k], b.RMSE[modelTrend.key()][k]
+		if m2 == nil || tr == nil || *tr <= 0 {
+			continue
+		}
+		diffs = append(diffs, 100*(*m2 / *tr - 1))
+	}
+	if len(diffs) == 0 {
+		return ""
+	}
+	lo, hi := diffs[0], diffs[0]
+	for _, d := range diffs {
+		lo, hi = math.Min(lo, d), math.Max(hi, d)
+	}
+	span := func(a, b float64) string {
+		a, b = math.Abs(a), math.Abs(b)
+		if a > b {
+			a, b = b, a
+		}
+		if fmt.Sprintf("%.1f", a) == fmt.Sprintf("%.1f", b) {
+			return fmt.Sprintf("%.1f%%", a)
+		}
+		return fmt.Sprintf("%.1f%% to %.1f%%", a, b)
+	}
+	switch {
+	case hi < 0:
+		return "RMSE " + span(lo, hi) + " lower"
+	case lo > 0:
+		return "RMSE " + span(lo, hi) + " higher"
+	case lo == 0 && hi == 0:
+		return "the same RMSE"
+	}
+	return fmt.Sprintf("RMSE between %.1f%% lower and %.1f%% higher", -lo, hi)
 }
 
 // sigResult splits a horizon -> p map at the significance level.

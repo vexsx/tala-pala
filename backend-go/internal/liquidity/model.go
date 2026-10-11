@@ -22,9 +22,11 @@ package liquidity
 // error that would need one is simply absent and not counted.
 //
 // NO LOOK-AHEAD. A forecast made at the end of month t reads the dollar up to
-// t and M2 only up to t-3: CBI publishes one to four and a half months late,
-// and the research measured the backtest at a 3-month lag (the ranking is the
-// same at 2 and 4). The band and coverage at origin t read only errors whose
+// t and M2 only up to t-3: the research measured the backtest at a 3-month
+// lag. CBI's real delays ran 21 to 164 days, so for some origins three months
+// is early; lagCheck reruns the comparison at six months, past every measured
+// delay, and the response says whether the conclusions moved. The band and
+// coverage at origin t read only errors whose
 // outcome month is at or before t. TestNoLookAhead perturbs every later month
 // and asserts nothing at t moves.
 //
@@ -46,6 +48,10 @@ const (
 	// publicationLagMonths: an M2 month is usable from the end of the third
 	// month after it.
 	publicationLagMonths = 3
+	// checkLagMonths is the lag the backtest is rerun at to see whether its
+	// conclusions depend on the three months: CBI's longest measured delay,
+	// 164 days, ends before the sixth month after the month described does.
+	checkLagMonths = 6
 	// minErrors is the fewest past errors a quantile is taken from.
 	minErrors = 12
 	// maxHorizon is the longest path and band, in months.
@@ -121,6 +127,9 @@ type panel struct {
 	// iFirst and iLast are the first and last complete dollar months; -1 when
 	// there is none.
 	iFirst, iLast int
+	// lag is how many months after its end an M2 month is usable
+	// (publicationLagMonths, or checkLagMonths for the rerun).
+	lag int
 }
 
 // newPanel lays the dollar months and M2 onto one grid. Only COMPLETE dollar
@@ -148,7 +157,7 @@ func newPanel(usd []usdMonth, m2 []moneyPoint) *panel {
 	for _, p := range m2 {
 		extend(p.Month)
 	}
-	p := &panel{first: lo, iFirst: -1, iLast: -1}
+	p := &panel{first: lo, iFirst: -1, iLast: -1, lag: publicationLagMonths}
 	if !set {
 		return p
 	}
@@ -185,6 +194,14 @@ func nanSlice(n int) []float64 {
 
 func (p *panel) idx(m Month) int { return int(m - p.first) }
 
+// withLag is the same panel with M2 usable lag months after its end. The
+// grids are shared, read-only.
+func (p *panel) withLag(lag int) *panel {
+	q := *p
+	q.lag = lag
+	return &q
+}
+
 func (p *panel) month(i int) Month { return p.first.Add(i) }
 
 func (p *panel) at(s []float64, i int) float64 {
@@ -202,10 +219,10 @@ func (p *panel) series(t target) []float64 {
 }
 
 // usableM2 is the newest M2 month a forecaster at the end of month t could
-// have read: at or before t-3, stepping back over months that are not stored
-// (the quarter-end-only history before 1397-04). -1 when there is none.
+// have read: at or before t-lag (t-3 by default), stepping back over months
+// that are not stored (the quarter-end-only history). -1 when there is none.
 func (p *panel) usableM2(t int) int {
-	k := t - publicationLagMonths
+	k := t - p.lag
 	if k >= len(p.m2) {
 		k = len(p.m2) - 1
 	}

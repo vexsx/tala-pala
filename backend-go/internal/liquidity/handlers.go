@@ -7,11 +7,11 @@ package liquidity
 // memory, the pattern internal/bourse uses for its index store. The revision
 // key is the footprint of everything the build reads: the CBI observations
 // (how many rows, how many already available, the newest id and availability),
-// each series' registry row and unit, and USD_IRT's stored closes -- plus the
-// Tehran date and the UTC date, because how old the newest figures are
-// changes at Tehran's midnight and which dollar month is still running
-// changes at UTC's (the daily closes are UTC-day buckets), both without any
-// row changing.
+// each series' registry row and unit, USD_IRT's stored closes and its entry in
+// the splice register -- plus the Tehran date and the UTC date, because how
+// old the newest figures are changes at Tehran's midnight and which dollar
+// month is still running changes at UTC's (the daily closes are UTC-day
+// buckets), both without any row changing.
 //
 // A series that is not ingested yet is not an error. The registry lookup
 // returns economic.ErrSeriesNotFound, the series is carried as unregistered,
@@ -20,6 +20,7 @@ package liquidity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -30,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/danaix/iran-gold-predictor/backend-go/internal/economic"
@@ -164,7 +166,14 @@ const revisionKeySelect = `
 	                        WHERE s.code = ANY($1)), '')
 	    || '|' || coalesce((SELECT count(*) || '/' || coalesce(max(observed_at)::text, '')
 	                        FROM prices
-	                        WHERE symbol = $2 AND quality = 'ok' AND observed_at < $3), '')`
+	                        WHERE symbol = $2 AND quality = 'ok' AND observed_at < $3), '')
+	    || '|' || coalesce((SELECT md5(value::text) FROM app_settings WHERE key = 'series_splices'), '')`
+
+// spliceSelect is USD_IRT's entry in the splice register the TGJU backfill
+// keeps (prediction-python app/jobs/tgju_backfill.py): where the series
+// changes definition and what it measures on each side. NULL when the
+// register has no such entry; no row when there is no register.
+const spliceSelect = `SELECT value -> 'USD_IRT' FROM app_settings WHERE key = 'series_splices'`
 
 // responses returns the built answers for the data as it stands, rebuilding
 // them when the revision key has moved. The lock is held across a rebuild so
@@ -191,7 +200,18 @@ func (h *Handler) responses(ctx context.Context) (*builtResponses, error) {
 	if err != nil {
 		return nil, fmt.Errorf("usd closes: %w", err)
 	}
-	b := buildAll(key, money, toDayCloses(closes), now)
+	var rawSplice []byte
+	err = h.Pool.QueryRow(ctx, spliceSelect).Scan(&rawSplice)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("splice register: %w", err)
+	}
+	splice, err := parseSplice(rawSplice)
+	if err != nil {
+		// A register this package cannot read is reported and left out: the
+		// notes then claim no splice date rather than a guessed one.
+		h.Log.Warn("liquidity_splice_register", "error", err)
+	}
+	b := buildAll(key, money, toDayCloses(closes), splice, now)
 	h.built = b
 	return b, nil
 }
@@ -202,15 +222,43 @@ func revisionKey(footprint string, now time.Time) string {
 	return footprint + "|" + tehranToday(now).Format(dateLayout) + "|" + utcDay(now).Format(dateLayout)
 }
 
+// parseSplice reads USD_IRT's splice-register entry. nil for no entry; an
+// error, and nil, for one without a readable splice_at.
+func parseSplice(raw []byte) (*usdSplice, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var e struct {
+		SpliceAt string `json:"splice_at"`
+		Before   string `json:"backfill_definition"`
+		After    string `json:"live_definition"`
+	}
+	if err := json.Unmarshal(raw, &e); err != nil {
+		return nil, fmt.Errorf("USD_IRT entry: %w", err)
+	}
+	at, err := time.Parse(time.RFC3339Nano, e.SpliceAt)
+	if err != nil {
+		return nil, fmt.Errorf("USD_IRT splice_at %q: %w", e.SpliceAt, err)
+	}
+	if e.Before == "" {
+		e.Before = "the backfilled history"
+	}
+	if e.After == "" {
+		e.After = "the live collection"
+	}
+	return &usdSplice{At: at.UTC(), Before: e.Before, After: e.After}, nil
+}
+
 // buildAll builds every response for one revision. Pure function.
-func buildAll(key string, money map[string]moneySeries, usd []dayClose, now time.Time) *builtResponses {
+func buildAll(key string, money map[string]moneySeries, usd []dayClose, splice *usdSplice,
+	now time.Time) *builtResponses {
 	b := &builtResponses{
 		key:     key,
 		monthly: buildAggregatesResponse(money, "monthly", now),
 		annual:  buildAggregatesResponse(money, "annual", now),
 		dollar:  map[int]dollarResponse{},
 	}
-	in := dollarInput{Now: now, USD: usd, M2: money[CodeLiquidity]}
+	in := dollarInput{Now: now, USD: usd, M2: money[CodeLiquidity], Splice: splice}
 	for _, hz := range horizons {
 		b.dollar[hz] = buildDollarResponse(in, hz)
 	}

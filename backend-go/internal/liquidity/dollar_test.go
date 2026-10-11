@@ -2,8 +2,10 @@ package liquidity
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDollarDegradedWithNothingIngested(t *testing.T) {
@@ -147,23 +149,43 @@ func TestDollarDataAgeTopLevelIsTheAnchors(t *testing.T) {
 
 func TestVerdictIsDerivedFromTheNumbers(t *testing.T) {
 	p := func(v float64) *float64 { return &v }
-	b := &backtestBlock{From: "1394-01", To: "1405-05", Target: "month-end close",
+	b := &backtestBlock{From: "1394-01", To: "1405-05", OutcomesThrough: "1405-06", Target: "month-end close",
+		RMSE: map[string]map[string]*float64{
+			"m2_paced":     {"3": p(0.16), "6": p(0.2362), "12": p(0.3391), "24": p(0.4183)},
+			"dollar_trend": {"3": p(0.1613), "6": p(0.2388), "12": p(0.3464), "24": p(0.4451)},
+		},
 		DMVsRandomWalkP:      map[string]*float64{"3": p(0.0015), "6": p(0.0018), "12": p(0.0007), "24": p(0.00001)},
-		DMVsTrendP:           map[string]*float64{"3": p(0.16), "6": p(0.22), "12": p(0.29), "24": p(0.30)},
+		DMVsTrendP:           map[string]*float64{"3": p(0.186), "6": p(0.22), "12": p(0.29), "24": p(0.303)},
 		DMTrendVsRandomWalkP: map[string]*float64{"3": p(0.004), "6": p(0.002), "12": p(0.0005), "24": p(0.0)},
 	}
 	v := verdict(b)
-	for _, want := range []string{"beat “no change” at every horizon tested (3, 6, 12 and 24 months",
-		"did not beat the dollar's own trend at any horizon tested (p = 0.160 to 0.300)",
-		"added no measurable skill", "The trend alone beat"} {
+	for _, want := range []string{"origins from 1394-01 with outcomes known by 1405-06",
+		"beat “no change” at every horizon tested (3, 6, 12 and 24 months",
+		// A failure to reject, said as one, with the errors that were measured:
+		// the M2-paced RMSE was lower at every horizon, by too little to tell
+		// from chance -- never "added no skill".
+		"against the dollar's own trend it was not measurably better at any horizon tested " +
+			"(RMSE 0.8% to 6.0% lower, one-sided p = 0.186 to 0.303)",
+		"The trend alone beat"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("verdict lacks %q:\n%s", want, v)
 		}
 	}
+	for _, overclaim := range []string{"no measurable skill", "added no", "did not beat the dollar's own trend"} {
+		if strings.Contains(v, overclaim) {
+			t.Errorf("verdict says more than a failure to reject: %q in\n%s", overclaim, v)
+		}
+	}
+	// Higher at some horizons and lower at others: the span is stated.
+	b.RMSE["m2_paced"]["3"] = p(0.17)
+	if v := verdict(b); !strings.Contains(v, "RMSE between 6.0% lower and 5.4% higher") {
+		t.Errorf("mixed RMSE:\n%s", v)
+	}
+	b.RMSE["m2_paced"]["3"] = p(0.16)
 	// If the numbers said M2 helped, the sentence must say so.
 	b.DMVsTrendP = map[string]*float64{"3": p(0.01), "6": p(0.02), "12": p(0.03), "24": p(0.04)}
 	v = verdict(b)
-	if strings.Contains(v, "no measurable skill") || !strings.Contains(v, "was better at every horizon tested") {
+	if strings.Contains(v, "not measurably better") || !strings.Contains(v, "was better at every horizon tested") {
 		t.Errorf("verdict ignores a significant improvement:\n%s", v)
 	}
 	b.DMVsTrendP = map[string]*float64{"3": p(0.5), "6": p(0.4), "12": p(0.03), "24": p(0.04)}
@@ -234,5 +256,131 @@ func TestDollarNotesStateTheBoundaries(t *testing.T) {
 		if strings.Contains(lower, banned) {
 			t.Errorf("the response says %q", banned)
 		}
+	}
+	// "fair value" appears only negated, as "not a fair value": the page's
+	// language check reads the served notes as they are.
+	if n := strings.Count(lower, "fair value"); n != strings.Count(lower, "not a fair value") {
+		t.Errorf("the response mentions a fair value other than to deny one: %s", raw)
+	}
+}
+
+// The rerun at a six-month lag is compared horizon by horizon, and the note
+// says whether the published conclusions moved.
+func TestLagCheckSaysWhetherTheConclusionsMove(t *testing.T) {
+	p := func(v float64) *float64 { return &v }
+	pub := &backtestBlock{
+		DMVsRandomWalkP: map[string]*float64{"3": p(0.001), "6": p(0.002), "12": p(0.001), "24": p(0.001)},
+		DMVsTrendP:      map[string]*float64{"3": p(0.19), "6": p(0.22), "12": p(0.29), "24": p(0.30)},
+	}
+	late := &backtestBlock{
+		RMSE: map[string]map[string]*float64{
+			"m2_paced":     {"3": p(0.161), "6": p(0.24), "12": p(0.34), "24": p(0.42)},
+			"dollar_trend": {"3": p(0.1613), "6": p(0.2388), "12": p(0.3464), "24": p(0.4451)},
+		},
+		DMVsRandomWalkP: map[string]*float64{"3": p(0.002), "6": p(0.002), "12": p(0.001), "24": p(0.001)},
+		DMVsTrendP:      map[string]*float64{"3": p(0.27), "6": p(0.3), "12": p(0.33), "24": p(0.38)},
+	}
+	lc := buildLagCheck(pub, late)
+	if lc.LagMonths != 6 || !lc.SameConclusions || lc.RMSE["24"] == nil ||
+		!strings.Contains(lc.Note, "usable only 6 months after it ended") ||
+		!strings.Contains(lc.Note, "do not rest on the 3-month assumption") {
+		t.Fatalf("%+v", lc)
+	}
+	late.DMVsTrendP["24"] = p(0.01)
+	if lc := buildLagCheck(pub, late); lc.SameConclusions || !strings.Contains(lc.Note, "differs from the result at 3 months") {
+		t.Fatalf("a moved horizon must be said: %+v", lc)
+	}
+}
+
+// On the research data the published backtest carries its rerun, and its
+// window says where outcomes stop.
+func TestBacktestCarriesTheLagCheck(t *testing.T) {
+	money := researchMoney(t)
+	resp := buildDollarResponse(dollarInput{Now: researchNow, USD: researchUSD(t), M2: money[CodeLiquidity]}, 12)
+	bt := resp.Backtest
+	if bt == nil || bt.LagCheck == nil || bt.OutcomesThrough != "1405-06" || bt.LagCheck.LagMonths != checkLagMonths {
+		t.Fatalf("backtest %+v", bt)
+	}
+	for _, h := range []string{"3", "6", "12", "24"} {
+		if bt.LagCheck.DMVsTrendP[h] == nil || bt.LagCheck.DMVsRandomWalkP[h] == nil {
+			t.Errorf("lag check at %s months: %+v", h, bt.LagCheck)
+		}
+	}
+	if !strings.Contains(bt.Note, "independent outcomes") || strings.Contains(bt.Note, "about five") {
+		t.Errorf("the overlap sentence is computed from n_origins: %s", bt.Note)
+	}
+	if want := independentOutcomes(bt.NOrigins["24"], 24); !strings.Contains(bt.Note, fmt.Sprintf("about %d independent", want)) {
+		t.Errorf("note %q, want about %d", bt.Note, want)
+	}
+	if c := resp.Band.CoverageIndependent; c["24"] != independentOutcomes(resp.Band.CoverageN["24"], 24) || len(c) != 1 {
+		t.Errorf("coverage_independent %v over %v", c, resp.Band.CoverageN)
+	}
+}
+
+// Where USD_IRT changes definition is read from the splice register, never
+// written into a sentence: with no entry no date is claimed, and with one the
+// notes name its date and both definitions.
+func TestDollarNotesFollowTheSpliceRegister(t *testing.T) {
+	money := researchMoney(t)
+	in := dollarInput{Now: researchNow, USD: researchUSD(t), M2: money[CodeLiquidity]}
+	none := buildDollarResponse(in, 12)
+	raw, _ := json.Marshal(none)
+	if strings.Contains(string(raw), "since 2022-04") || strings.Contains(string(raw), "USDT") ||
+		none.Anchor.Note != "free-market rate" ||
+		!strings.Contains(strings.Join(none.Notes, " "), "records no change of its definition") {
+		t.Errorf("no register entry, no splice claim: anchor %q", none.Anchor.Note)
+	}
+	sp, err := parseSplice([]byte(`{"splice_at": "2026-10-11T09:18:40.668349+00:00",
+		"backfill_definition": "one daily close of TGJU's price_dollar_rl", "live_definition": "the 24/7 USDT/toman market"}`))
+	if err != nil || !sp.At.Equal(time.Date(2026, 10, 11, 9, 18, 40, 668349000, time.UTC)) {
+		t.Fatalf("parse %v %+v", err, sp)
+	}
+	in.Splice = sp
+	// Every stored close (TGJU's, to 2026-10-10) is before the splice day.
+	before := buildDollarResponse(in, 12)
+	if before.Anchor.Note != "free-market rate: one daily close of TGJU's price_dollar_rl (USD_IRT's definition until 2026-10-10)" {
+		t.Errorf("anchor before the splice: %q", before.Anchor.Note)
+	}
+	notes := strings.Join(before.Notes, " ")
+	if !strings.Contains(notes, "USD_IRT changes definition on 2026-10-11 (the splice register): before it, one daily close") ||
+		!strings.Contains(notes, "from it, the 24/7 USDT/toman market") {
+		t.Errorf("notes %s", notes)
+	}
+	in.USD = append(append([]dayClose{}, in.USD...), dayClose{date("2026-10-11"), 264630})
+	in.Now = time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC)
+	if a := buildDollarResponse(in, 12).Anchor; a.CloseToman != 264630 ||
+		a.Note != "free-market rate: the 24/7 USDT/toman market (USD_IRT's definition since 2026-10-11)" {
+		t.Errorf("anchor after the splice: %+v", a)
+	}
+	// Production's register: the join in 2022-04 is read, not assumed.
+	prod, _ := parseSplice([]byte(`{"splice_at": "2022-04-09T10:00:00+00:00"}`))
+	if n := anchorNote(prod, date("2026-10-10")); !strings.Contains(n, "since 2022-04-09") || !strings.Contains(n, "the live collection") {
+		t.Errorf("production-shaped register: %q", n)
+	}
+}
+
+func TestParseSplice(t *testing.T) {
+	for _, raw := range []string{"", "null"} {
+		if sp, err := parseSplice([]byte(raw)); sp != nil || err != nil {
+			t.Errorf("%q: %+v %v", raw, sp, err)
+		}
+	}
+	for _, raw := range []string{`{"splice_at": "yesterday"}`, `{}`, `[1]`} {
+		if sp, err := parseSplice([]byte(raw)); sp != nil || err == nil {
+			t.Errorf("%q must be refused, not guessed: %+v", raw, sp)
+		}
+	}
+}
+
+// What the backtest can say about M2's revisions is read from the vintages.
+func TestDollarNotesCountM2Revisions(t *testing.T) {
+	m2 := moneySeries{Code: CodeLiquidity, Points: []moneyPoint{mp("1404-11", 1, ""), mp("1404-12", 2, "")}}
+	if n := strings.Join(dollarNotes(nil, m2), " "); !strings.Contains(n, "no stored M2 month has been revised") ||
+		!strings.Contains(n, "21 to 164 days") {
+		t.Errorf("%s", n)
+	}
+	m2.Points[1].Vintage = 2
+	if n := strings.Join(dollarNotes(nil, m2), " "); !strings.Contains(n, "1 stored M2 month(s) were revised") {
+		t.Errorf("%s", n)
 	}
 }

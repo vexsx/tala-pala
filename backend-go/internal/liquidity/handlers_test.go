@@ -68,6 +68,7 @@ func TestRevisionKeyCoversEverythingTheBuildReads(t *testing.T) {
 	for _, want := range []string{
 		"FROM economic_observations o", "count(*) FILTER (WHERE o.available_at <= $3)", "max(o.id)",
 		"i.unit", "s.updated_at", "FROM prices", "symbol = $2 AND quality = 'ok' AND observed_at < $3",
+		"md5(value::text) FROM app_settings WHERE key = 'series_splices'",
 	} {
 		if !strings.Contains(revisionKeySelect, want) {
 			t.Errorf("revision key lacks %q", want)
@@ -187,7 +188,7 @@ func TestToMoneySeriesUnits(t *testing.T) {
 }
 
 func TestBuildAllBuildsEveryAnswer(t *testing.T) {
-	b := buildAll("k", researchMoney(t), researchUSD(t), researchNow)
+	b := buildAll("k", researchMoney(t), researchUSD(t), nil, researchNow)
 	if b.key != "k" || b.monthly.Freq != "monthly" || b.annual.Annual == nil || len(b.dollar) != 2 ||
 		b.dollar[12].Horizon != 12 || b.dollar[24].Horizon != 24 || !b.dollar[24].Available {
 		t.Fatalf("built: monthly %s, annual %v, dollar %d", b.monthly.Freq, b.annual.Annual != nil, len(b.dollar))

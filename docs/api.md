@@ -453,7 +453,8 @@ beside them (`internal/liquidity`). Everything is read — CBI's series through
 `internal/relvalue`'s daily-close statement — and recomputed in Go; nothing is
 stored. The built answers are held in memory until a revision key over the data
 they read (the CBI observations, the series' registry rows and units, USD_IRT's
-stored closes, and the Tehran date) changes.
+stored closes and its entry in the splice register, and the Tehran and UTC
+dates) changes.
 
 ### What the evidence allows
 
@@ -467,9 +468,14 @@ The research behind these routes (2026-10-11) backtested monthly origins
 | Dollar grows at trailing 12-month M2 growth | 0.160 | 0.236 | 0.339 | 0.419 |
 
 The M2-paced path beats "no change" at every horizon (one-sided
-Diebold–Mariano p ≤ 0.002) but **not the dollar's own trend at any** (p 0.16 to
-0.30); the level models (the liquidity dollar, regressions on M2, error
-correction) lose to the trend. So the forward lines are **scenarios** — "if the
+Diebold–Mariano p ≤ 0.002) but is **not measurably better than the dollar's own
+trend at any**: its RMSE is 1–6% lower, by less than chance produces (p 0.16 to
+0.30) — a failure to reject, which the verdict states as exactly that. The level
+models (the liquidity dollar, regressions on M2, error correction) lose to the
+trend. CBI's workbooks have arrived 21 to 164 days after the month, so the
+three-month lag is early for some origins; `backtest.lag_check` reruns the
+comparison with M2 usable only six months after its month and says whether any
+horizon changes side. So the forward lines are **scenarios** — "if the
 dollar kept pace with M2 growth of X%" — and the responses never call them
 forecasts, fair values or targets, and carry no advice. The verdict sentence is
 computed from the p-values in the response, not written in advance.
@@ -493,16 +499,22 @@ research data.
 * **Growth** steps Jalali labels: `mom_pct` against the previous month, `yoy_pct`
   the same month a year earlier, `ytd_pct` the previous Esfand (CBI's second
   growth column). A comparison month not stored is `null` with
-  `null_reason[field]`; before the monthly Excel record begins only
-  quarter-end months exist (`frequency: "Q"`, `source: "tsdview"`). `source`
+  `null_reason[field]`. Each series' `monthly_from` is where the unbroken run
+  of monthly figures that ends at its newest month begins (1398-04 on the CBI
+  ingest's data); before it only quarter-end months are stored
+  (`frequency: "Q"`, `source: "tsdview"`, plus the oldest workbook's Esfand),
+  and the null reasons name that same month. `source`
   is `null` when the cited document is neither an Excel edition nor tsdview —
   it is read from the archive row's media type and URL, never guessed from the
   host.
 * **The base-money break.** CBI redefined base money from 1399-12; each point
   carries `method` (`old`/`revised`), and growth across two methods — or
   touching a month whose method is unknown — is `null` with a reason, never a
-  number. `breaks[]` states the break and lists the stored months after it that
-  are still old-method prints. Where the ingest recorded no method, months before
+  number. `breaks[]` states the break (`from`, CBI's footnote date), the
+  first stored month actually on the revised definition (`first_revised`) and
+  the stored months after the break that are still old-method prints
+  (`old_method_after`); its note is built from those, and claims no revision
+  size the store does not hold. Where the ingest recorded no method, months before
   1399-12 are read as old and months from 1402-01 as revised (the only
   definition each was printed on); 1399-12..1401-12 stay unknown, and `notes`
   says how many were inferred.
@@ -522,7 +534,11 @@ research data.
   recorded). `available_at_approx` is `true` where the backfill RECONSTRUCTED
   `available_at` (last-saved + 1 day) rather than seeing the file, `false` for
   a live fetch, `null` when the row does not say; every point carries it too.
-  `data_age.stale` is set past 140 days, with a warning.
+  `data_age.publication_lag_days` is CBI's measured lag (`min` 21, `max` 164
+  days after the month ends, from the workbooks' last-saved times) and
+  `data_age.stale` is set past `stale_after_days` = 195 — the longest lag plus
+  a month, because until the next month is published the newest stored one is
+  a month older than it — with a warning.
 
 Not ingested yet: `200` with `available: false`, every series present with
 `available: false`, `unavailable_reason` and `points: []`, `latest: null`.
@@ -534,13 +550,13 @@ for those).
 
 | field | meaning |
 |---|---|
-| `anchor` | the latest USD_IRT daily close (toman), its date, Jalali date and source note. Every path starts here |
-| `money_as_of` | the newest M2 month published (point-in-time), with `published_at` / `available_at` / `available_at_approx` |
+| `anchor` | the latest USD_IRT daily close (toman), its date, Jalali date and source note. Every path starts here. The note names the definition in force on that day from USD_IRT's entry in the splice register (`app_settings['series_splices']`, written by the TGJU backfill) and is just "free-market rate" when the register has none; the notes say where the series changes definition the same way |
+| `money_as_of` | the newest M2 month published (point-in-time), with `published_at` / `available_at` / `available_at_approx`, and `monthly_from` (as on `/aggregates`) |
 | `history[]` | per Jalali month: `usd_avg` (mean of daily closes), `usd_close` (last), `days`, `partial` (+ `partial_reason`: still running, or the history begins part-way through), `m2`, `usd_per_m2_index` (100 at `index_base`). Daily closes are the UTC-day closes `/market/candles` uses, placed by their civil date; a month is still running until its last UTC day has ended (00:00 UTC, 03:30 Tehran), because until then its month-end close is still forming |
 | `scenarios[]` | `last_12m`, `three_year`, `slowest_three_year` (the slowest Esfand-to-Esfand three years since 1390): `annual_growth_pct` G and its `basis`; `path[h]` = anchor·(1+G)^(h/12), with `period`, `date` and the band edges `lo`/`hi` |
 | `trend` | the dollar's own trend: mean monthly change of the log monthly average since the first complete month (`since`), carried from the anchor. The benchmark, not a forecast |
-| `band` | `by_h[]`: the 5th/95th percentiles (`lo`/`hi`, log units, widened so the band never narrows; `raw_lo`/`raw_hi` before that) of the M2-paced path's month-end-close errors from origins `origins_from` on, only outcomes already known, at least 12 per horizon. `coverage` is how often the same rule, applied at each past date to the errors known by then, held the actual price: pooled `1-12`, `13-24`, and `24` (with `coverage_n`, the (origin, horizon) pairs). It is the label — never a nominal 90% |
-| `backtest` | `rmse` per model (`random_walk`, `dollar_trend`, `m2_paced`) at 3/6/12/24 months; `dm_vs_random_walk_p` and `dm_vs_trend_p` are one-sided p-values that the **M2-paced** path's squared error is smaller (Harvey–Leybourne–Newbold corrected), `dm_trend_vs_random_walk_p` the same for the trend; `n_origins`; `verdict` |
+| `band` | `by_h[]`: the 5th/95th percentiles (`lo`/`hi`, log units, widened so the band never narrows; `raw_lo`/`raw_hi` before that) of the M2-paced path's month-end-close errors from origins `origins_from` on, only outcomes already known, at least 12 per horizon. `coverage` is how often the same rule, applied at each past date to the errors known by then, held the actual price: pooled `1-12`, `13-24`, and `24` (with `coverage_n`, the (origin, horizon) pairs). It is the label — never a nominal 90%. `coverage_independent["24"]` is about how many non-overlapping outcomes the 24-month origins hold (79 origins ≈ 3) |
+| `backtest` | `rmse` per model (`random_walk`, `dollar_trend`, `m2_paced`) at 3/6/12/24 months; `dm_vs_random_walk_p` and `dm_vs_trend_p` are one-sided p-values that the **M2-paced** path's squared error is smaller (Harvey–Leybourne–Newbold corrected), `dm_trend_vs_random_walk_p` the same for the trend; `n_origins` per horizon; origins run `from` on and are scored where the outcome is known by `outcomes_through`; `lag_check` is the same comparison with M2 usable six months after its month (`same_conclusions`, `note`); `verdict` is built from all of these |
 | `liquidity_dollar` | at the newest M2 month: every base month's dollar scaled by M2 growth since, published as `by_base.min/median/max` (each with its base; an even median names its two middle bases) over `bases_considered`, with `bases_below_actual`. Not a fair value: the base decides it |
 | `data_age` | top level: the ANCHOR close's age — `newest_close`, `age_days`, `stale` (past 4 days), `warning` — because every path starts from it; `money` is the newest M2 month's age (the aggregates' `data_age`), `usd` the dollar's again in full |
 
@@ -581,8 +597,9 @@ and nothing M2-based is.
 ```
 
 (An excerpt built by `buildDollarResponse` from the research data in
-`internal/liquidity/testdata` — TGJU's cash dollar throughout, where production
-reads USD_IRT, which is the USDT/toman market from 2022-04.)
+`internal/liquidity/testdata` — TGJU's cash dollar throughout. A deployment's
+own USD_IRT changes definition where its splice register says: on production
+the USDT/toman market from 2022-04, on a fresh backfill the day it ran.)
 
 ## Example
 

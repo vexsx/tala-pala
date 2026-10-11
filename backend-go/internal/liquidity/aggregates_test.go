@@ -222,8 +222,100 @@ func TestBreaksListOldPrintsAfterTheBreak(t *testing.T) {
 		mp("1400-12", 1, methodRevised),
 	}}
 	b := buildBreaks(base)
-	if len(b) != 1 || b[0].From != "1399-12" || len(b[0].OldMethodAfter) != 1 || b[0].OldMethodAfter[0] != "1400-01" {
+	if len(b) != 1 || b[0].From != "1399-12" || len(b[0].OldMethodAfter) != 1 || b[0].OldMethodAfter[0] != "1400-01" ||
+		*b[0].FirstRevised != "1399-12" {
 		t.Fatalf("breaks = %+v", b)
+	}
+}
+
+// The break note says what the stored months hold, read from their methods:
+// on the rehearsal's real data 1399-12..1401-11 are old-method prints and the
+// first revised month is 1401-12. No revision size is claimed that the store
+// cannot show.
+func TestBreakNoteIsReadFromTheStoredMethods(t *testing.T) {
+	base := moneySeries{Code: CodeBaseMoney}
+	for m := NewMonth(1399, 11); m <= NewMonth(1402, 2); m++ {
+		method := methodOld
+		if m >= NewMonth(1401, 12) {
+			method = methodRevised
+		}
+		base.Points = append(base.Points, mp(m.String(), 1, method))
+	}
+	b := buildBreaks(base)[0]
+	if *b.FirstRevised != "1401-12" || len(b.OldMethodAfter) != 24 || b.From != "1399-12" {
+		t.Fatalf("%+v", b)
+	}
+	for _, want := range []string{"the first month on the revised definition is 1401-12",
+		"24 stored month(s) from 1399-12 on are still old-method prints (old_method_after, 1399-12 to 1401-11)"} {
+		if !strings.Contains(b.Note, want) {
+			t.Errorf("note lacks %q: %s", want, b.Note)
+		}
+	}
+	if strings.Contains(b.Note, "%") || strings.Contains(b.Note, "1.8") {
+		t.Errorf("the note claims a revision size the store does not hold: %s", b.Note)
+	}
+	if n := buildBreaks(moneySeries{Code: CodeBaseMoney, Points: []moneyPoint{mp("1400-01", 1, methodOld)}})[0]; n.FirstRevised != nil ||
+		!strings.Contains(n.Note, "No stored month is on the revised definition yet") {
+		t.Errorf("%+v", n)
+	}
+	if n := buildBreaks(moneySeries{Code: CodeBaseMoney, Points: []moneyPoint{mp("1401-03", 1, "")}})[0]; !strings.Contains(n.Note, "1 stored month(s) from 1399-12 on carry no recorded method") {
+		t.Errorf("%+v", n)
+	}
+}
+
+// The monthly run is counted back from the newest month and stops at the
+// first gap or tsdview quarter-end -- the layout of the real store: tsdview
+// quarter-ends to 1397-09, the oldest workbook's Esfand 1397, tsdview's
+// 1398-03, then every month from 1398-04. One month is named everywhere.
+func TestMonthlyRunStartsAfterTheLastGap(t *testing.T) {
+	q := func(label string) moneyPoint { p := mp(label, 1, ""); p.Source = "tsdview"; return p }
+	s := moneySeries{Code: CodeLiquidity, Points: []moneyPoint{
+		q("1397-06"), q("1397-09"), mp("1397-12", 1, ""), q("1398-03"),
+	}}
+	for m := NewMonth(1398, 4); m <= NewMonth(1399, 6); m++ {
+		s.Points = append(s.Points, mp(m.String(), 1, ""))
+	}
+	if run, ok := monthlyRun(s); !ok || run.String() != "1398-04" {
+		t.Fatalf("run %s %v", run, ok)
+	}
+	got := pointsByPeriod(buildPoints(s))
+	if r := got["1398-05"].NullReason["yoy_pct"]; r != "1397-05 is not stored, so there is no year-on-year "+
+		"comparison (before 1398-04 only quarter-end months are stored)" {
+		t.Errorf("reason %q", r)
+	}
+	if got["1398-04"].MomPct == nil {
+		t.Error("1398-04 against tsdview's 1398-03 is a stored comparison")
+	}
+	resp := buildAggregatesResponse(map[string]moneySeries{CodeLiquidity: s}, "monthly", researchNow)
+	if f := resp.Series[0].MonthlyFrom; f == nil || *f != "1398-04" || resp.Series[1].MonthlyFrom != nil {
+		t.Errorf("monthly_from %v / %v", f, resp.Series[1].MonthlyFrom)
+	}
+	// A month before the run that is not a quarter-end is not called one.
+	s.Points = append([]moneyPoint{mp("1396-05", 1, "")}, s.Points...)
+	if r := pointsByPeriod(buildPoints(s))["1398-05"].NullReason["yoy_pct"]; !strings.Contains(r, "only some months are stored") {
+		t.Errorf("reason %q", r)
+	}
+	if _, ok := monthlyRun(moneySeries{}); ok {
+		t.Error("an empty series has no run")
+	}
+}
+
+// The stale bound is the longest measured lag plus a month, and the figures
+// it is built from travel with it.
+func TestMoneyAgeUsesTheMeasuredLag(t *testing.T) {
+	s := moneySeries{Code: CodeLiquidity, Points: []moneyPoint{mp("1403-11", 1, "")}}
+	end := NewMonth(1403, 11).End()
+	at := func(days int) moneyAge { return buildMoneyAge(s, end.AddDate(0, 0, days)) }
+	// 1403-12 arrived 164 days after it ended; 1403-11 was then 194 days old.
+	if a := at(194); a.Stale || a.StaleAfterDays != 195 || a.PublicationLagDays != (lagRange{21, 164}) {
+		t.Errorf("194 days: %+v", a)
+	}
+	if a := at(196); !a.Stale || !strings.Contains(a.Warning, "at most 164 days") {
+		t.Errorf("196 days: %+v", a)
+	}
+	if n := at(1).Note; !strings.Contains(n, "21 to 164 days") || !strings.Contains(n, "after 195 days") ||
+		strings.Contains(n, "four and a half") {
+		t.Errorf("note %q", n)
 	}
 }
 

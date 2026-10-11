@@ -27,7 +27,7 @@ func TestWriteFrontendFixtures(t *testing.T) {
 	if dir == "" {
 		t.Skip("LIQUIDITY_FIXTURE_DIR is not set")
 	}
-	b := buildAll("fixtures", researchMoney(t), researchUSD(t), researchNow)
+	b := buildAll("fixtures", researchMoney(t), researchUSD(t), nil, researchNow)
 	for name, v := range map[string]any{
 		"liquidity-aggregates-monthly.json": b.monthly,
 		"liquidity-aggregates-annual.json":  b.annual,

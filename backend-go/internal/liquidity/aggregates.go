@@ -12,9 +12,9 @@ package liquidity
 //   - Growth steps Jalali LABELS: month-on-month compares 1404-01 with
 //     1403-12, year-on-year with 1403-01, year-to-date with the previous
 //     Esfand (CBI's second growth column). A comparison month that is not
-//     stored makes the growth null with a reason -- before 1397-04 only
-//     quarter-end months exist, so a quarterly-era month has a year-on-year
-//     figure and no month-on-month one.
+//     stored makes the growth null with a reason -- before the unbroken run
+//     of monthly figures (monthlyRun) only quarter-end months exist, so a
+//     quarterly-era month has a year-on-year figure and no month-on-month one.
 //   - Base money changed DEFINITION: CBI revalued its foreign assets and
 //     adopted the IMF's 2016 manual for months from 1399-12 on, and some
 //     stored months after that are still old-method prints. Growth is never
@@ -141,28 +141,48 @@ func (s moneySeries) newest() (moneyPoint, bool) {
 
 // --- growth ---------------------------------------------------------------------
 
+// monthlyRun is where the unbroken run of monthly figures that ends at the
+// series' newest month begins: the first of the consecutive months, none of
+// them tsdview's quarter-ends, counted back from the newest. Before it a
+// series holds only some months -- tsdview's quarter-ends, and whichever
+// single month the oldest workbook reaches back to (Esfand 1397) -- so this
+// is the one month every "monthly from" statement names. ok is false for an
+// empty series or one whose newest point is a quarter-end.
+func monthlyRun(s moneySeries) (Month, bool) {
+	start, found := Month(0), false
+	for i := len(s.Points) - 1; i >= 0; i-- {
+		p := s.Points[i]
+		if p.Source == "tsdview" || (found && p.Month != start-1) {
+			break
+		}
+		start, found = p.Month, true
+	}
+	return start, found
+}
+
 // growthRule is what a growth comparison needs to know about its series.
 type growthRule struct {
 	all map[Month]moneyPoint
 	// methodSensitive applies the base-money rule.
 	methodSensitive bool
-	// monthlyFrom is the first month of the monthly (Excel) record when the
-	// series also carries tsdview's quarter-end history before it; zero when
-	// it carries none. It only explains a missing month, it never fills one.
+	// monthlyFrom is the start of the monthly run (monthlyRun) when the series
+	// also holds months before it; zero when it holds none. sparse names what
+	// those earlier months are. Both only explain a missing month, they never
+	// fill one.
 	monthlyFrom Month
+	sparse      string
 }
 
 func newGrowthRule(s moneySeries) growthRule {
 	g := growthRule{all: s.byMonth(), methodSensitive: s.Code == CodeBaseMoney}
-	quarterly := false
+	run, ok := monthlyRun(s)
+	if !ok || len(s.Points) == 0 || s.Points[0].Month >= run {
+		return g
+	}
+	g.monthlyFrom, g.sparse = run, "quarter-end months"
 	for _, p := range s.Points {
-		if p.Source == "tsdview" {
-			quarterly = true
-			continue
-		}
-		if quarterly {
-			g.monthlyFrom = p.Month
-			break
+		if p.Month < run && p.Month.Of()%3 != 0 {
+			g.sparse = "some months"
 		}
 	}
 	return g
@@ -174,7 +194,7 @@ func (g growthRule) pct(cur moneyPoint, base Month, what string) (*float64, stri
 	if !ok {
 		reason := fmt.Sprintf("%s is not stored, so there is no %s comparison", base, what)
 		if g.monthlyFrom != 0 && base < g.monthlyFrom {
-			reason += fmt.Sprintf(" (before %s only quarter-end months are stored)", g.monthlyFrom)
+			reason += fmt.Sprintf(" (before %s only %s are stored)", g.monthlyFrom, g.sparse)
 		}
 		return nil, reason
 	}
@@ -458,27 +478,64 @@ func oneKnownMethod(a, b map[string]bool) bool {
 
 type breakEntry struct {
 	Code string `json:"code"`
+	// From is the first month of CBI's revised definition, as its footnote
+	// states it -- not the first month stored on it (FirstRevised).
 	From string `json:"from"`
 	Note string `json:"note"`
+	// FirstRevised is the first stored month from the break on that is on
+	// the revised definition; null when none is yet.
+	FirstRevised *string `json:"first_revised"`
 	// OldMethodAfter lists stored months from the break on that are still
-	// old-method prints -- the 1400 months CBI printed before the revision
-	// reached them -- so a chart can mark each crossing.
+	// old-method prints -- months no edition stored here restates on the
+	// revised definition -- so a chart can mark each crossing.
 	OldMethodAfter []string `json:"old_method_after"`
 }
 
 const baseMoneyBreakNote = "CBI redefined base money from Esfand 1399: its foreign assets were " +
 	"revalued and the IMF's 2016 Monetary and Financial Statistics Manual classification was " +
-	"adopted (footnote 1 of the monthly tables). In the editions compared on 2026-10-11 the " +
-	"revised figures for 1399-12, 1400-12 and 1401 were 0.6% to 1.8% below their first prints. " +
-	"Growth is not computed across the two definitions; each month carries its method."
+	"adopted (footnote 1 of the monthly tables). A month is on the revised definition only where " +
+	"an edition printed it so, and growth is not computed across the two definitions; each month " +
+	"carries its method."
 
+// buildBreaks states the base-money break and where the stored months
+// actually cross it -- read from each month's method, so the note says what
+// this deployment holds rather than what some edition once showed.
 func buildBreaks(base moneySeries) []breakEntry {
 	b := breakEntry{Code: CodeBaseMoney, From: baseMoneyBreak.String(), Note: baseMoneyBreakNote,
 		OldMethodAfter: []string{}}
+	unknown := 0
 	for _, p := range base.Points {
-		if p.Month >= baseMoneyBreak && p.Method == methodOld {
-			b.OldMethodAfter = append(b.OldMethodAfter, p.Month.String())
+		if p.Month < baseMoneyBreak {
+			continue
 		}
+		switch p.Method {
+		case methodOld:
+			b.OldMethodAfter = append(b.OldMethodAfter, p.Month.String())
+		case methodRevised:
+			if b.FirstRevised == nil {
+				m := p.Month.String()
+				b.FirstRevised = &m
+			}
+		default:
+			unknown++
+		}
+	}
+	switch {
+	case len(base.Points) == 0:
+	case b.FirstRevised == nil:
+		b.Note += " No stored month is on the revised definition yet."
+	case len(b.OldMethodAfter) == 0:
+		b.Note += fmt.Sprintf(" In the stored data the first month on the revised definition is %s.",
+			*b.FirstRevised)
+	default:
+		b.Note += fmt.Sprintf(" In the stored data the first month on the revised definition is %s; "+
+			"%d stored month(s) from %s on are still old-method prints (old_method_after, %s to %s), "+
+			"because no edition stored here restates them.", *b.FirstRevised, len(b.OldMethodAfter),
+			baseMoneyBreak, b.OldMethodAfter[0], b.OldMethodAfter[len(b.OldMethodAfter)-1])
+	}
+	if unknown > 0 {
+		b.Note += fmt.Sprintf(" %d stored month(s) from %s on carry no recorded method.", unknown,
+			baseMoneyBreak)
 	}
 	return []breakEntry{b}
 }
