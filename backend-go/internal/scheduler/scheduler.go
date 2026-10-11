@@ -149,6 +149,17 @@ func New(cfg *config.Config, rdb *redis.Client, client *internalclient.Client,
 			_, err := client.TGJUDaily(ctx)
 			return err
 		}},
+		// The CBI's monthly monetary workbooks (migration 0034): base money,
+		// M2, M1 and quasi-money. Its own job rather than part of economic:
+		// it downloads and verifies whole workbooks from a host the
+		// production resolver reaches slowly, which needs a far longer budget
+		// than the API polls, and a CBI that is slow or has published a
+		// workbook the parser refuses must not fail the World Bank and IMF
+		// ingest. Daily: editions arrive months after their month ends.
+		{"cbi-monetary", cfg.Crons.CBIMonetary, internalclient.CBIMonetaryTimeout, func(ctx context.Context) error {
+			_, err := client.IngestCBIMonetary(ctx)
+			return err
+		}},
 	}
 
 	for _, j := range jobs {

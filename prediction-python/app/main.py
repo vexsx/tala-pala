@@ -122,6 +122,37 @@ class SciCpiIngestRequest(BaseModel):
     url: str = ""
 
 
+class CbiMonetaryIngestRequest(BaseModel):
+    """One CBI monetary-statistics run, in exactly one of three modes.
+
+    ``fetch_latest`` is the scheduled run (every Excel edition from the newest
+    stored one on); ``backfill_from`` (``'1399-04'``) is the first population
+    and its resumption, with availability reconstructed from each workbook;
+    ``path`` ingests one workbook already in this container, with ``filename``
+    and ``url`` recording what CBI called it and where it came from.
+    ``allow_older`` admits, in ``path`` mode only, an edition older than the
+    newest stored one — a deliberate replay. ``dry_run`` performs everything
+    and writes nothing.
+    """
+
+    fetch_latest: bool = False
+    backfill_from: Optional[str] = None
+    path: Optional[str] = None
+    filename: str = ""
+    url: str = ""
+    allow_older: bool = False
+    dry_run: bool = False
+
+
+class CbiHistoryIngestRequest(BaseModel):
+    """One saved payload of the CBI time-series viewer (tsdview), already in
+    this container — copied in by scripts/cbi_history_fetch.py."""
+
+    path: str
+    url: str = ""
+    dry_run: bool = False
+
+
 class EquityBarsIngestRequest(BaseModel):
     """Daily-bar payloads for one or more instruments, already in this container.
 
@@ -613,6 +644,152 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
             )  # type: ignore[return-value]
         registry.record_success(engine, "sci")
         return report
+
+    @app.post("/internal/economic/cbi-monetary")
+    def economic_cbi_monetary(body: CbiMonetaryIngestRequest) -> dict:
+        """Ingest the Central Bank of Iran's monthly monetary workbooks.
+
+        Scheduled daily by the Go API (``cbi-monetary``,
+        SCHEDULE_CBI_MONETARY_CRON) with ``{"fetch_latest": true}``: www.cbi.ir
+        answers the production host, slowly (migration 0034), so unlike SCI
+        this fetches for itself. The first population is
+        ``{"backfill_from": "1399-04"}``, run once by hand; until it has run the
+        scheduled call answers 409 ``backfill_required``.
+
+        Each workbook is parsed and verified whole before anything is written —
+        the rows found by label and the columns by their headers, the unit
+        stated, CBI's own accounting closing (sources = uses, supply = components,
+        M2 = M1 + quasi-money) and its printed growth matching its printed
+        levels — and refused whole if any of it fails. Editions are ingested
+        oldest first and a website run stops at the first that fails, reporting
+        it under ``failed``: a fetch that could not get the document (an HTML
+        challenge or error page where the workbook should be is one) or a
+        workbook that was refused answers 502 with the full report, because the
+        Go scheduler records job success from the status code.
+
+        Codes: 409 ``stale_edition`` for an edition older than the newest
+        stored one (``path`` mode; ``allow_older`` replays it deliberately), 409
+        ``backfill_required`` as above, 400 for a malformed request or a refused
+        workbook posted by ``path``. ``data_providers.enabled = FALSE`` for
+        ``cbi`` skips the website modes without a request.
+        """
+        from .economic.cbi import (
+            CbiBackfillRequiredError,
+            CbiFetchError,
+            CbiParseError,
+            CbiStaleEditionError,
+            ingest_cbi_monetary,
+            make_site,
+        )
+
+        website = bool(body.fetch_latest) or body.backfill_from is not None
+        try:
+            report = ingest_cbi_monetary(
+                engine,
+                fetch_latest=body.fetch_latest,
+                backfill_from=body.backfill_from,
+                path=body.path,
+                filename=body.filename,
+                url=body.url,
+                allow_older=body.allow_older,
+                dry_run=body.dry_run,
+                site=make_site() if website else None,
+            )
+        except CbiStaleEditionError as exc:
+            # 409: a valid workbook that CONFLICTS with what is stored. The
+            # provider's health is untouched; CBI published nothing wrong.
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"code": "stale_edition", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except CbiBackfillRequiredError as exc:
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"code": "backfill_required", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except CbiFetchError as exc:
+            # The section or a year page could not be read: before any edition.
+            if not body.dry_run:
+                registry.record_failure(engine, "cbi", str(exc))
+            return JSONResponse(
+                status_code=502,
+                content={"error": {"code": "upstream_failed", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except CbiParseError as exc:
+            # A posted workbook refused: a statement about the DOCUMENT.
+            if not body.dry_run:
+                registry.record_failure(engine, "cbi", str(exc))
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except (OSError, ValueError) as exc:
+            # A statement about the CALL: no such path, no mode or two modes, a
+            # malformed backfill_from. The provider's health is left alone.
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        if report.get("status") == "skipped":
+            # An operator's switch is a decision, not an outage.
+            return report
+        failed = report.get("failed")
+        if failed:
+            if not body.dry_run:
+                registry.record_failure(
+                    engine, "cbi", f"{failed['edition']}: {failed['error']}"
+                )
+            return JSONResponse(
+                status_code=502,
+                content=report
+                | {
+                    "error": {
+                        "code": (
+                            "upstream_failed"
+                            if failed["kind"] == "CbiFetchError"
+                            else "document_refused"
+                        ),
+                        "message": f"{failed['edition']}: {failed['error']}",
+                    }
+                },
+            )  # type: ignore[return-value]
+        if not body.dry_run:
+            registry.record_success(engine, "cbi")
+        return report
+
+    @app.post("/internal/economic/cbi-history")
+    def economic_cbi_history(body: CbiHistoryIngestRequest) -> dict:
+        """Ingest one saved payload of the CBI time-series viewer (tsdview).
+
+        The viewer holds the four aggregates at quarter ends from 1352 and
+        answers from outside Iran but not from the production host, so
+        scripts/cbi_history_fetch.py fetches it elsewhere, copies it in and
+        posts its path here — the sci_fetch.py pattern; there is no cron.
+
+        Only the quarters no Excel edition can carry (before Esfand 1397) are
+        written; where the store already holds an edition's value for M2, M1
+        or quasi-money the viewer must agree with it to the printed decimal,
+        or the whole payload is refused (400). Every row must be quarterly and
+        in thousand billion rials. Safe to repeat; ``dry_run`` writes nothing.
+        """
+        from .economic.cbi_history import CbiHistoryError, ingest_cbi_history
+
+        try:
+            return ingest_cbi_history(
+                engine, body.path, url=body.url, dry_run=body.dry_run
+            )
+        except CbiHistoryError as exc:
+            if not body.dry_run:
+                registry.record_failure(engine, "cbi", f"tsdview: {exc}")
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except (OSError, ValueError) as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": {"code": "bad_request", "message": str(exc)}},
+            )  # type: ignore[return-value]
 
     @app.get("/internal/equities/roster")
     def equities_roster(include_disabled: bool = False) -> dict:

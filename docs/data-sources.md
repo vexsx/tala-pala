@@ -160,3 +160,60 @@ reference 20,610 in both copies), and a break in the reference chain that
 some served copy chains is contested, not an action — so which copy answered
 first no longer decides whether the adjusted history carries it.
 
+## Central Bank of Iran — base money and liquidity (since migration 0034)
+
+Four series, all end-of-month **stocks** in **thousand billion rials** (هزار میلیارد ریال = 1e12
+rial; ÷10 = همت, 1e12 toman — for display only), stored exactly as CBI prints them, monthly on Jalali
+reference periods: `CBI_LIQUIDITY` (نقدینگی, M2, read on the supply side «نقدینگی برحسب عوامل موثر بر
+عرضه»), `CBI_BASE_MONEY` (پایه پولی, read on the sources side «پایه پولی از سمت منابع»),
+`CBI_MONEY_M1` (پول) and `CBI_QUASI_MONEY` (شبه پول). Provider row `cbi` (`iran_macro`, priority 40).
+Measured 2026-10-11 (≈130 requests to www.cbi.ir and 10 to tsdview during the research, honest UA).
+
+### Monthly: the Excel editions of گزیده آمارهای اقتصادی (server-side, daily)
+
+| Item | Measured |
+|---|---|
+| Where | `https://www.cbi.ir/category/2692.aspx` (the monetary and banking part of `/simplelist/LatestEconomicData_fa.aspx`). Its `ddlYearList` dropdown maps each year to `/simplelist/{id}.aspx` (1404→33030, 1403→30380, 1402→27853, 1401→23808, 1400→21999, 1399→20392 … 1385→3267) and the page itself carries the newest year's month list. A month links to `/simplelist/{id}.aspx`, whose «فرمت Excel» item is `/page/{id}.aspx`, answered as `application/vnd.ms-excel` with a `Content-Disposition` filename. The Excel id cannot be derived from the month id (+1, +2, once 33031→33058), so the month page is always read: the newest edition costs 3 requests. |
+| Coverage | 69 Excel editions, Tir 1399 → Esfand 1404 (none for 1405 by 2026-10-11). Farvardin–Khordad 1399 and every earlier month are PDF only (billion rials until 1390, Persian digits with `/` or `,` as the decimal point) and are not read. |
+| Layout | The first sheet — named «Sheet1» (1399), «متغیرهای عمده» or «متغیرهای پولی» (Khordad 1400) — titled «مانده برخی از متغیرهای عمده پولی و اعتباری در پایان {month} {year}» (the period a cell of its own, «اسفند1404» without a space, or the tail of the title cell in Esfand 1400). Levels in columns 4–6 or 3–5 under «مانده»; growth under «رشد در پایان», then contributions. Monthly edition: the same month last year, last Esfand, this month (a month row above the years). Esfand edition: Esfand Y-2, Y-1, Y (above the years: nothing, `0.0`, or the «مانده» header). Footnotes: «(1)», «(کاملا مقدماتی)», and `#` for growth beyond ±500%. The 1403-07 workbook's central-bank sheet sits one column left of every other edition's; it is not read. |
+| Months covered | Tir 1398 onwards, plus Esfand 1397 (the Esfand 1399 edition's oldest column). |
+| Checks (every edition, refused whole on failure) | Base money sources = uses; M2 by supply factors = M2 by components; M2 = M1 + quasi-money — exact (gap 0) in all 54 captured workbooks; printed growth vs the growth of the printed levels — largest gap 0.0496 pp. Unit «هزار میلیارد ریال» or refused. |
+| Values | Esfand 1404: base money 21,959.3, M2 155,812.2 (M1 39,948.4 + quasi-money 115,863.8), multiplier 7.095. Tir 1399: base money 3,628.6, M2 27,397.8. |
+| Revisions | M2/M1/quasi-money: none beyond the printed decimal across every overlapping edition captured. Base money: CBI's MFSMCG-2016 redefinition (foreign assets revalued in 1402, components reclassified) restated Esfand 1400 6,039.7 → 5,981.1 and Esfand 1401 8,599.9 → 8,548.0 (stored as vintage 2, `method = 'revised'`); one ordinary restatement, Aban 1403 12,046.2 → 12,046.1. Footnote start: «از اسفند 1399 به بعد» (1402-12 and 1403 editions) or «از سال 1400 به بعد» (1403-12 and 1404). The 1399–1401 editions predate it, so their base money for 1399-12 … 1401-11 is on the OLD method; the revised figures for those months exist at quarter ends in tsdview and, monthly, possibly in the 1402 editions (not captured). Growth is never computed across methods. |
+| Publication | CBI states no release date. `published_at` = the workbook's OLE "last saved" time (`140412.xls`: 2026-06-21 05:41:31 UTC, the day CBI's news item announced it, 93 days after month end). Measured lags 10–137 days (median 53–96 by year), in batches (1404/10 and 1404/11 both 2026-06-06). Files are replaced in place: every 1403/01–06 workbook carries 2024-12-30. |
+| Availability | Live runs: the moment the job fetched the workbook. The backfill: last-saved + 1 day, never earlier than the newest availability already stored from an edition (monotone; 1403-07, saved 2024-12-07, is clamped to the 1403-06 re-save's 2024-12-31), `available_at_approx = TRUE`. |
+| Reachability | The production host gets 200 from www.cbi.ir (the Esfand workbook byte-identical, sha256 `648af2335b07d1b8…`), 6–20 s a request because its resolver (9.9.9.9) times out first; the job gives each request 90 s and four attempts 5/10/20 s apart. |
+
+`POST /internal/economic/cbi-monetary`, scheduled daily by the Go job `cbi-monetary`
+(`SCHEDULE_CBI_MONETARY_CRON`, default `35 13 * * *`) with `fetch_latest`; the first population is
+`{"backfill_from": "1399-04"}` (≈145 requests, ~30 minutes at the production latency). See
+`docs/CONTRACTS.md` for the codes and `docs/deployment.md` for the order.
+
+### Quarterly history: the CBI time-series viewer (off-server, one-off)
+
+`tsdview.cis.cbi.ir` answers its JSON API without a login from outside Iran — `POST
+/backend/api/value/graph` with `{fromDate, toDateDate, categoryIds, calender: "FA", subFrequencyId}`
+(quarterly `9848C043…`; the monthly option answers empty values) — and **not** from the production
+host (the resolver fails; with 1.1.1.1 it resolves to 80.191.60.23 and the connection times out).
+Category ids: M2 `3505fc25-6097-…`, base money `…-6014-…`, M1 `…-6098-…`, quasi-money `…-6031-…`
+(currency in circulation `…-5fe8-…` is not read). Quarter-end months 1352 → Azar 1404, four
+decimals, unit id `2C129749…` (thousand billion rials). The viewer stamps Esfand 29 in 1354, 1358,
+1362, 1366 and 1370, which were leap years: the month is the period, the day is not used. Against the
+captured editions M1 and quasi-money agree at all 27 overlapping quarter-ends and M2 at 26 (Azar
+1404: 135,344.5 vs 135,344.6); base money carries the revised method from Esfand 1399 (4,506.7 where
+the 1400 edition prints 4,588.9 on the old one).
+
+`scripts/cbi_history_fetch.py` (`make refresh-cbi-history`) fetches it, verifies it, copies it to
+the server and posts `/internal/economic/cbi-history`. Only quarter-ends no Excel edition carries are
+written (1352 → Khordad 1398, Esfand 1397 excepted), with `available_at` = the ingest time and
+`published_at` NULL; the overlap is checked, not written.
+
+### Evaluated and not used
+- **English site** (`/category/3392.aspx`, `M&CA1404-12.xlsx`): the same numbers, Gregorian month
+  headers; the Persian edition is read instead because its periods are the Jalali months stored.
+- **tsd.cbi.ir**: times out from both the Mac and production; annual only.
+- **World Bank** `FM.LBL.BMNY.CN`: annual, 1960–2016, December basis (0.3–2.0% above end-Azar,
+  4.5–13.5% below Esfand); no base money. **IMF** (`api.imf.org` MFS_*): no Iran observations.
+- **The governor's monthly statements** (e.g. `/showitem/36328.aspx`, Shahrivar 1405 M2 +51.6% y/y):
+  growth rates only, no levels; not stored as observations.
+

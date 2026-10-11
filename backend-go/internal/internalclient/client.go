@@ -57,7 +57,15 @@ const (
 	// its audit row -- so the budget is sized for that first run, not for the
 	// forty-row passes that follow it.
 	TGJUDailyTimeout = 10 * time.Minute
-	DefaultTimeout   = 60 * time.Second
+	// The CBI monetary job reads www.cbi.ir from the production host, where
+	// every request costs 6-20 s because the host's resolver times out before
+	// a lookup succeeds (measured 2026-10-11). The Python side gives each
+	// request 90 s and four attempts 5/10/20 s apart, and a daily run is about
+	// five requests -- the section page, then a month page and a workbook for
+	// each new edition, and CBI releases them in batches. Thirty minutes covers
+	// a batch of several editions on a bad-DNS day; the lock TTL equals it.
+	CBIMonetaryTimeout = 30 * time.Minute
+	DefaultTimeout     = 60 * time.Second
 )
 
 // Client talks to the prediction-service internal API.
@@ -282,4 +290,23 @@ func (c *Client) IngestEconomic(ctx context.Context) (json.RawMessage, error) {
 // repeated run leaves collect, predict and train untouched.
 func (c *Client) TGJUDaily(ctx context.Context) (json.RawMessage, error) {
 	return c.Post(ctx, "/internal/tgju/daily", nil, TGJUDailyTimeout)
+}
+
+// CBIMonetaryRequest is the body of POST /internal/economic/cbi-monetary.
+// The scheduled run only ever sets FetchLatest; the backfill and the
+// path-based ingest are operator calls.
+type CBIMonetaryRequest struct {
+	FetchLatest bool `json:"fetch_latest"`
+}
+
+// IngestCBIMonetary fetches every Central Bank of Iran monthly monetary
+// workbook (base money, M2, M1, quasi-money) newer than the newest one stored,
+// verifies each whole and INSERTS new vintages, never updating a stored row.
+// The Python side answers 502 when a workbook could not be fetched or was
+// refused, and 409 until the one-off backfill has run, so a run that stored
+// nothing new because something broke is recorded as a failure. Nothing it
+// writes reaches model input, intervals or the buy/sell policy.
+func (c *Client) IngestCBIMonetary(ctx context.Context) (json.RawMessage, error) {
+	return c.Post(ctx, "/internal/economic/cbi-monetary",
+		CBIMonetaryRequest{FetchLatest: true}, CBIMonetaryTimeout)
 }

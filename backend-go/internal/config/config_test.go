@@ -41,6 +41,11 @@ func TestLoad_DefaultsAndRequired(t *testing.T) {
 	if cfg.Crons.TGJUDaily != "25 0,12 * * *" {
 		t.Fatalf("bad tgju-daily cron default: %q", cfg.Crons.TGJUDaily)
 	}
+	// CBI monetary workbooks arrive months after their month ends, so once a
+	// day, after the CBI's working day in Tehran.
+	if cfg.Crons.CBIMonetary != "35 13 * * *" {
+		t.Fatalf("bad cbi-monetary cron default: %q", cfg.Crons.CBIMonetary)
+	}
 	if cfg.MigrationsDir != "/app/migrations" {
 		t.Fatalf("bad migrations dir: %s", cfg.MigrationsDir)
 	}
@@ -143,6 +148,7 @@ func TestLoad_CORSAndOverrides(t *testing.T) {
 	env["SCHEDULE_COLLECT_CRON"] = "*/5 * * * *"
 	env["SCHEDULE_ECONOMIC_CRON"] = "15 5 * * *"
 	env["SCHEDULE_TGJU_DAILY_CRON"] = "45 1 * * *"
+	env["SCHEDULE_CBI_MONETARY_CRON"] = "5 6 * * *"
 	cfg, err := Load(env, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +164,9 @@ func TestLoad_CORSAndOverrides(t *testing.T) {
 	}
 	if cfg.Crons.TGJUDaily != "45 1 * * *" {
 		t.Fatalf("SCHEDULE_TGJU_DAILY_CRON not applied: %q", cfg.Crons.TGJUDaily)
+	}
+	if cfg.Crons.CBIMonetary != "5 6 * * *" {
+		t.Fatalf("SCHEDULE_CBI_MONETARY_CRON not applied: %q", cfg.Crons.CBIMonetary)
 	}
 }
 

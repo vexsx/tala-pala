@@ -544,9 +544,9 @@ URL would have stored Sudan's inflation as Iran's.
 **Internal:** `POST /internal/economic/ingest` body `{"codes":[...]}` (empty = all enabled). Per
 series in its own transaction; provider health is aggregated across the whole pass and written once,
 so a late success can no longer erase earlier failures. A pass in which every series fails is
-reported as a job failure. A series whose provider is document-ingested (`sci`, below) is listed with
-`status:"document_ingest"` and is **never fetched** by this pass — it counts as neither ingested nor
-failed, because nothing was attempted.
+reported as a job failure. A series whose provider is document-ingested (`sci` and `cbi`, below) is
+listed with `status:"document_ingest"` and the route that does ingest it, and is **never fetched** by
+this pass — it counts as neither ingested nor failed, because nothing was attempted.
 
 **Internal:** `POST /internal/economic/sci-cpi` body `{"path":"...","filename":"...","url":""}` —
 the Statistical Centre of Iran's urban CPI (`SCI_CPI_URBAN` / `_HOUSING` / `_RENT` / `_VEHICLES`,
@@ -569,6 +569,45 @@ own filename (`ts_urban_140505-14050618165804.xlsx` → 2026-09-09), day granula
 provenance and a file renamed in transit stores NULL and says so. Re-posting the same file writes
 nothing; a workbook with different values writes new vintages beside the prints they revise. A
 refused workbook answers `400` and leaves the database untouched.
+
+**Internal:** `POST /internal/economic/cbi-monetary` (migration `0034`; Go scheduler job
+`cbi-monetary`, `SCHEDULE_CBI_MONETARY_CRON`, default `35 13 * * *`) — the Central Bank of Iran's
+monthly monetary workbooks: `CBI_LIQUIDITY` (M2), `CBI_BASE_MONEY`, `CBI_MONEY_M1`, `CBI_QUASI_MONEY`,
+end-of-month **stocks** in `thousand_billion_rial` stored exactly as printed (Decimal, one decimal),
+monthly, `calendar='jalali'`, `quality_tier='official'`. Body: exactly one of
+`{"fetch_latest": true}` (the scheduled run: every Excel edition from the newest stored one on,
+oldest first, available from the moment it was fetched), `{"backfill_from": "1399-04"}` (the first
+population, run once by hand; editions older than the newest stored one are skipped without a
+request, so it resumes), or `{"path": "...", "filename": "", "url": "", "allow_older": false}` (a
+workbook already in the container). `dry_run` performs everything inside a rolled-back transaction.
+Unlike SCI this one fetches: `www.cbi.ir` answers the production host (slowly — 90 s per request,
+four attempts with backoff). The walk is section page → year list → month page → «فرمت Excel», and a
+response is accepted only as an OLE2 file (`d0cf11e0`); an HTML page there is a challenge or an
+error page and fails the run — never bypassed. Each workbook is parsed whole (rows by normalised
+label, columns by their headers, the edition from the sheet's own title, the unit stated and only
+`هزار میلیارد ریال` accepted) and refused whole unless CBI's own numbers agree: base money sources =
+uses, M2 by supply factors = M2 by components, M2 = M1 + quasi-money (±0.15), and the printed growth
+of each of the four rows = the growth of the printed levels (±0.1 pp; `#` only beyond ±500%).
+Archived in `source_documents` with `edition_label` (`'1404-12'`) and `document_saved_at` (the OLE
+"last saved" time, which becomes `published_at`). Base-money rows carry `method` `'old'`/`'revised'`
+(CBI's MFSMCG-2016 redefinition, from the start the workbook's footnote states; a footnote this
+cannot read refuses the workbook); a restatement under the other method is a new vintage even at an
+equal value. The backfill stamps `available_at` = last-saved + 1 day, never earlier than the newest
+availability already stored from an edition, with `available_at_approx = TRUE`. An edition older than
+the newest stored one → `409 stale_edition`; `fetch_latest` before any edition is stored → `409
+backfill_required`; a website run that could not get a workbook or refused one stops there (newer
+editions are not ingested past it) and answers `502` (`upstream_failed` / `document_refused`) with
+the full report; a posted workbook refused → `400`. With `data_providers.enabled = FALSE` for `cbi`
+the website modes answer `200` `status: "skipped"` without a request.
+
+**Internal:** `POST /internal/economic/cbi-history` body `{"path":"...","dry_run":false}` — the CBI
+time-series viewer's quarter-end values of the same four series (1352 on), fetched off-server by
+`scripts/cbi_history_fetch.py` because `tsdview.cis.cbi.ir` does not answer the production host. Only
+quarter-ends no Excel edition can carry are written (before Esfand 1397, and Khordad 1398), with
+`available_at` = ingest time and `published_at` NULL, base money `method='old'`; overlapping months
+are compared with the stored editions and M2/M1/quasi-money must agree to the last printed digit or
+the whole payload is refused (`400`). Every row must be quarterly and in the viewer's
+thousand-billion-rial unit id. Archived with `edition_label = 'tsdview'`. Idempotent; no cron.
 
 **Migration `0025`** re-enables `tgju`, disabled by `0023` after 2,047 consecutive failures. Re-tested
 from the production host on 2026-09-08: `call2/call3/call4.tgju.org` all `200` (~179 KB) and

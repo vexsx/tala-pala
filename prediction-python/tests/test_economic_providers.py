@@ -393,9 +393,10 @@ def test_catalog_covers_the_seven_countries_twice_and_says_what_it_is():
 
     countries = ("IRN", "TUR", "SAU", "ARE", "PAK", "EGY", "RUS")
     # The two families these adapters serve. The catalog also carries the SCI
-    # urban CPI, which is monthly and Jalali and arrives as a posted document
-    # rather than through either of these adapters; tests/test_economic_sci.py
-    # is where it is specified.
+    # urban CPI and the CBI's monetary aggregates, which are monthly and Jalali
+    # and arrive as archived documents rather than through either of these
+    # adapters; tests/test_economic_sci.py and tests/test_economic_cbi.py are
+    # where they are specified.
     annual = [
         spec for spec in CATALOG if spec.provider_code in ("worldbank", "imf_weo")
     ]
@@ -410,7 +411,7 @@ def test_catalog_covers_the_seven_countries_twice_and_says_what_it_is():
         # Every number this system serves travels with its caveats, whatever
         # family it belongs to.
         assert spec.notes.strip(), f"{spec.code} ships without a note"
-        assert spec.provider_code in ("worldbank", "imf_weo", "sci")
+        assert spec.provider_code in ("worldbank", "imf_weo", "sci", "cbi")
 
     world_bank = [spec for spec in CATALOG if spec.provider_code == "worldbank"]
     assert all(spec.measure == "index" for spec in world_bank)

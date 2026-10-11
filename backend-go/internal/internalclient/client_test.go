@@ -2,6 +2,7 @@ package internalclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -220,5 +221,61 @@ func TestTGJUDailyPostsToItsOwnPath(t *testing.T) {
 	// mid-write and record a failure while the Python side kept working.
 	if TGJUDailyTimeout <= DefaultTimeout {
 		t.Fatalf("TGJUDailyTimeout %v must exceed the %v default", TGJUDailyTimeout, DefaultTimeout)
+	}
+}
+
+// The CBI monetary job: its own path, POST, the token, and a body asking for
+// the newest editions -- the only mode the scheduler may run. An empty body
+// would be refused by the Python side (exactly one mode is required), so the
+// body is asserted, not just the path.
+func TestIngestCBIMonetaryPostsFetchLatestToItsOwnPath(t *testing.T) {
+	var gotPath, gotMethod, gotToken string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod, gotToken = r.URL.Path, r.Method, r.Header.Get("X-Internal-Token")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("body is not JSON: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok", testLogger())
+	if _, err := c.IngestCBIMonetary(context.Background()); err != nil {
+		t.Fatalf("IngestCBIMonetary: %v", err)
+	}
+	if gotPath != "/internal/economic/cbi-monetary" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotMethod != http.MethodPost {
+		t.Fatalf("method = %q, want POST", gotMethod)
+	}
+	if gotToken != "tok" {
+		t.Fatalf("X-Internal-Token = %q", gotToken)
+	}
+	if len(gotBody) != 1 || gotBody["fetch_latest"] != true {
+		t.Fatalf("body = %v, want exactly {\"fetch_latest\": true}", gotBody)
+	}
+	// Each request to www.cbi.ir costs 6-20 s from the production host.
+	if CBIMonetaryTimeout <= TGJUDailyTimeout {
+		t.Fatalf("CBIMonetaryTimeout %v must exceed the %v daily-close budget",
+			CBIMonetaryTimeout, TGJUDailyTimeout)
+	}
+}
+
+// A refused workbook comes back as 502 with the report; the client must
+// surface it as an error so the scheduler records the run as failed.
+func TestIngestCBIMonetaryReportsARefusedWorkbookAsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":{"code":"document_refused","message":"1405-01: ..."}}`))
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok", testLogger())
+	_, err := c.IngestCBIMonetary(context.Background())
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusBadGateway {
+		t.Fatalf("err = %v, want an APIError with status 502", err)
 	}
 }

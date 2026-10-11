@@ -49,35 +49,44 @@ under a ``base_period`` label they no longer belong to are worse than no data.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re
-import unicodedata
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any, Iterable, Optional
 
 import openpyxl
-from sqlalchemy import and_, func, select
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 
 from ..db import (
     economic_observations,
     economic_series,
     ensure_utc,
-    insert_ignore,
-    source_documents,
     utcnow,
 )
 from .catalog import SCI_PROVIDER, SCI_SHEET, sci_specs
+
+# The calendar and text helpers lived here while SCI was their only reader;
+# they moved to app/economic/jalali.py when the CBI reader needed them too, and
+# are re-exported so this module's public surface did not change.
+from .jalali import (  # noqa: F401 - re-exported
+    JALALI_MONTHS,
+    jalali_month_span,
+    jalali_to_gregorian,
+    month_number,
+    normalize_fa,
+)
 from .store import (
     STATUS_INSERTED,
     STATUS_RACED,
     STATUS_REVISED,
     STATUS_UNCHANGED,
     ensure_series,
+    file_sha256_and_size,
     record_observation,
+    record_source_document,
 )
 
 log = logging.getLogger(__name__)
@@ -118,92 +127,6 @@ class SciStaleWorkbookError(ValueError):
 
     The publisher's own date, carried in the filename, is what detects it.
     """
-
-
-# --- Jalali <-> Gregorian ----------------------------------------------------
-#
-# The inverse of :func:`app.features.engineering.gregorian_to_jalali`, and the
-# same integer algorithm, so the two can never disagree about a boundary. The
-# repo already owns the forward direction; this adds only the direction it
-# lacks. Round-tripped over every month boundary in 1381..1405 with zero
-# mismatches, which tests/test_economic_sci.py keeps as a test rather than a
-# claim.
-
-
-def jalali_to_gregorian(jy: int, jm: int, jd: int) -> date:
-    """The Gregorian date of a Jalali (Solar Hijri) year/month/day."""
-    jy2 = jy - 979
-    n = 365 * jy2 + (jy2 // 33) * 8 + ((jy2 % 33) + 3) // 4
-    n += (jm - 1) * 31 if jm <= 6 else 186 + (jm - 7) * 30
-    n += jd - 1 + 79
-    gy = 1600 + 400 * (n // 146097)
-    n %= 146097
-    leap = True
-    if n >= 36525:
-        n -= 1
-        gy += 100 * (n // 36524)
-        n %= 36524
-        if n >= 365:
-            n += 1
-        else:
-            leap = False
-    gy += 4 * (n // 1461)
-    n %= 1461
-    if n >= 366:
-        leap = False
-        n -= 1
-        gy += n // 365
-        n %= 365
-    months = [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    gm = 0
-    while gm < 12 and n >= months[gm]:
-        n -= months[gm]
-        gm += 1
-    return date(gy, gm + 1, n + 1)
-
-
-def jalali_month_span(jy: int, jm: int) -> tuple[date, date]:
-    """Gregorian ``[start, end]`` of one Jalali month, both inclusive.
-
-    The end is derived by stepping back one day from the NEXT month's first
-    day rather than from a table of month lengths, so a leap year (Esfand
-    having 30 days instead of 29) needs no special case and cannot drift.
-    """
-    start = jalali_to_gregorian(jy, jm, 1)
-    next_year, next_month = (jy + 1, 1) if jm == 12 else (jy, jm + 1)
-    return start, jalali_to_gregorian(next_year, next_month, 1) - timedelta(days=1)
-
-
-# --- Persian text normalisation ---------------------------------------------
-
-_ARABIC_TO_PERSIAN = {
-    0x0643: 0x06A9,  # ARABIC KAF     -> PERSIAN KEHEH
-    0x064A: 0x06CC,  # ARABIC YEH     -> PERSIAN YEH
-    0x0649: 0x06CC,  # ALEF MAKSURA   -> PERSIAN YEH
-    0x0629: 0x0647,  # TEH MARBUTA    -> HEH
-}
-# ZWNJ, LRM, RLM, NBSP, BOM: invisible in the spreadsheet, fatal to equality.
-_STRIP = dict.fromkeys([0x200C, 0x200E, 0x200F, 0x00A0, 0xFEFF])
-
-
-def normalize_fa(text: object) -> str:
-    """Fold a Persian label to a comparable form.
-
-    Without this, ``مسكن`` (Arabic kaf) and ``مسکن`` (Persian keheh) are
-    different strings that render identically, and the lookup silently misses —
-    which, before the all-or-nothing rule below, meant ingesting three series
-    out of four and reporting success.
-    """
-    folded = unicodedata.normalize("NFKC", str(text or ""))
-    folded = folded.translate(_STRIP).translate(_ARABIC_TO_PERSIAN)
-    return re.sub(r"\s+", " ", folded).strip()
-
-
-JALALI_MONTHS = (
-    "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
-    "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
-)
-_MONTH_INDEX = {normalize_fa(name): i + 1 for i, name in enumerate(JALALI_MONTHS)}
 
 
 def _targets() -> dict[str, str]:
@@ -373,7 +296,7 @@ def parse_workbook(rows: Iterable[Iterable[object]]) -> dict[str, list[SciObserv
             current_year = _checked_jalali_year(cell)
         elif isinstance(cell, str) and cell.strip().isdigit():
             current_year = _checked_jalali_year(cell.strip())
-        month = _MONTH_INDEX.get(normalize_fa(month_row[col]))
+        month = month_number(month_row[col])
         if current_year is not None and month is not None:
             axis.append((col, current_year, month))
     if not axis:
@@ -472,66 +395,6 @@ def read_workbook(path: str) -> dict[str, list[SciObservation]]:
         workbook.close()
 
 
-# --- source document --------------------------------------------------------
-
-
-def record_source_document(
-    conn,
-    *,
-    provider_code: str,
-    url: str,
-    title: str,
-    media_type: str,
-    byte_size: int,
-    content_sha256: str,
-    fetched_at: datetime,
-) -> tuple[int, bool]:
-    """Archive the artifact a value was read from; return ``(id, inserted)``.
-
-    Deduped on ``(provider_code, content_sha256)`` — the constraint 0024
-    already declares, on the grounds that the same bytes re-fetched from the
-    same provider are the same document.  That is what makes re-posting a file
-    a no-op rather than a second archive row with a second set of observations
-    hanging off it.
-
-    ``storage_path`` is left empty on purpose.  The durable copy lives beside
-    the backups on the host; the service only ever sees a temporary copy inside
-    its own container, and recording that path would claim a retrievability
-    this service cannot offer.  The hash is what makes the row defensible: any
-    copy of the file can be checked against it.
-    """
-    values = {
-        "provider_code": provider_code,
-        "url": url,
-        "title": title,
-        "media_type": media_type,
-        "byte_size": int(byte_size),
-        "content_sha256": content_sha256,
-        "storage_path": "",
-        "fetched_at": fetched_at,
-    }
-    inserted = insert_ignore(conn, source_documents, [values])
-    document_id = conn.execute(
-        select(source_documents.c.id).where(
-            and_(
-                source_documents.c.provider_code == provider_code,
-                source_documents.c.content_sha256 == content_sha256,
-            )
-        )
-    ).scalar_one()
-    return int(document_id), bool(inserted)
-
-
-def _sha256_and_size(path: str) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    size = 0
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-            size += len(chunk)
-    return digest.hexdigest(), size
-
-
 def _empty_counts() -> dict[str, Any]:
     return {
         "inserted": 0, "unchanged": 0, "revised": 0, "raced": 0, "projections": 0,
@@ -583,7 +446,7 @@ def ingest_sci_cpi(
     if not name:
         raise SciParseError("no filename: nothing to derive a publication date from")
 
-    content_sha256, byte_size = _sha256_and_size(path)
+    content_sha256, byte_size = file_sha256_and_size(path)
     series = read_workbook(path)
 
     published_date = published_at_from_filename(name)

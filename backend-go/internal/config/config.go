@@ -24,6 +24,7 @@ type CronConfig struct {
 	TrendAlignment string
 	Economic       string
 	TGJUDaily      string
+	CBIMonetary    string
 }
 
 // Config is the fully-parsed application configuration.
@@ -188,6 +189,15 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 			// re-read the same forty rows. The minute is offset from collect
 			// (*/10), predict (:05), trend alignment (:07) and signals (:10).
 			TGJUDaily: get("SCHEDULE_TGJU_DAILY_CRON", "25 0,12 * * *"),
+			// Once a day at 13:35 UTC (17:05 Tehran), after the CBI's working
+			// day: the Esfand 1404 workbook was saved at 05:41 UTC and
+			// announced the same day, so a run after the office closes sees a
+			// same-day release the day it appears, which is what its
+			// available_at records. More often would re-read an unchanged page:
+			// editions arrive one to four and a half months after their month
+			// ends. The minute is clear of collect (*/10), tgju-daily (:25)
+			// and the hourly jobs.
+			CBIMonetary: get("SCHEDULE_CBI_MONETARY_CRON", "35 13 * * *"),
 		},
 	}
 

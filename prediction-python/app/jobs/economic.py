@@ -49,11 +49,13 @@ here.
 
 *Document-ingested series are reported, never attempted.*  A series whose
 provider is in :data:`app.economic.catalog.DOCUMENT_INGEST_PROVIDERS` arrives
-as a posted file rather than a poll, because its source is unreachable from
-this host at all (migration 0027 records the diagnosis for amar.org.ir).
-Fetching it would fail on every tick, forever, and would park the circuit
-breaker on a provider that is not down — so it is reported with
-``status='document_ingest'`` and the endpoint that does ingest it, and is
+as an archived document rather than a poll: SCI's because its source is
+unreachable from this host at all (migration 0027 records the diagnosis for
+amar.org.ir), the CBI's because its workbook is parsed, cross-checked and
+archived as a whole by its own job (migration 0034).  This job has no adapter
+for either, and attempting one would record a provider failure on every tick
+— so each is reported with ``status='document_ingest'`` and the route that
+does ingest it (:data:`app.economic.catalog.DOCUMENT_INGEST_ROUTES`), and is
 counted as neither ingested nor failed.  It is still listed, because a series
 missing from the report would be indistinguishable from one that was never in
 the catalog.
@@ -79,7 +81,7 @@ from ..economic import (
     SeriesSpec,
     enabled_specs,
 )
-from ..economic.catalog import DOCUMENT_INGEST_PROVIDERS
+from ..economic.catalog import DOCUMENT_INGEST_PROVIDERS, DOCUMENT_INGEST_ROUTES
 from ..economic.store import (
     STATUS_INSERTED,
     STATUS_RACED,
@@ -173,9 +175,8 @@ def ingest_economic(
             result["series"][spec.code] = _empty_counts() | {
                 "status": "document_ingest",
                 "reason": (
-                    f"{spec.provider_code} is ingested from a posted document, "
-                    "not polled: POST /internal/economic/sci-cpi with a workbook "
-                    "fetched by scripts/sci_fetch.py"
+                    f"{spec.provider_code} is ingested from an archived document, "
+                    f"not polled: {DOCUMENT_INGEST_ROUTES[spec.provider_code]}"
                 ),
             }
             continue

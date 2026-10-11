@@ -34,15 +34,24 @@ Neither flag is stated by these sources; both are computed from the clock at
 fetch time.  A flag is therefore a fact about the moment a value was written,
 never a fact re-derived later — the calendar rolling over must not turn a
 stored forecast into an observation.  :func:`record_observation` enforces this
-by deciding "unchanged" on the VALUE alone.
+by deciding "unchanged" on the VALUE alone — and, where the source states one,
+on the METHOD the value was compiled under (migration 0034), because that is
+a statement by the source and not a reading of the clock.
+
+*A value is stored exactly as it was read.*  A source that prints decimals
+(the CBI's 155,812.2) is handed over as a :class:`~decimal.Decimal` and
+reaches the ``NUMERIC`` column unchanged; only the "same value?" comparison is
+done in floating point.  See :func:`stored_value`.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any, Iterator, Optional, Union
 
 from sqlalchemy import Select, and_, func, select
@@ -52,7 +61,9 @@ from ..db import (
     economic_observations,
     economic_series,
     ensure_utc,
+    insert_ignore,
     instruments,
+    source_documents,
     utcnow,
 )
 from .catalog import SeriesSpec
@@ -111,6 +122,29 @@ def values_equal(left: float, right: float) -> bool:
     )
 
 
+Number = Union[float, int, Decimal]
+
+
+def stored_value(value: Number) -> Union[float, Decimal]:
+    """What is handed to the driver for ``economic_observations.value``.
+
+    A :class:`~decimal.Decimal` passes through untouched, so a source that
+    prints ``155812.2`` is stored as exactly that in the ``NUMERIC`` column:
+    psycopg sends a Decimal as a numeric literal, while a float would arrive as
+    ``float8`` and be converted on the server.  Everything else is a float, as
+    it always was.  (SQLite, which the tests run on, has no decimal type and
+    stores a float either way; the PostgreSQL path is the one this protects.)
+
+    A NaN or infinite Decimal is refused: ``NUMERIC`` would accept a NaN, and
+    no source here prints one as a measurement.
+    """
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError(f"refusing to store the non-finite value {value!r}")
+        return value
+    return float(value)
+
+
 # --- records ----------------------------------------------------------------
 
 
@@ -122,6 +156,9 @@ class ObservationWrite:
     vintage: int
     previous_value: Optional[float] = None
     previous_vintage: Optional[int] = None
+    # The method the row being revised was compiled under (migration 0034);
+    # None for every series whose source states no method.
+    previous_method: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -139,6 +176,12 @@ class EconomicObservation:
     is_nowcast: bool
     source_document_id: Optional[int]
     collected_at: Optional[datetime]
+    # Migration 0034. The method the source compiled this value under ('old' /
+    # 'revised' for CBI base money; None where the source states none), and
+    # whether available_at was reconstructed from the document rather than
+    # observed by this system.
+    method: Optional[str] = None
+    available_at_approx: bool = False
 
 
 @dataclass(frozen=True)
@@ -310,13 +353,82 @@ def ensure_series(bind: Bind, entry: SeriesSpec) -> int:
     return int(series_id)
 
 
+def file_sha256_and_size(path: str) -> tuple[str, int]:
+    """The sha256 hex digest and byte size of the file at ``path``."""
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
+def record_source_document(
+    conn: Connection,
+    *,
+    provider_code: str,
+    url: str,
+    title: str,
+    media_type: str,
+    byte_size: int,
+    content_sha256: str,
+    fetched_at: datetime,
+    edition_label: str = "",
+    document_saved_at: Optional[datetime] = None,
+) -> tuple[int, bool]:
+    """Archive the artifact a value was read from; return ``(id, inserted)``.
+
+    Deduped on ``(provider_code, content_sha256)`` — the constraint 0024
+    already declares, on the grounds that the same bytes re-fetched from the
+    same provider are the same document.  That is what makes re-posting a file
+    a no-op rather than a second archive row with a second set of observations
+    hanging off it.  A re-post therefore keeps the FIRST row's ``fetched_at``,
+    ``edition_label`` and ``document_saved_at``: the archive records when the
+    bytes first arrived, not every time they were seen again.
+
+    ``storage_path`` is left empty on purpose.  The durable copy lives beside
+    the backups on the host; the service only ever sees a temporary copy inside
+    its own container, and recording that path would claim a retrievability
+    this service cannot offer.  The hash is what makes the row defensible: any
+    copy of the file can be checked against it.
+
+    ``edition_label`` and ``document_saved_at`` are migration 0034's: the
+    publisher's own name for the edition (``'1404-12'`` for a CBI monthly
+    workbook) and the timestamp the document's own metadata states it was
+    last saved at, which is NULL for a format that carries none.
+    """
+    values = {
+        "provider_code": provider_code,
+        "url": url,
+        "title": title,
+        "media_type": media_type,
+        "byte_size": int(byte_size),
+        "content_sha256": content_sha256,
+        "storage_path": "",
+        "fetched_at": fetched_at,
+        "edition_label": edition_label,
+        "document_saved_at": ensure_utc(document_saved_at),
+    }
+    inserted = insert_ignore(conn, source_documents, [values])
+    document_id = conn.execute(
+        select(source_documents.c.id).where(
+            and_(
+                source_documents.c.provider_code == provider_code,
+                source_documents.c.content_sha256 == content_sha256,
+            )
+        )
+    ).scalar_one()
+    return int(document_id), bool(inserted)
+
+
 def record_observation(
     bind: Bind,
     series_id: int,
     *,
     ref_period_start: date,
     ref_period_end: date,
-    value: float,
+    value: Number,
     available_at: datetime,
     ref_period_label: str = "",
     published_at: Optional[datetime] = None,
@@ -324,6 +436,8 @@ def record_observation(
     is_projection: bool = False,
     source_document_id: Optional[int] = None,
     collected_at: Optional[datetime] = None,
+    method: Optional[str] = None,
+    available_at_approx: bool = False,
 ) -> ObservationWrite:
     """Store one observation under the vintage rule.
 
@@ -356,6 +470,23 @@ def record_observation(
     rolled over — which is the only way this system could have served a
     forecast as a measurement.
 
+    **``method`` IS part of that comparison**, and the difference is the
+    point.  The flags above are computed from the clock; a method is STATED by
+    the source.  The CBI redefined base money (migration 0034) and prints the
+    new definition in later editions: a period restated under the new method is
+    a restatement even in the unlikely case the number came out the same, and
+    a reader that must never compute growth across the two methods has to be
+    able to read the current row's method off the row.  ``None`` — every
+    source that states no method — compares equal to ``None``, so for every
+    other series this changes nothing.
+
+    ``available_at_approx`` is NOT compared: it says how this system arrived at
+    ``available_at`` for the row it writes (reconstructed from the document
+    during a backfill, rather than observed), which is a fact about the write.
+
+    ``value`` may be a :class:`~decimal.Decimal`; it is stored exactly
+    (:func:`stored_value`) and compared numerically.
+
     ``available_at`` must not precede the newest stored vintage's
     ``available_at``: the reader picks the winning row by availability, so a
     row that claims to have been knowable earlier than the print it revises is
@@ -381,7 +512,8 @@ def record_observation(
             "read filters on it"
         )
 
-    numeric_value = float(value)
+    exact_value = stored_value(value)
+    numeric_value = float(exact_value)
     stamped_available_at = ensure_utc(available_at)
     period_rows = and_(
         economic_observations.c.series_id == series_id,
@@ -396,6 +528,7 @@ def record_observation(
             select(
                 economic_observations.c.vintage,
                 economic_observations.c.value,
+                economic_observations.c.method,
             )
             .where(period_rows)
             .order_by(
@@ -418,13 +551,15 @@ def record_observation(
             ensure_utc(bounds[1]) if bounds is not None and bounds[1] is not None else None
         )
 
+        previous_method: Optional[str] = None
         if current is None:
             status, vintage = STATUS_INSERTED, 1
             previous_value = previous_vintage = None
         else:
             previous_vintage = int(current.vintage)
             previous_value = float(current.value)
-            if values_equal(previous_value, numeric_value):
+            previous_method = current.method
+            if values_equal(previous_value, numeric_value) and previous_method == method:
                 # Nothing to store, so nothing to check: an ingest that writes
                 # no row cannot introduce look-ahead, whatever its clock says.
                 return ObservationWrite(
@@ -432,6 +567,7 @@ def record_observation(
                     vintage=previous_vintage,
                     previous_value=previous_value,
                     previous_vintage=previous_vintage,
+                    previous_method=previous_method,
                 )
             status, vintage = STATUS_REVISED, max_vintage + 1
 
@@ -454,7 +590,7 @@ def record_observation(
             ref_period_start=ref_period_start,
             ref_period_end=ref_period_end,
             ref_period_label=ref_period_label,
-            value=numeric_value,
+            value=exact_value,
             published_at=ensure_utc(published_at),
             available_at=stamped_available_at,
             vintage=vintage,
@@ -462,6 +598,8 @@ def record_observation(
             is_projection=bool(is_projection),
             source_document_id=source_document_id,
             collected_at=ensure_utc(collected_at) or utcnow(),
+            method=method,
+            available_at_approx=bool(available_at_approx),
         )
         # The guarantee chosen here: AT MOST ONE row per
         # (series_id, ref_period_start, vintage) — exactly the key
@@ -499,12 +637,14 @@ def record_observation(
                 vintage=vintage,
                 previous_value=previous_value,
                 previous_vintage=previous_vintage,
+                previous_method=previous_method,
             )
     return ObservationWrite(
         status=status,
         vintage=vintage,
         previous_value=previous_value,
         previous_vintage=previous_vintage,
+        previous_method=previous_method,
     )
 
 
@@ -513,7 +653,7 @@ def record_observation(
 _PIT_COLUMNS = (
     "ref_period_start", "ref_period_end", "ref_period_label", "value",
     "vintage", "available_at", "published_at", "is_projection", "is_nowcast",
-    "source_document_id", "collected_at",
+    "source_document_id", "collected_at", "method", "available_at_approx",
 )
 
 
@@ -680,6 +820,8 @@ def _to_observation(row: Any) -> EconomicObservation:
             else None
         ),
         collected_at=ensure_utc(row["collected_at"]),
+        method=row["method"],
+        available_at_approx=bool(row["available_at_approx"]),
     )
 
 
@@ -700,6 +842,9 @@ def vintages_for_period(
                 economic_observations.c.available_at,
                 economic_observations.c.is_projection,
                 economic_observations.c.is_nowcast,
+                economic_observations.c.method,
+                economic_observations.c.available_at_approx,
+                economic_observations.c.source_document_id,
             )
             .where(
                 and_(
@@ -716,6 +861,9 @@ def vintages_for_period(
             "available_at": ensure_utc(row.available_at),
             "is_projection": bool(row.is_projection),
             "is_nowcast": bool(row.is_nowcast),
+            "method": row.method,
+            "available_at_approx": bool(row.available_at_approx),
+            "source_document_id": row.source_document_id,
         }
         for row in rows
     ]

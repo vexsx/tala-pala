@@ -72,7 +72,7 @@ All services log JSON to stdout. Configure the Docker daemon's log rotation in `
 then `sudo systemctl restart docker`.
 
 ## Scheduled jobs
-The Go service embeds the scheduler (UTC cron, configurable via `SCHEDULE_*_CRON` in `.env`); jobs use Redis locks so scaling `api` replicas won't duplicate work. Default cadence: collect every 10 min, predict/signals/evaluate hourly, train daily 02:30 UTC, alert evaluation every 5 min, cleanup daily 04:00 UTC, TGJU daily settled closes at 00:25 and 12:25 UTC (`SCHEDULE_TGJU_DAILY_CRON`; silver 999, the Azadi and gram coins, 24k and melted gold, and the Emami coin's empty days from 2026-04-27 — see `docs/data-sources.md`).
+The Go service embeds the scheduler (UTC cron, configurable via `SCHEDULE_*_CRON` in `.env`); jobs use Redis locks so scaling `api` replicas won't duplicate work. Default cadence: collect every 10 min, predict/signals/evaluate hourly, train daily 02:30 UTC, alert evaluation every 5 min, cleanup daily 04:00 UTC, TGJU daily settled closes at 00:25 and 12:25 UTC (`SCHEDULE_TGJU_DAILY_CRON`; silver 999, the Azadi and gram coins, 24k and melted gold, and the Emami coin's empty days from 2026-04-27 — see `docs/data-sources.md`), and the CBI's monthly monetary workbooks at 13:35 UTC (`SCHEDULE_CBI_MONETARY_CRON`; base money, M2, M1, quasi-money — after the one-off backfill below).
 
 ## Data refresh: two classes, and only one looks after itself
 
@@ -84,8 +84,10 @@ This is the operational fact most likely to bite a new operator, because nothing
 | Predictions, signals, model training, retention | **self-updating** | `predict` / `signals` / `train` / `cleanup` crons, on the server | hourly to nightly, automatic |
 | World Bank + IMF WEO economic series | **self-updating** | `economic` job on the prediction service | daily 03:40 UTC, automatic |
 | TGJU daily settled closes (silver 999, Azadi and gram coins, 24k and melted gold; the Emami coin's hole) | **self-updating** | `tgju-daily` cron → `POST /internal/tgju/daily` | 00:25 and 12:25 UTC, automatic; skipped (not failed) while `data_providers.enabled` is FALSE for `tgju` |
+| CBI base money, M2, M1, quasi-money (monthly Excel editions) | **self-updating, after a one-off backfill** | `cbi-monetary` cron → `POST /internal/economic/cbi-monetary` | daily 13:35 UTC, automatic once `{"backfill_from": "1399-04"}` has run (below); answers 409 until then |
 | **Tehran equity bars (TSETMC)** | **manual** | `make refresh-equities`, run **off** the server | **run it at least weekly** |
 | **SCI CPI (headline, housing, rent, vehicle)** | **manual** | `make refresh-cpi`, run **off** the server | **run it monthly**, a week or two after each Jalali month ends |
+| CBI quarterly history 1352–1398 (tsdview) | **manual, one-off** | `make refresh-cbi-history`, run **off** the server | once after deploying migration 0034; again only if CBI restates its history |
 
 ### Why the last two cannot be crons
 
@@ -142,3 +144,24 @@ docker compose exec api wget -qO- --header "Content-Type: application/json" \
 ```
 
 Its report names each replaced bar per symbol (`forming_replaced`).
+
+Migration 0034 registers the Central Bank of Iran's monetary aggregates. The
+daily `cbi-monetary` job keeps them current, but it only fetches editions
+NEWER than the newest one stored, so the first population is a one-off
+backfill of every Excel edition since Tir 1399 (about 145 requests to
+www.cbi.ir, roughly half an hour at the production host's DNS latency; each
+edition's availability is reconstructed from the workbook's own last-saved
+time). Run it once, before or after the first scheduled tick — until it has
+run, the scheduled call answers 409 `backfill_required` and records a failed
+job:
+
+```bash
+docker compose exec api wget -qO- -T 3600 --header "Content-Type: application/json" \
+  --header "X-Internal-Token: $(grep '^INTERNAL_API_TOKEN=' .env | cut -d= -f2)" \
+  --post-data '{"backfill_from": "1399-04"}' http://prediction-service:8500/internal/economic/cbi-monetary
+```
+
+If it stops part-way (a 502 names the edition and why), run the same command
+again: editions already stored are not re-downloaded. Then, from a machine
+that can reach `tsdview.cis.cbi.ir` (not the server), load the quarterly
+history before 1398: `make refresh-cbi-history`.

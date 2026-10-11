@@ -175,17 +175,18 @@ func TestNewsJobIsRegisteredSeparatelyWithItsOwnTimeout(t *testing.T) {
 	cfg.Crons.TrendAlignment = "7 * * * *"
 	cfg.Crons.Economic = "40 3 * * *"
 	cfg.Crons.TGJUDaily = "25 0,12 * * *"
+	cfg.Crons.CBIMonetary = "35 13 * * *"
 
 	s, err := New(cfg, nil, nil, nil, obs.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// One entry per job: collect, predict, signals, evaluate, train, alerts,
-	// cleanup, news, trend-alignment, economic, tgju-daily. A dropped job
-	// silently stops the work it does, so the count is asserted rather than
-	// assumed.
-	if got := len(s.cron.Entries()); got != 11 {
-		t.Fatalf("registered %d cron entries, want 11 (a job was dropped?)", got)
+	// cleanup, news, trend-alignment, economic, tgju-daily, cbi-monetary. A
+	// dropped job silently stops the work it does, so the count is asserted
+	// rather than assumed.
+	if got := len(s.cron.Entries()); got != 12 {
+		t.Fatalf("registered %d cron entries, want 12 (a job was dropped?)", got)
 	}
 	if internalclient.NewsTimeout <= 0 {
 		t.Fatal("news job must declare a positive timeout")
@@ -225,6 +226,7 @@ func TestTGJUDailyJobIsRegisteredFromItsOwnCron(t *testing.T) {
 	cfg.Crons.TrendAlignment = "7 * * * *"
 	cfg.Crons.Economic = "40 3 * * *"
 	cfg.Crons.TGJUDaily = "not a cron spec"
+	cfg.Crons.CBIMonetary = "35 13 * * *"
 
 	if _, err := New(cfg, nil, nil, nil, obs.NewMetrics(),
 		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
@@ -271,9 +273,60 @@ func TestNewRejectsAnUnparseableCronSpec(t *testing.T) {
 	cfg.Crons.TrendAlignment = "7 * * * *"
 	cfg.Crons.Economic = "every night please"
 	cfg.Crons.TGJUDaily = "25 0,12 * * *"
+	cfg.Crons.CBIMonetary = "35 13 * * *"
 
 	if _, err := New(cfg, nil, nil, nil, obs.NewMetrics(),
 		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
 		t.Fatal("an unparseable cron spec was accepted")
+	}
+}
+
+// The CBI monetary job is registered from ITS OWN cron setting, once a day,
+// with a budget sized for the production host's slow resolver: a spec only it
+// carries must reach robfig/cron, and the job must not inherit the 10-minute
+// default that a batch of editions on a bad-DNS day can outlast.
+func TestCBIMonetaryJobIsRegisteredFromItsOwnCron(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Crons.Collect = "*/10 * * * *"
+	cfg.Crons.Predict = "5 * * * *"
+	cfg.Crons.Signals = "10 * * * *"
+	cfg.Crons.Evaluate = "20 * * * *"
+	cfg.Crons.Train = "30 2 * * *"
+	cfg.Crons.Alerts = "*/5 * * * *"
+	cfg.Crons.Cleanup = "0 4 * * *"
+	cfg.Crons.News = "*/15 * * * *"
+	cfg.Crons.TrendAlignment = "7 * * * *"
+	cfg.Crons.Economic = "40 3 * * *"
+	cfg.Crons.TGJUDaily = "25 0,12 * * *"
+	cfg.Crons.CBIMonetary = "not a cron spec"
+
+	if _, err := New(cfg, nil, nil, nil, obs.NewMetrics(),
+		slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil {
+		t.Fatal("an unparseable SCHEDULE_CBI_MONETARY_CRON was accepted")
+	}
+
+	cfg.Crons.CBIMonetary = "35 13 * * *"
+	s, err := New(cfg, nil, nil, nil, obs.NewMetrics(),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Exactly one entry fires once a day at 13:35 UTC, after the CBI's
+	// working day in Tehran.
+	var daily int
+	from := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	for _, e := range s.cron.Entries() {
+		first := e.Schedule.Next(from)
+		second := e.Schedule.Next(first)
+		if first.Equal(from.Add(13*time.Hour+35*time.Minute)) && second.Equal(first.Add(24*time.Hour)) {
+			daily++
+		}
+	}
+	if daily != 1 {
+		t.Fatalf("found %d entries firing daily at 13:35 UTC, want exactly 1", daily)
+	}
+	if internalclient.CBIMonetaryTimeout < 15*time.Minute {
+		t.Fatalf("CBIMonetaryTimeout %v cannot cover a batch of editions at 6-20 s a request "+
+			"with retries", internalclient.CBIMonetaryTimeout)
 	}
 }

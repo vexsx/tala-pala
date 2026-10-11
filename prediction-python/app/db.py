@@ -431,6 +431,14 @@ source_documents = Table(
     Column("content_sha256", Text, nullable=False),
     Column("storage_path", Text, nullable=False, server_default=""),
     Column("fetched_at", _TS, nullable=False, server_default=func.now()),
+    # Migration 0034. The publisher's own name for the edition ('1404-12' for a
+    # CBI monthly workbook; 'tsdview' for the CBI time-series viewer's history;
+    # '' when the source names none), and the moment the document's OWN
+    # metadata says it was last saved — NULL for a format that carries none.
+    # fetched_at is when THIS system got the bytes; document_saved_at is a
+    # claim the file makes about itself.
+    Column("edition_label", Text, nullable=False, server_default=""),
+    Column("document_saved_at", _TS),
     UniqueConstraint("provider_code", "content_sha256", name="source_documents_unique"),
     Index("idx_source_documents_fetched", text("fetched_at DESC")),
 )
@@ -508,7 +516,19 @@ economic_observations = Table(
         ForeignKey("source_documents.id", ondelete="RESTRICT"),
     ),
     Column("collected_at", _TS, nullable=False, server_default=func.now()),
+    # Migration 0034. The method the SOURCE compiled this value under, where it
+    # states one: the CBI redefined base money from 1399-12/1400 on, and growth
+    # is never computed across 'old' and 'revised'. NULL for every series whose
+    # source states no method.
+    Column("method", Text),
+    # TRUE when available_at was RECONSTRUCTED from the document (a backfill of
+    # editions published before this system existed: the workbook's own
+    # last-saved time plus a day) rather than observed by this system.
+    Column("available_at_approx", Boolean, nullable=False, server_default=text("FALSE")),
     CheckConstraint("vintage >= 1"),
+    CheckConstraint(
+        "method IS NULL OR method IN ('old','revised')", name="economic_obs_method"
+    ),
     UniqueConstraint(
         "series_id", "ref_period_start", "vintage", name="economic_obs_unique"
     ),

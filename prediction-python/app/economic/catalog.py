@@ -6,14 +6,18 @@ probed and its shape verified — every entry below was fetched live on
 ``economic_series`` rows :func:`app.economic.store.ensure_series` writes; the
 database rows are a projection of it, never the other way round.
 
-Three families.  The first two are annual, revisable, and were chosen because
+Four families.  The first two are annual, revisable, and were chosen because
 they are the cheapest honest test of the vintage machinery migration 0024
-introduced; the third is the series that machinery was built for.
+introduced; the third is the series that machinery was built for, and the
+fourth is the second Iranian publisher to use it.
 
 * ``WB_CPI_*``   — World Bank ``FP.CPI.TOTL``, a CPI *index* (2010 = 100).
 * ``IMF_PCPIPCH_*`` — IMF WEO ``PCPIPCH``, annual average inflation in percent.
 * ``SCI_CPI_*``  — the Statistical Centre of Iran's urban CPI (1400 = 100),
   monthly, on Jalali reference periods.
+* ``CBI_*``      — the Central Bank of Iran's monetary aggregates (base money,
+  M2, M1, quasi-money): end-of-month STOCKS in thousand billion rials, monthly
+  on Jalali reference periods (migration 0034).
 
 The first two are NOT two views of one series and must never be spliced
 together: one is a level, the other a rate, and they disagree about Iran by a
@@ -35,10 +39,11 @@ authority; everything else here is a mirror or an estimate), its first
 ``calendar='jalali'`` series, and its first ``splice_policy='chain_growth'``
 series.
 
-The Central Bank of Iran is still absent, and for a different reason: its
-monthly Tehran housing report ran Farvardin 1396 to Mordad 1403 and then
-stopped when the CBI lost access to the transaction registry, so there is no
-current series to ingest.
+The Central Bank of Iran's HOUSING report is still absent, and for a
+different reason: it ran Farvardin 1396 to Mordad 1403 and then stopped when
+the CBI lost access to the transaction registry, so there is no current series
+to ingest.  Its MONETARY statistics are current and are here: see the CBI
+section below and :mod:`app.economic.cbi`.
 """
 from __future__ import annotations
 
@@ -223,14 +228,6 @@ SCI_WORKBOOK = "ts_urban"
 SCI_SHEET = "جدول 1"
 SCI_BASE_PERIOD = "1400=100"
 
-# Providers whose series arrive as an archived DOCUMENT rather than a poll.
-# amar.org.ir is unreachable from the production host (migration 0027 records
-# the diagnosis), so these series are fetched elsewhere and posted to
-# /internal/economic/sci-cpi. The scheduled ingest job reads this to report
-# them as document-ingested instead of attempting a fetch that cannot succeed
-# and recording a provider failure every tick.
-DOCUMENT_INGEST_PROVIDERS = frozenset({SCI_PROVIDER})
-
 _SCI_NOTE = (
     "Statistical Centre of Iran, urban-household CPI, base 1400=100 (verified on "
     "every ingest: the twelve months of 1400 must average exactly 100). Monthly, "
@@ -319,10 +316,145 @@ def sci_specs() -> list[SeriesSpec]:
     return [_sci_spec(*row) for row in _SCI_SERIES]
 
 
+# --- Central Bank of Iran, monetary aggregates -------------------------------
+#
+# Verified 2026-10-11 against every Excel edition CBI publishes from Tir 1399
+# to Esfand 1404 that was downloaded (48 of 69, plus the Esfand 1400 and 1402
+# editions), e.g. 140412.xls, sha256 648af2335b07d1b8...: base money 21,959.3
+# and M2 155,812.2 thousand billion rials at the end of Esfand 1404, M2 = M1 +
+# quasi-money and base money (sources) = base money (uses) in every edition.
+# app/economic/cbi.py re-checks all of that on every ingest and refuses the
+# whole workbook when any of it fails.
+
+CBI_PROVIDER = "cbi"
+# The publication the monthly workbooks belong to: گزیده آمارهای اقتصادی (Selected
+# Economic Indicators), its monetary and banking part.
+CBI_PUBLICATION = "sei_monetary"
+CBI_UNIT = "thousand_billion_rial"      # هزار میلیارد ریال = 1e12 rial
+BASE_MONEY_CODE = "CBI_BASE_MONEY"
+
+_CBI_NOTE = (
+    "Central Bank of Iran, Selected Economic Indicators (گزیده آمارهای اقتصادی), "
+    "monetary part. An END-OF-MONTH STOCK, not a monthly average: each value is "
+    "the balance at the end of the Jalali month in ref_period_label, and "
+    "ref_period_start/end are that month's Gregorian span. Stored EXACTLY as "
+    "printed, in thousand billion rials (هزار میلیارد ریال = 1e12 rial); divide by "
+    "10 for همت (1e12 toman) — the conversion is for display only. Sources: "
+    "the monthly Excel editions (Tir 1399 onwards; each prints the same month "
+    "last year, last Esfand and the current month, so months from Tir 1398 plus "
+    "Esfand 1397 are covered) and, for the quarter-ends no Excel edition carries "
+    "(1352 to Khordad 1398, Esfand 1397 excepted), the CBI time-series viewer's "
+    "values (four decimals rather than one; published_at NULL, available_at the "
+    "day they were ingested). CBI states no publication "
+    "date: published_at is the workbook's own last-saved timestamp, a lower "
+    "bound. Editions arrive 1 to 4.5 months after the month ends, often in "
+    "batches. A value restated in a later edition is a new vintage beside the "
+    "print it revises. NOT seasonally adjusted."
+)
+
+_CBI_M2_CAVEAT = (
+    " CBI states that 2.7 points of 1400's M2 growth come only from Mehr Eqtesad "
+    "bank's balance sheet being added to Sepah's (a coverage change with no "
+    "monetary effect); the level is continuous as printed and no adjustment is "
+    "made here."
+)
+
+_CBI_BASE_MONEY_CAVEAT = (
+    " BREAK: CBI redefined base money — its foreign assets revalued in 1402 and "
+    "the components reclassified to the IMF's MFSMCG 2016 — for months from "
+    "Esfand 1399 / 1400 on, and restated those months in later editions (Esfand "
+    "1400: 6,039.7 -> 5,981.1; Esfand 1401: 8,599.9 -> 8,548.0). Every row "
+    "carries method 'old' or 'revised' and growth is never computed across the "
+    "two; levels on different methods are not comparable, hence chain_growth. "
+    "Read as the SOURCES side (پایه پولی از سمت منابع), checked against the uses "
+    "side on every ingest. The newest editions label it «کاملا مقدماتی» (fully "
+    "preliminary)."
+)
+
+# (code, row label as printed by CBI, name_en, name_fa, splice_policy, extra note)
+_CBI_SERIES: tuple[tuple[str, str, str, str, str, str], ...] = (
+    ("CBI_LIQUIDITY", "نقدينگي برحسب عوامل موثر بر عرضه",
+     "Liquidity (M2)", "نقدینگی", "none", _CBI_M2_CAVEAT),
+    (BASE_MONEY_CODE, "پايه پولي از سمت منابع",
+     "Base money", "پایه پولی", "chain_growth", _CBI_BASE_MONEY_CAVEAT),
+    ("CBI_MONEY_M1", "پول",
+     "Money (M1)", "پول", "none", " M1 = currency with the public + demand deposits."),
+    ("CBI_QUASI_MONEY", "شبه پول",
+     "Quasi-money", "شبه پول", "none",
+     " Quasi-money = M2 - M1: savings, term and other non-demand deposits."),
+)
+
+
+def _cbi_spec(
+    code: str, row_label: str, name_en: str, name_fa: str, splice: str, extra: str
+) -> SeriesSpec:
+    return SeriesSpec(
+        code=code,
+        name_en=name_en,
+        name_fa=name_fa,
+        domain="macro",
+        provider_code=CBI_PROVIDER,
+        # The publication and the row label as CBI prints it, kept in the
+        # SOURCE's orthography (Arabic yeh) so it can be grepped against a
+        # downloaded workbook; app/economic/cbi.py normalises both sides. Not
+        # the sheet name: CBI has called that sheet «Sheet1», «متغیرهای عمده»
+        # and «متغیرهای پولی».
+        provider_series_id=f"{CBI_PUBLICATION}:{row_label}",
+        country="IRN",
+        indicator=row_label,
+        frequency="M",
+        calendar="jalali",
+        measure="level",
+        seasonal_adjustment="nsa",
+        base_period="",          # a stock in currency units has no base
+        quality_tier="official",
+        quote_currency="IRR",
+        unit=CBI_UNIT,
+        decimals=1,              # CBI prints one decimal
+        revisable=True,
+        splice_policy=splice,
+        notes=_CBI_NOTE + extra,
+        # 10 to 137 days measured (median 53-96 by year); not a characterisation.
+        publication_lag_days=None,
+    )
+
+
+def cbi_specs() -> list[SeriesSpec]:
+    """The four CBI monetary aggregates this system extracts."""
+    return [_cbi_spec(*row) for row in _CBI_SERIES]
+
+
+# Providers whose series arrive as an archived DOCUMENT rather than a poll of
+# an API, with where each one is ingested. The scheduled economic job reads
+# this to report them as document-ingested instead of attempting a fetch it
+# has no adapter for and recording a provider failure every tick.
+#
+# * sci: amar.org.ir is unreachable from the production host (migration 0027
+#   records the diagnosis), so the workbook is fetched elsewhere and posted.
+# * cbi: www.cbi.ir IS reachable, but its numbers come in a workbook that is
+#   parsed, cross-checked and archived as a whole (migration 0034), by its own
+#   scheduled job; the quarterly history comes from a viewer the host cannot
+#   reach, fetched off-server and posted.
+DOCUMENT_INGEST_ROUTES: dict[str, str] = {
+    SCI_PROVIDER: (
+        "POST /internal/economic/sci-cpi with a workbook fetched by "
+        "scripts/sci_fetch.py"
+    ),
+    CBI_PROVIDER: (
+        "POST /internal/economic/cbi-monetary (the Go job cbi-monetary, "
+        "SCHEDULE_CBI_MONETARY_CRON) for the monthly workbooks, and "
+        "POST /internal/economic/cbi-history fed by scripts/cbi_history_fetch.py "
+        "for the quarterly history"
+    ),
+}
+DOCUMENT_INGEST_PROVIDERS = frozenset(DOCUMENT_INGEST_ROUTES)
+
+
 CATALOG: tuple[SeriesSpec, ...] = tuple(
     [_worldbank_spec(*country) for country in _COUNTRIES]
     + [_imf_spec(*country) for country in _COUNTRIES]
     + sci_specs()
+    + cbi_specs()
 )
 
 _BY_CODE: dict[str, SeriesSpec] = {spec.code: spec for spec in CATALOG}

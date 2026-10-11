@@ -4,7 +4,7 @@ COMPOSE = docker compose
 
 .PHONY: help setup up down build logs ps migrate create-user collect train predict \
         signals backtest export-portfolio test test-go test-python smoke update \
-        refresh-offserver refresh-equities refresh-cpi
+        refresh-offserver refresh-equities refresh-cpi refresh-cbi-history
 
 help: ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "};{printf "  %-18s %s\n", $$1, $$2}'
@@ -106,6 +106,15 @@ refresh-equities: ## Refresh Tehran equities, the market, every share's money fl
 
 refresh-cpi: ## Refresh SCI CPI from amar.org.ir — run OFF the server (ARGS=...)
 	python3 scripts/sci_fetch.py $(ARGS)
+
+# The CBI time-series viewer (tsdview.cis.cbi.ir) does not answer the
+# production host either: its connection times out (measured 2026-10-11). It
+# holds the quarter-end money aggregates from 1352, which change only when CBI
+# restates its history, so this is a one-off after migration 0034 rather than
+# part of refresh-offserver. The monthly CBI workbooks need no target: the
+# server fetches those itself (the cbi-monetary job).
+refresh-cbi-history: ## Load the CBI quarterly money history (tsdview) — run OFF the server, once (ARGS=...)
+	python3 scripts/cbi_history_fetch.py $(ARGS)
 
 # Sequenced through $(MAKE) rather than as prerequisites so `make -j` cannot
 # run them concurrently: both scp to the same host and both trigger an ingest.
