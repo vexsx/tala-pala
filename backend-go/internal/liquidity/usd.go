@@ -19,11 +19,16 @@ package liquidity
 //
 // THE MONTH. The monthly average is the mean of the month's daily closes and
 // the month-end close is its last one. A month counts as COMPLETE -- and only
-// a complete month enters the model -- when it has ended (it is before the
-// Tehran month containing the present) and the stored history covers it from
-// its start. The history's first month is partial when its first close is
-// later than the third day: TGJU's history begins 1390/09/05, and the
-// research dropped that 16-day month for the same reason.
+// a complete month enters the model -- when it has ended and the stored
+// history covers it from its start. "Ended" is read on the same clock as the
+// buckets: the month is before the one containing the present UTC day. For
+// the three and a half hours each night that Tehran is already on the next
+// date, the month's last UTC day is still collecting quotes, so its
+// month-end close is not final yet; reading "today" in Tehran would call the
+// month complete with a close that later quotes replace. The history's first
+// month is partial when its first close is later than the third day: TGJU's
+// history begins 1390/09/05, and the research dropped that 16-day month for
+// the same reason.
 
 import (
 	"math"
@@ -54,13 +59,14 @@ type usdMonth struct {
 // Friday and a holiday has no close on them and is not partial.
 const firstMonthSlackDays = 3
 
-// bucketUSD groups daily closes into Jalali months. `today` is the Tehran
-// civil date of the present; its month is still running. Non-positive closes
-// are stored faults, not prices, and are left out and counted.
-func bucketUSD(days []dayClose, today time.Time) (months []usdMonth, dropped int) {
+// bucketUSD groups daily closes into Jalali months. `utcToday` is the UTC
+// civil date of the present -- the bucket still forming -- and its month is
+// still running. Non-positive closes are stored faults, not prices, and are
+// left out and counted.
+func bucketUSD(days []dayClose, utcToday time.Time) (months []usdMonth, dropped int) {
 	sorted := append([]dayClose(nil), days...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Day.Before(sorted[j].Day) })
-	current, err := MonthOf(today)
+	current, err := MonthOf(utcToday)
 	if err != nil {
 		current = Month(math.MaxInt32)
 	}

@@ -60,12 +60,17 @@ const (
 )
 
 var (
-	// forecastStart is the first origin a forecast is made at: fifteen months
-	// after the first full dollar month, so the trend has a history. Errors
-	// from here on feed the expanding pool the coverage is measured with.
-	forecastStart = NewMonth(1392, 1)
+	// researchPoolStart is where the research's interval pool began: its
+	// calibration table (interval_calibration.csv) built each origin's band
+	// from errors of origins 1392-01 on, two years more than the band it
+	// published. The acceptance test reproduces that table with it; nothing
+	// the API publishes uses it, because a coverage measured on that wider pool
+	// is the coverage of a different band (at 24 months its lower edge today
+	// would be -0.56, not the drawn -0.32).
+	researchPoolStart = NewMonth(1392, 1)
 	// evalStart is the first origin that is scored, and the first whose errors
-	// form the band.
+	// form the band -- both the band drawn today and, at every past origin, the
+	// band its coverage is measured on.
 	evalStart = NewMonth(1394, 1)
 	// scoredHorizons are the horizons the backtest table reports.
 	scoredHorizons = []int{3, 6, 12, 24}
@@ -460,16 +465,17 @@ func (c coverageCell) rate() float64 {
 }
 
 // m2Errors are the M2-paced model's errors at every horizon 1..maxHorizon,
-// from forecastStart, ascending by origin: the pool every origin's band is
-// drawn from.
-func (p *panel) m2Errors(tg target) [][]originError {
+// from origin poolFrom on, ascending by origin: the pool every origin's band
+// is drawn from. With poolFrom = evalStart, knownBand at the last complete
+// month IS the published band (TestCoverageIsMeasuredOnThePublishedBand).
+func (p *panel) m2Errors(tg target, poolFrom Month) [][]originError {
 	all := make([][]originError, maxHorizon+1)
 	if p.iLast < 0 {
 		return all
 	}
 	y := p.series(tg)
 	for h := 1; h <= maxHorizon; h++ {
-		all[h] = p.errors(modelM2Paced, y, h, p.idx(forecastStart), p.iLast-h)
+		all[h] = p.errors(modelM2Paced, y, h, p.idx(poolFrom), p.iLast-h)
 	}
 	return all
 }
@@ -513,19 +519,21 @@ func knownBand(all [][]originError, t int, lowerQ, upperQ float64, monotone bool
 }
 
 // coverage measures the band the way it is used: at each scored origin t
-// (evalStart onward), the band known at t (knownBand) is checked against t's
-// own outcome at every horizon whose outcome is known. A hit is an outcome
-// inside it.
+// (evalStart onward), the band known at t (knownBand, from the errors of
+// origins poolFrom..t-h) is checked against t's own outcome at every horizon
+// whose outcome is known. A hit is an outcome inside it.
 //
-// The research measured the non-monotone version (interval_calibration.csv);
-// the acceptance test reproduces that, and the API publishes the monotone one
-// because that is the band it draws.
-func (p *panel) coverage(tg target, lowerQ, upperQ float64, monotone bool) map[int]coverageCell {
+// The API passes evalStart and monotone: the rule the published band is
+// drawn by, so the coverage it is labelled with is that band's. The research
+// measured a different rule -- not widened, and pooled from 1392-01
+// (interval_calibration.csv) -- which the acceptance test reproduces with
+// researchPoolStart.
+func (p *panel) coverage(tg target, lowerQ, upperQ float64, monotone bool, poolFrom Month) map[int]coverageCell {
 	out := map[int]coverageCell{}
 	if p.iLast < 0 {
 		return out
 	}
-	all := p.m2Errors(tg)
+	all := p.m2Errors(tg, poolFrom)
 	own := make([]map[int]float64, len(all))
 	for h := 1; h < len(all); h++ {
 		own[h] = map[int]float64{}

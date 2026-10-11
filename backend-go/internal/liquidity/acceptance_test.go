@@ -121,7 +121,7 @@ func TestAcceptance_ComponentsAddUp(t *testing.T) {
 
 func researchPanel(t *testing.T) *panel {
 	t.Helper()
-	months, _ := bucketUSD(researchUSD(t), tehranToday(researchNow))
+	months, _ := bucketUSD(researchUSD(t), utcDay(researchNow))
 	return newPanel(months, researchMoney(t)[CodeLiquidity].Points)
 }
 
@@ -231,7 +231,10 @@ func TestAcceptance_BandQuantilesMatch(t *testing.T) {
 }
 
 // Coverage, measured exactly as the research did (bands from each origin's own
-// past errors, NOT widened across horizons): interval_calibration.csv.
+// past errors, NOT widened across horizons, pooled from 1392-01):
+// interval_calibration.csv. The API measures the band it draws instead
+// (TestCoverageIsMeasuredOnThePublishedBand); this pins that the machinery
+// reproduces the research when given the research's rule.
 func TestAcceptance_CalibrationMatches(t *testing.T) {
 	p := researchPanel(t)
 	cache := map[string]map[int]coverageCell{}
@@ -243,7 +246,7 @@ func TestAcceptance_CalibrationMatches(t *testing.T) {
 		nominal := num(t, r["nominal"])
 		key := r["target"] + r["nominal"]
 		if cache[key] == nil {
-			cache[key] = p.coverage(tg, (1-nominal)/2, 1-(1-nominal)/2, false)
+			cache[key] = p.coverage(tg, (1-nominal)/2, 1-(1-nominal)/2, false, researchPoolStart)
 		}
 		h := int(num(t, r["h"]))
 		c := cache[key][h]

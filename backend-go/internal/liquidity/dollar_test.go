@@ -58,18 +58,90 @@ func TestDollarHorizon(t *testing.T) {
 				t.Fatalf("%s path %d long", s.Key, len(s.Path))
 			}
 		}
-		// Measured coverage, not a nominal level; 24 months is published
-		// either way so the page can state it.
-		if resp.Band.Coverage["1-12"] == nil || resp.Band.Coverage["24"] == nil ||
-			*resp.Band.Coverage["24"] >= *resp.Band.Coverage["1-12"] {
-			t.Fatalf("coverage %v", resp.Band.Coverage)
+		// Measured coverage, not a nominal level, for every range whatever the
+		// horizon asked for, so the page can state the longer one beside the
+		// 24-month choice. Which way the numbers point is the data's business
+		// (TestCoverageIsMeasuredOnThePublishedBand recounts them); the note
+		// must say each one and name exactly those below what the quantiles
+		// span.
+		for _, key := range []string{"1-12", "13-24", "24"} {
+			c := resp.Band.Coverage[key]
+			if c == nil || *c < 0 || *c > 1 || resp.Band.CoverageN[key] == 0 {
+				t.Fatalf("coverage %s = %v over %d", key, c, resp.Band.CoverageN[key])
+			}
+			if !strings.Contains(resp.Band.Note, pct(*c)) {
+				t.Errorf("note does not state the %s coverage %s: %s", key, pct(*c), resp.Band.Note)
+			}
 		}
-		if !strings.Contains(resp.Band.Note, "less often than the 90%") {
-			t.Errorf("note: %s", resp.Band.Note)
+		if !strings.Contains(resp.Band.Note, "independent outcomes") {
+			t.Errorf("the 24-month figure must say how few outcomes it rests on: %s", resp.Band.Note)
 		}
 		if !strings.Contains(resp.Band.Note, "median 12-month error was +0.021") {
 			t.Errorf("the skew sentence must come from the measured median: %s", resp.Band.Note)
 		}
+	}
+}
+
+// The band note names exactly the ranges whose measured coverage fell short
+// of what the quantiles span -- never one sentence over a rate that did not.
+func TestBandNoteNamesOnlyTheRangesBelowNominal(t *testing.T) {
+	band := make([]bandStep, maxHorizon)
+	for i := range band {
+		band[i] = bandStep{H: i + 1, Lo: -0.1, Hi: 0.1, Median: 0}
+	}
+	cells := func(short, long coverageCell) map[int]coverageCell {
+		out := map[int]coverageCell{}
+		for h := 1; h <= maxHorizon; h++ {
+			if h <= 12 {
+				out[h] = short
+			} else {
+				out[h] = long
+			}
+		}
+		return out
+	}
+	// 80% within a year, 92% beyond it.
+	b := buildBandBlock(band, cells(coverageCell{Hits: 8, N: 10}, coverageCell{Hits: 92, N: 100}), 24)
+	if !strings.Contains(b.Note, "80% of the time at 1–12 months, 92% at 13–24 months and 92% at 24 months") ||
+		!strings.Contains(b.Note, "At 1–12 months that is less often than the 90%") ||
+		strings.Contains(b.Note, "At 1–12 months and") {
+		t.Errorf("note: %s", b.Note)
+	}
+	// Every range short: all three named.
+	b = buildBandBlock(band, cells(coverageCell{Hits: 8, N: 10}, coverageCell{Hits: 7, N: 10}), 24)
+	if !strings.Contains(b.Note, "At 1–12 months, 13–24 months and 24 months that is less often") {
+		t.Errorf("note: %s", b.Note)
+	}
+	// None short: no shortfall sentence at all.
+	b = buildBandBlock(band, cells(coverageCell{Hits: 9, N: 10}, coverageCell{Hits: 95, N: 100}), 24)
+	if strings.Contains(b.Note, "less often") {
+		t.Errorf("note claims a shortfall the numbers do not show: %s", b.Note)
+	}
+}
+
+// The page reads data_age.stale / age_days / warning at the top of the
+// dollar response, about the close every path starts from.
+func TestDollarDataAgeTopLevelIsTheAnchors(t *testing.T) {
+	stale := buildDollarResponse(dollarInput{Now: researchNow, USD: []dayClose{{date("2026-09-01"), 100}},
+		M2: unregistered(CodeLiquidity)}, 12)
+	raw, err := json.Marshal(stale.DataAge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]any
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatal(err)
+	}
+	if top["stale"] != true || top["age_days"] != 40.0 || top["newest_close"] != "2026-09-01" ||
+		!strings.Contains(top["warning"].(string), "stale price") || top["money"] == nil || top["usd"] == nil {
+		t.Fatalf("data_age %s", raw)
+	}
+	fresh := buildDollarResponse(dollarInput{Now: researchNow, USD: researchUSD(t),
+		M2: researchMoney(t)[CodeLiquidity]}, 12)
+	// Fresh dollar, old money: the top level is the dollar's, the money's
+	// staleness stays under money.
+	if fresh.DataAge.Stale || *fresh.DataAge.AgeDays != 1 || !fresh.DataAge.Money.Stale {
+		t.Fatalf("data_age %+v", fresh.DataAge)
 	}
 }
 

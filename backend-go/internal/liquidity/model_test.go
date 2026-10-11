@@ -170,14 +170,16 @@ func TestNoLookAhead(t *testing.T) {
 				}
 			}
 			for _, mono := range []bool{true, false} {
-				a := knownBand(base.m2Errors(tg), ti, bandLowerQ, bandUpperQ, mono)
-				b := knownBand(moved.m2Errors(tg), ti, bandLowerQ, bandUpperQ, mono)
-				if len(a) != len(b) {
-					t.Fatalf("band known at %s covers %d vs %d horizons", origin, len(a), len(b))
-				}
-				for h, v := range a {
-					if b[h] != v {
-						t.Fatalf("band known at %s, h=%d moved from %v to %v", origin, h, v, b[h])
+				for _, pool := range []Month{evalStart, researchPoolStart} {
+					a := knownBand(base.m2Errors(tg, pool), ti, bandLowerQ, bandUpperQ, mono)
+					b := knownBand(moved.m2Errors(tg, pool), ti, bandLowerQ, bandUpperQ, mono)
+					if len(a) != len(b) {
+						t.Fatalf("band known at %s covers %d vs %d horizons", origin, len(a), len(b))
+					}
+					for h, v := range a {
+						if b[h] != v {
+							t.Fatalf("band known at %s, h=%d moved from %v to %v", origin, h, v, b[h])
+						}
 					}
 				}
 			}
@@ -191,14 +193,14 @@ func TestNoLookAhead(t *testing.T) {
 
 func TestCoverageCountsOnlyScoredOrigins(t *testing.T) {
 	p := researchPanel(t)
-	cov := p.coverage(targetClose, bandLowerQ, bandUpperQ, true)
+	cov := p.coverage(targetClose, bandLowerQ, bandUpperQ, true, evalStart)
 	for h, c := range cov {
 		if c.Hits > c.N || c.N == 0 {
 			t.Fatalf("h=%d: %d hits of %d", h, c.Hits, c.N)
 		}
 	}
 	// Monotone widening can only add hits relative to the research's raw band.
-	raw := p.coverage(targetClose, bandLowerQ, bandUpperQ, false)
+	raw := p.coverage(targetClose, bandLowerQ, bandUpperQ, false, evalStart)
 	for h := 1; h <= maxHorizon; h++ {
 		if cov[h].N != raw[h].N || cov[h].Hits < raw[h].Hits {
 			t.Fatalf("h=%d monotone %+v vs raw %+v", h, cov[h], raw[h])
@@ -214,10 +216,72 @@ func TestCoverageCountsOnlyScoredOrigins(t *testing.T) {
 	}
 }
 
+// The band's label is the coverage of the band as drawn. Two halves:
+//
+//   - the rule coverage evaluates at each past origin, evaluated today, IS
+//     the published band, edge for edge -- so "a band built this way" names
+//     the band on the chart, not a sibling of it (the research's calibration
+//     pooled two more years of errors, and that band's 24-month lower edge
+//     today would be -0.56, not the drawn -0.32);
+//   - the published coverage equals an independent recount: at every origin
+//     from 1394-01, the band rule applied to the errors known by then
+//     (p.errors, not knownBand), widened, checked against the outcome.
+func TestCoverageIsMeasuredOnThePublishedBand(t *testing.T) {
+	p := researchPanel(t)
+	band := p.band(targetClose, maxHorizon)
+	today := knownBand(p.m2Errors(targetClose, evalStart), p.iLast, bandLowerQ, bandUpperQ, true)
+	if len(today) != len(band) {
+		t.Fatalf("the coverage rule today covers %d horizons, the published band %d", len(today), len(band))
+	}
+	for _, s := range band {
+		if e := today[s.H]; e[0] != s.Lo || e[1] != s.Hi {
+			t.Fatalf("h=%d: the coverage rule today gives %v, the published band %v/%v", s.H, e, s.Lo, s.Hi)
+		}
+	}
+
+	y := p.series(targetClose)
+	from := p.idx(evalStart)
+	want := map[int]coverageCell{}
+	for tt := from; tt <= p.iLast-1; tt++ {
+		lo, hi := math.Inf(1), math.Inf(-1)
+		for h := 1; h <= maxHorizon && tt+h <= p.iLast; h++ {
+			errs := p.errors(modelM2Paced, y, h, from, tt-h)
+			if len(errs) < minErrors {
+				break
+			}
+			v := make([]float64, len(errs))
+			for i, e := range errs {
+				v[i] = e.Err
+			}
+			lo, hi = math.Min(lo, quantile(v, bandLowerQ)), math.Max(hi, quantile(v, bandUpperQ))
+			e := p.at(y, tt+h) - p.forecast(modelM2Paced, y, tt, h)
+			if math.IsNaN(e) {
+				continue
+			}
+			c := want[h]
+			c.N++
+			if e >= lo && e <= hi {
+				c.Hits++
+			}
+			want[h] = c
+		}
+	}
+	resp := buildDollarResponse(dollarInput{Now: researchNow, USD: researchUSD(t),
+		M2: researchMoney(t)[CodeLiquidity]}, 24)
+	for key, r := range map[string][2]int{"1-12": {1, 12}, "13-24": {13, 24}, "24": {24, 24}} {
+		c := pooledCoverage(want, r[0], r[1])
+		got := resp.Band.Coverage[key]
+		if resp.Band.CoverageN[key] != c.N || got == nil || *got != roundTo(c.rate(), 3) {
+			t.Errorf("coverage %s = %v over %d; the drawn band's rule, recounted, gives %.3f over %d",
+				key, got, resp.Band.CoverageN[key], c.rate(), c.N)
+		}
+	}
+}
+
 // A deployment whose dollar history starts after 1394-01 must not label its
 // backtest as if it ran from 1394-01.
 func TestBacktestWindowIsWhatWasScored(t *testing.T) {
-	months, _ := bucketUSD(researchUSD(t), tehranToday(researchNow))
+	months, _ := bucketUSD(researchUSD(t), utcDay(researchNow))
 	late := []usdMonth{}
 	for _, u := range months {
 		if u.Month >= NewMonth(1396, 1) {

@@ -240,3 +240,10 @@ func tehranToday(t time.Time) time.Time {
 	l := t.In(tehran)
 	return time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, time.UTC)
 }
+
+// utcDay is the UTC civil date of instant t: the daily-close bucket t falls
+// in (relvalue's dailyCloseSelect buckets by UTC day).
+func utcDay(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+}

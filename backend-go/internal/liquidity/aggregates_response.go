@@ -15,16 +15,19 @@ const moneyStaleAfterDays = 140
 
 // moneyAge states how old the newest stored month is.
 type moneyAge struct {
-	NewestPeriod    *string            `json:"newest_period"`
-	NewestPeriodEnd *string            `json:"newest_period_end"`
-	AgeDays         *int               `json:"age_days"`
-	AvailableAt     *time.Time         `json:"available_at"`
-	PublishedAt     *time.Time         `json:"published_at"`
-	Stale           bool               `json:"stale"`
-	StaleAfterDays  int                `json:"stale_after_days"`
-	Warning         string             `json:"warning,omitempty"`
-	Note            string             `json:"note"`
-	ByCode          map[string]*string `json:"by_code,omitempty"`
+	NewestPeriod    *string    `json:"newest_period"`
+	NewestPeriodEnd *string    `json:"newest_period_end"`
+	AgeDays         *int       `json:"age_days"`
+	AvailableAt     *time.Time `json:"available_at"`
+	// AvailableAtApprox: available_at was reconstructed by the backfill, not
+	// seen (null when the row does not say).
+	AvailableAtApprox *bool              `json:"available_at_approx"`
+	PublishedAt       *time.Time         `json:"published_at"`
+	Stale             bool               `json:"stale"`
+	StaleAfterDays    int                `json:"stale_after_days"`
+	Warning           string             `json:"warning,omitempty"`
+	Note              string             `json:"note"`
+	ByCode            map[string]*string `json:"by_code,omitempty"`
 }
 
 const moneyAgeNote = "CBI publishes each month's figures one to four and a half months after the " +
@@ -43,7 +46,7 @@ func buildMoneyAge(s moneySeries, today time.Time) moneyAge {
 	age := daysBetween(p.Month.End(), today)
 	av := p.AvailableAt.UTC()
 	out.NewestPeriod, out.NewestPeriodEnd, out.AgeDays = &period, &end, &age
-	out.AvailableAt, out.PublishedAt = &av, utcPtr(p.PublishedAt)
+	out.AvailableAt, out.AvailableAtApprox, out.PublishedAt = &av, p.AvailableAtApprox, utcPtr(p.PublishedAt)
 	if age > moneyStaleAfterDays {
 		out.Stale = true
 		out.Warning = fmt.Sprintf("The newest CBI month stored is %s, which ended %d days ago. CBI has "+
@@ -58,9 +61,11 @@ type latestBlock struct {
 	GregorianEnd string     `json:"gregorian_end"`
 	PublishedAt  *time.Time `json:"published_at"`
 	AvailableAt  time.Time  `json:"available_at"`
-	AgeDays      int        `json:"age_days"`
-	SourceURL    *string    `json:"source_url"`
-	Vintage      int        `json:"vintage"`
+	// AvailableAtApprox: see moneyAge.
+	AvailableAtApprox *bool   `json:"available_at_approx"`
+	AgeDays           int     `json:"age_days"`
+	SourceURL         *string `json:"source_url"`
+	Vintage           int     `json:"vintage"`
 }
 
 type seriesBlock struct {
@@ -176,7 +181,8 @@ func buildAggregatesResponse(series map[string]moneySeries, freq string, now tim
 		lb := &latestBlock{
 			Code: headline.Code, Period: p.Month.String(), GregorianEnd: p.Month.End().Format(dateLayout),
 			PublishedAt: utcPtr(p.PublishedAt), AvailableAt: p.AvailableAt.UTC(),
-			AgeDays: daysBetween(p.Month.End(), today), Vintage: p.Vintage,
+			AvailableAtApprox: p.AvailableAtApprox,
+			AgeDays:           daysBetween(p.Month.End(), today), Vintage: p.Vintage,
 		}
 		if p.SourceURL != "" {
 			u := p.SourceURL

@@ -20,9 +20,10 @@ package liquidity
 //     stored months after that are still old-method prints. Growth is never
 //     computed across the two methods; it is null with a reason. Each point
 //     carries its method.
-//   - The annual average exists only for a year with all twelve months; the
-//     headline annual growth is Esfand over Esfand, which is what CBI
-//     publishes and what an average of month-end stocks is not.
+//   - The annual average exists only for a year with all twelve months (and,
+//     for base money, all twelve on one recorded method); the headline
+//     annual growth is Esfand over Esfand, which is what CBI publishes and
+//     what an average of month-end stocks is not.
 
 import (
 	"fmt"
@@ -88,7 +89,12 @@ type moneyPoint struct {
 	Value       float64 // in Unit
 	Vintage     int
 	AvailableAt time.Time
-	PublishedAt *time.Time
+	// AvailableAtApprox is the ingest's flag that AvailableAt was
+	// RECONSTRUCTED, not observed: the CBI backfill sets it to the workbook's
+	// last-saved time plus a day (design §2). nil when the row records no such
+	// flag -- unknown, which is not the same as exact.
+	AvailableAtApprox *bool
+	PublishedAt       *time.Time
 	// Method is the base-money definition ("old"/"revised"); "" for the other
 	// series, and for a base-money month whose method is not known.
 	Method string
@@ -209,6 +215,9 @@ type aggregatePoint struct {
 	Source       *string    `json:"source"`
 	PublishedAt  *time.Time `json:"published_at"`
 	AvailableAt  time.Time  `json:"available_at"`
+	// AvailableAtApprox is true when available_at was reconstructed by the
+	// backfill (last-saved + 1 day) rather than seen; null when not recorded.
+	AvailableAtApprox *bool `json:"available_at_approx"`
 	// NullReason names, for each growth field that is null, why.
 	NullReason map[string]string `json:"null_reason,omitempty"`
 }
@@ -219,13 +228,14 @@ func buildPoints(s moneySeries) []aggregatePoint {
 	out := make([]aggregatePoint, 0, len(s.Points))
 	for _, p := range s.Points {
 		ap := aggregatePoint{
-			Period:       p.Month.String(),
-			GregorianEnd: p.Month.End().Format(dateLayout),
-			Value:        p.Value,
-			Frequency:    "M",
-			Vintage:      p.Vintage,
-			PublishedAt:  utcPtr(p.PublishedAt),
-			AvailableAt:  p.AvailableAt.UTC(),
+			Period:            p.Month.String(),
+			GregorianEnd:      p.Month.End().Format(dateLayout),
+			Value:             p.Value,
+			Frequency:         "M",
+			Vintage:           p.Vintage,
+			PublishedAt:       utcPtr(p.PublishedAt),
+			AvailableAt:       p.AvailableAt.UTC(),
+			AvailableAtApprox: p.AvailableAtApprox,
 		}
 		if p.Source != "" {
 			src := p.Source
@@ -298,8 +308,9 @@ type annualRow struct {
 	EndValue     map[string]*float64 `json:"end_value"`
 	EndGrowthPct map[string]*float64 `json:"end_growth_pct"`
 	// AvgValue is the mean of the twelve month-end stocks, only for a series
-	// with all twelve; AvgGrowthPct needs two such years (and, for base
-	// money, one method throughout). Null when no series qualifies.
+	// with all twelve (and, for base money, all on one recorded method);
+	// AvgGrowthPct needs two such years on the same method. Null when no
+	// series qualifies.
 	AvgValue     map[string]*float64 `json:"avg_value"`
 	AvgGrowthPct map[string]*float64 `json:"avg_growth_pct"`
 	// MonthsPresent is the headline series' (liquidity) stored months in the
@@ -389,6 +400,14 @@ func buildAnnual(series []moneySeries) []annualRow {
 					note(code, "avg_value", fmt.Sprintf("%d of 12 months are stored; an average of "+
 						"fewer is not the year's average", cur.months))
 				}
+				continue
+			}
+			// A mean of base-money stocks printed on two definitions is a
+			// number of neither: 1399 and 1400 each hold eleven old-method
+			// months and a revised Esfand.
+			if rule.methodSensitive && !oneKnownMethod(cur.methods, nil) {
+				note(code, "avg_value", fmt.Sprintf("the months of %d are not all on one recorded "+
+					"base-money method; an average across the two definitions is not computed", y))
 				continue
 			}
 			avg := roundTo(cur.avg(), 6)
@@ -501,6 +520,19 @@ func storedMethod(cols map[string]any) string {
 	return ""
 }
 
+// approxColumn is the observation column the CBI ingest flags a
+// reconstructed availability with (migration 0034).
+const approxColumn = "available_at_approx"
+
+// storedApprox reads that flag; nil when the row has no such column or it is
+// not a boolean.
+func storedApprox(cols map[string]any) *bool {
+	if b, ok := cols[approxColumn].(bool); ok {
+		return &b
+	}
+	return nil
+}
+
 func normalizeMethod(v any) string {
 	s, ok := v.(string)
 	if !ok {
@@ -538,7 +570,12 @@ func effectiveMethod(m Month, stored string) (method string, inferred bool) {
 }
 
 // sourceKind classifies the cited document: CBI's monthly Excel edition or
-// the tsdview quarterly history.
+// the tsdview quarterly history, from what the archive row says it is. A
+// document that says neither -- a PDF bulletin from cbi.ir, say, which the
+// pre-1399 editions are -- is "" (null on the wire), not guessed to be a
+// workbook because of the host it came from: the edition is downloaded from
+// www.cbi.ir/page/{id}.aspx, a URL that says nothing about its format, and
+// the ingest records the workbook's media type (application/vnd.ms-excel).
 func sourceKind(url, title, mediaType string) string {
 	u := strings.ToLower(url + " " + title)
 	switch {
@@ -549,10 +586,6 @@ func sourceKind(url, title, mediaType string) string {
 		strings.HasSuffix(strings.TrimSpace(strings.ToLower(url)), ".xls") ||
 		strings.HasSuffix(strings.TrimSpace(strings.ToLower(url)), ".xlsx") ||
 		strings.Contains(u, ".xls"):
-		return "excel"
-	case strings.Contains(u, "cbi.ir"):
-		// The monthly edition is downloaded from www.cbi.ir/page/{id}.aspx; it
-		// is the only other document kind the CBI ingest archives.
 		return "excel"
 	}
 	return ""

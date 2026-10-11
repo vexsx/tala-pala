@@ -8,8 +8,10 @@ package liquidity
 // key is the footprint of everything the build reads: the CBI observations
 // (how many rows, how many already available, the newest id and availability),
 // each series' registry row and unit, and USD_IRT's stored closes -- plus the
-// Tehran date, because which month is still running and how old the newest
-// figure is both change at midnight without any row changing.
+// Tehran date and the UTC date, because how old the newest figures are
+// changes at Tehran's midnight and which dollar month is still running
+// changes at UTC's (the daily closes are UTC-day buckets), both without any
+// row changing.
 //
 // A series that is not ingested yet is not an error. The registry lookup
 // returns economic.ErrSeriesNotFound, the series is carried as unregistered,
@@ -174,7 +176,7 @@ func (h *Handler) responses(ctx context.Context) (*builtResponses, error) {
 		Scan(&footprint); err != nil {
 		return nil, fmt.Errorf("revision key: %w", err)
 	}
-	key := footprint + "|" + tehranToday(now).Format(dateLayout)
+	key := revisionKey(footprint, now)
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -192,6 +194,12 @@ func (h *Handler) responses(ctx context.Context) (*builtResponses, error) {
 	b := buildAll(key, money, toDayCloses(closes), now)
 	h.built = b
 	return b, nil
+}
+
+// revisionKey is the data footprint plus the two dates the answers depend on
+// without any row changing (see the file comment). Pure function.
+func revisionKey(footprint string, now time.Time) string {
+	return footprint + "|" + tehranToday(now).Format(dateLayout) + "|" + utcDay(now).Format(dateLayout)
 }
 
 // buildAll builds every response for one revision. Pure function.
@@ -277,7 +285,8 @@ func toMoneySeries(code string, prov economic.SeriesProvenance, obs []economic.O
 		}
 		p := moneyPoint{
 			Month: m, Value: o.Value, Vintage: o.Vintage,
-			AvailableAt: o.AvailableAt.UTC(), PublishedAt: o.PublishedAt,
+			AvailableAt: o.AvailableAt.UTC(), AvailableAtApprox: storedApprox(o.Columns),
+			PublishedAt: o.PublishedAt,
 		}
 		if factor != 1 {
 			// Twelve significant digits: 15581.22 همت is 155812.2, not the

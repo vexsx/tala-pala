@@ -493,8 +493,11 @@ research data.
 * **Growth** steps Jalali labels: `mom_pct` against the previous month, `yoy_pct`
   the same month a year earlier, `ytd_pct` the previous Esfand (CBI's second
   growth column). A comparison month not stored is `null` with
-  `null_reason[field]`; before 1397-04 only quarter-end months exist
-  (`frequency: "Q"`, `source: "tsdview"`).
+  `null_reason[field]`; before the monthly Excel record begins only
+  quarter-end months exist (`frequency: "Q"`, `source: "tsdview"`). `source`
+  is `null` when the cited document is neither an Excel edition nor tsdview —
+  it is read from the archive row's media type and URL, never guessed from the
+  host.
 * **The base-money break.** CBI redefined base money from 1399-12; each point
   carries `method` (`old`/`revised`), and growth across two methods — or
   touching a month whose method is unknown — is `null` with a reason, never a
@@ -507,13 +510,19 @@ research data.
   base money's method.
 * `annual[]` (only for `freq=annual`), per Jalali year and per series:
   `end_value` (Esfand), `end_growth_pct` (Esfand over Esfand, CBI's headline),
-  `avg_value` (only with all twelve months; `null` when no series has them),
-  `avg_growth_pct` (two complete years, one method), `months_present` (of the
-  liquidity series), `months_present_by_code`, `partial`.
-* `latest` is the newest liquidity month with its `published_at` (null: CBI
-  states none), `available_at`, `age_days` (month end → today, Tehran),
-  `source_url` and `vintage`. `data_age.stale` is set past 140 days, with a
-  warning.
+  `avg_value` (only with all twelve months — and, for base money, all twelve
+  on one recorded method: 1399 and 1400 each hold eleven old-method months and
+  a revised Esfand, so they have none; `null` when no series qualifies),
+  `avg_growth_pct` (two such years on the same method), `months_present` (of
+  the liquidity series), `months_present_by_code`, `partial`.
+* `latest` is the newest liquidity month with its `published_at`, `available_at`,
+  `available_at_approx`, `age_days` (month end → today, Tehran), `source_url`
+  and `vintage`. CBI states no release date: `published_at` is the workbook's
+  own last-saved time, a lower bound on publication (null when none is
+  recorded). `available_at_approx` is `true` where the backfill RECONSTRUCTED
+  `available_at` (last-saved + 1 day) rather than seeing the file, `false` for
+  a live fetch, `null` when the row does not say; every point carries it too.
+  `data_age.stale` is set past 140 days, with a warning.
 
 Not ingested yet: `200` with `available: false`, every series present with
 `available: false`, `unavailable_reason` and `points: []`, `latest: null`.
@@ -526,19 +535,27 @@ for those).
 | field | meaning |
 |---|---|
 | `anchor` | the latest USD_IRT daily close (toman), its date, Jalali date and source note. Every path starts here |
-| `money_as_of` | the newest M2 month published (point-in-time), with `published_at` / `available_at` |
-| `history[]` | per Jalali month: `usd_avg` (mean of daily closes), `usd_close` (last), `days`, `partial` (+ `partial_reason`: still running, or the history begins part-way through), `m2`, `usd_per_m2_index` (100 at `index_base`). Daily closes are the UTC-day closes `/market/candles` uses, placed by their civil date |
+| `money_as_of` | the newest M2 month published (point-in-time), with `published_at` / `available_at` / `available_at_approx` |
+| `history[]` | per Jalali month: `usd_avg` (mean of daily closes), `usd_close` (last), `days`, `partial` (+ `partial_reason`: still running, or the history begins part-way through), `m2`, `usd_per_m2_index` (100 at `index_base`). Daily closes are the UTC-day closes `/market/candles` uses, placed by their civil date; a month is still running until its last UTC day has ended (00:00 UTC, 03:30 Tehran), because until then its month-end close is still forming |
 | `scenarios[]` | `last_12m`, `three_year`, `slowest_three_year` (the slowest Esfand-to-Esfand three years since 1390): `annual_growth_pct` G and its `basis`; `path[h]` = anchor·(1+G)^(h/12), with `period`, `date` and the band edges `lo`/`hi` |
 | `trend` | the dollar's own trend: mean monthly change of the log monthly average since the first complete month (`since`), carried from the anchor. The benchmark, not a forecast |
-| `band` | `by_h[]`: the 5th/95th percentiles (`lo`/`hi`, log units, widened so the band never narrows; `raw_lo`/`raw_hi` before that) of the M2-paced path's month-end-close errors from origins `origins_from` on, only outcomes already known, at least 12 per horizon. `coverage` is how often a band built that way, from the errors known at each date, held the actual price: pooled `1-12`, `13-24`, and `24` (with `coverage_n`). It is the label — never a nominal 90% |
+| `band` | `by_h[]`: the 5th/95th percentiles (`lo`/`hi`, log units, widened so the band never narrows; `raw_lo`/`raw_hi` before that) of the M2-paced path's month-end-close errors from origins `origins_from` on, only outcomes already known, at least 12 per horizon. `coverage` is how often the same rule, applied at each past date to the errors known by then, held the actual price: pooled `1-12`, `13-24`, and `24` (with `coverage_n`, the (origin, horizon) pairs). It is the label — never a nominal 90% |
 | `backtest` | `rmse` per model (`random_walk`, `dollar_trend`, `m2_paced`) at 3/6/12/24 months; `dm_vs_random_walk_p` and `dm_vs_trend_p` are one-sided p-values that the **M2-paced** path's squared error is smaller (Harvey–Leybourne–Newbold corrected), `dm_trend_vs_random_walk_p` the same for the trend; `n_origins`; `verdict` |
 | `liquidity_dollar` | at the newest M2 month: every base month's dollar scaled by M2 growth since, published as `by_base.min/median/max` (each with its base; an even median names its two middle bases) over `bases_considered`, with `bases_below_actual`. Not a fair value: the base decides it |
+| `data_age` | top level: the ANCHOR close's age — `newest_close`, `age_days`, `stale` (past 4 days), `warning` — because every path starts from it; `money` is the newest M2 month's age (the aggregates' `data_age`), `usd` the dollar's again in full |
 
-The coverage published is that of the band as drawn — widened across horizons.
-The research reported the same quantiles without the widening (about 84% at
-1–12 months, 69% at 24 on the research data); widening can only add hits, so the
-published figures are slightly higher (86% and 73% on the same data). Either
-way it is below the 90% the quantiles span, and the note says so.
+The coverage published is that of the band as drawn: widened across horizons,
+and pooled from the same origins (`origins_from`, 1394-01) — so the rule it
+measures, applied today, reproduces `by_h` exactly. On the research data that is
+**80% at 1–12 months, 85% at 13–24 and 89% at 24** (the 24-month figure over 79
+overlapping origins, about three independent outcomes — the note says so). The
+research's own calibration table measured a different band: not widened, and
+pooled from 1392-01, two years more than the band it published (about 84% at
+1–12 months and 69% at 24). Measured on that wider pool, today's 24-month band
+would have a lower edge of −0.56 rather than the drawn −0.32, so its coverage is
+not this band's label; the acceptance test still reproduces the research's
+table from that rule. Wherever a measured rate is below the 90% the quantiles
+span, the note names the range.
 
 Degraded: no USD_IRT, or no M2 yet, is a `200` with `available: false` and
 `unavailable[]`; with the dollar alone, `history` and `trend` are still served
@@ -553,7 +570,7 @@ and nothing M2-based is.
                            "lo": 310902.85, "hi": 860388.41}]}],
   "trend": {"annual_growth_pct": 39.5943, "since": "1390-10", "through": "1405-06"},
   "band": {"lower_q": 0.05, "upper_q": 0.95, "by_h": [{"h": 12, "lo": -0.2676, "hi": 0.7503, "n": 126}],
-           "coverage": {"1-12": 0.859, "13-24": 0.809, "24": 0.728}},
+           "coverage": {"1-12": 0.805, "13-24": 0.852, "24": 0.886}},
   "backtest": {"target": "month-end close", "from": "1394-01", "to": "1405-05",
                "rmse": {"m2_paced": {"12": 0.3391}, "dollar_trend": {"12": 0.3464}, "random_walk": {"12": 0.4802}},
                "dm_vs_trend_p": {"3": 0.1636, "6": 0.217, "12": 0.294, "24": 0.3047}},

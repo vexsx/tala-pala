@@ -88,6 +88,7 @@ func TestToMoneySeries(t *testing.T) {
 		ProviderCode: "cbi", QualityTier: "official"}
 	later := detail("1404-12", 21959.3, map[string]any{"method": "revised"}, "https://www.cbi.ir/page/35570.aspx")
 	later.AvailableAt = avail.Add(time.Hour)
+	later.Source.MediaType = "application/vnd.ms-excel" // what the CBI ingest archives the edition as
 	obs := []economic.ObservationDetail{
 		detail("1404-12", 21000, nil, ""),
 		later, // the same label twice: the later-available one stands
@@ -116,6 +117,52 @@ func TestToMoneySeries(t *testing.T) {
 	}
 	if s.Points[0].Month != NewMonth(1399, 6) || s.ProviderCode != "cbi" || s.NameFA != "پایه پولی" {
 		t.Errorf("order or provenance wrong: %+v", s.Points[0])
+	}
+}
+
+// The backfill's reconstructed availability says so on every surface that
+// shows available_at; a row that records nothing is unknown (null), not exact.
+func TestApproxAvailabilityTravels(t *testing.T) {
+	prov := economic.SeriesProvenance{Code: CodeLiquidity, Unit: Unit}
+	approx := detail("1404-12", 155812.2, map[string]any{"available_at_approx": true},
+		"https://www.cbi.ir/page/35570.aspx")
+	older := detail("1404-11", 150000, map[string]any{}, "https://www.cbi.ir/page/35500.aspx")
+	s := toMoneySeries(CodeLiquidity, prov, []economic.ObservationDetail{older, approx})
+	pts := pointsByPeriod(buildPoints(s))
+	if a := pts["1404-12"].AvailableAtApprox; a == nil || !*a {
+		t.Errorf("1404-12 approx = %v", a)
+	}
+	if a := pts["1404-11"].AvailableAtApprox; a != nil {
+		t.Errorf("a row that records no flag is unknown, got %v", *a)
+	}
+	agg := buildAggregatesResponse(map[string]moneySeries{CodeLiquidity: s}, "monthly", researchNow)
+	if agg.Latest == nil || agg.Latest.AvailableAtApprox == nil || !*agg.Latest.AvailableAtApprox ||
+		agg.DataAge.AvailableAtApprox == nil || !*agg.DataAge.AvailableAtApprox {
+		t.Errorf("latest %+v, data_age %+v", agg.Latest, agg.DataAge)
+	}
+	d := buildDollarResponse(dollarInput{Now: researchNow, USD: researchUSD(t), M2: s}, 12)
+	if d.MoneyAsOf == nil || d.MoneyAsOf.AvailableAtApprox == nil || !*d.MoneyAsOf.AvailableAtApprox {
+		t.Errorf("money_as_of %+v", d.MoneyAsOf)
+	}
+	raw, _ := json.Marshal(buildPoints(s))
+	if !strings.Contains(string(raw), `"available_at_approx":true`) ||
+		!strings.Contains(string(raw), `"available_at_approx":null`) {
+		t.Errorf("wire: %s", raw)
+	}
+}
+
+// The cache key moves at Tehran's midnight (ages) and at UTC's (the running
+// dollar month), with no row changing.
+func TestRevisionKeyMovesAtBothMidnights(t *testing.T) {
+	at := func(h, m int) string { return revisionKey("f", time.Date(2026, 9, 22, h, m, 0, 0, time.UTC)) }
+	if at(20, 0) == at(21, 0) {
+		t.Error("Tehran's midnight (20:30 UTC) must move the key")
+	}
+	if at(21, 0) != at(23, 0) {
+		t.Error("nothing the answers depend on changes between 21:00 and 23:00 UTC")
+	}
+	if at(23, 0) == revisionKey("f", time.Date(2026, 9, 23, 0, 30, 0, 0, time.UTC)) {
+		t.Error("UTC's midnight must move the key: a dollar month stops running there")
 	}
 }
 

@@ -158,8 +158,12 @@ func TestAnnual(t *testing.T) {
 		t.Errorf("1403 average = %v, want 125.5", *r.AvgValue[CodeLiquidity])
 	}
 	near(t, "1403 average growth", *r.AvgGrowthPct[CodeLiquidity], 100*(125.5/105.5-1), 1e-6)
-	if r.AvgGrowthPct[CodeBaseMoney] != nil || !strings.Contains(r.NullReason[CodeBaseMoney]["avg_growth_pct"], "method") {
-		t.Errorf("base money average growth across a stray old print: %v %v", r.AvgGrowthPct[CodeBaseMoney], r.NullReason)
+	// A stray old-method print inside the year: neither an average of the
+	// year (two definitions) nor a growth from it.
+	if r.AvgValue[CodeBaseMoney] != nil || r.AvgGrowthPct[CodeBaseMoney] != nil ||
+		!strings.Contains(r.NullReason[CodeBaseMoney]["avg_value"], "method") {
+		t.Errorf("base money average across a stray old print: %v %v %v", r.AvgValue[CodeBaseMoney],
+			r.AvgGrowthPct[CodeBaseMoney], r.NullReason)
 	}
 	if r.MonthsPresent != 12 || r.Partial {
 		t.Errorf("1403 months %d partial %v", r.MonthsPresent, r.Partial)
@@ -176,6 +180,39 @@ func TestAnnual(t *testing.T) {
 	}
 	if by[1402].MonthsPresentByCode[CodeBaseMoney] != 12 || by[1402].MonthsPresentByCode[CodeM1] != 0 {
 		t.Errorf("months by code %v", by[1402].MonthsPresentByCode)
+	}
+}
+
+// 1399 and 1400 each hold eleven old-method months and a revised Esfand: an
+// average over them is a number of neither definition.
+func TestAnnualAverageNeverMixesMethods(t *testing.T) {
+	m2 := moneySeries{Code: CodeLiquidity, Points: year(1400, 100, 1, "")}
+	b1400 := year(1400, 10, 0.1, methodOld)
+	b1400[11].Method = methodRevised
+	base := moneySeries{Code: CodeBaseMoney, Points: append(b1400, year(1401, 12, 0.1, methodRevised)...)}
+	by := map[int]annualRow{}
+	for _, r := range buildAnnual([]moneySeries{m2, base}) {
+		by[r.Year] = r
+	}
+	r := by[1400]
+	if r.AvgValue[CodeBaseMoney] != nil ||
+		!strings.Contains(r.NullReason[CodeBaseMoney]["avg_value"], "not all on one recorded base-money method") {
+		t.Errorf("1400 base-money average %v, reason %v", r.AvgValue[CodeBaseMoney], r.NullReason[CodeBaseMoney])
+	}
+	if r.AvgValue[CodeLiquidity] == nil {
+		t.Error("liquidity has no method; its average stands")
+	}
+	n := by[1401]
+	if n.AvgValue[CodeBaseMoney] == nil || n.AvgGrowthPct[CodeBaseMoney] != nil ||
+		!strings.Contains(n.NullReason[CodeBaseMoney]["avg_growth_pct"], "method") {
+		t.Errorf("1401: one method, its own average, but no growth against mixed 1400: %+v", n)
+	}
+	// On the research data: 1399 and 1400 base money have no average.
+	resp := buildAggregatesResponse(researchMoney(t), "annual", researchNow)
+	for _, a := range *resp.Annual {
+		if (a.Year == 1399 || a.Year == 1400) && a.AvgValue != nil && a.AvgValue[CodeBaseMoney] != nil {
+			t.Errorf("%d base-money average %v mixes the two definitions", a.Year, *a.AvgValue[CodeBaseMoney])
+		}
 	}
 }
 
@@ -238,6 +275,8 @@ func TestSourceKind(t *testing.T) {
 		{"https://tsdview.cis.cbi.ir/backend/api/value/graph", "", "application/json"}:   "tsdview",
 		{"file:///tmp/pol1402,12.xls", "", ""}:                                           "excel",
 		{"https://example.org/x", "", "text/html"}:                                       "",
+		// A CBI document that is neither is not guessed to be a workbook.
+		{"https://www.cbi.ir/page/9948.aspx", "pol90.12.pdf", "application/pdf"}: "",
 	}
 	for in, want := range cases {
 		if got := sourceKind(in[0], in[1], in[2]); got != want {

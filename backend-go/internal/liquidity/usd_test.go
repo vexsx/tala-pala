@@ -50,11 +50,23 @@ func TestBucketUSDFirstMonthPartial(t *testing.T) {
 	}
 }
 
-func TestBucketUSDUsesTehranTodayForTheRunningMonth(t *testing.T) {
-	// 2026-09-22T21:00Z is already 1 Mehr in Tehran, so Shahrivar has ended.
-	now := time.Date(2026, 9, 22, 21, 0, 0, 0, time.UTC)
-	months, _ := bucketUSD([]dayClose{{date("2026-08-23"), 1}, {date("2026-09-22"), 2}}, tehranToday(now))
-	if !months[0].Complete {
-		t.Fatalf("Shahrivar should be complete at %s: %+v", now, months[0])
+// The buckets are UTC days, so the running month is read on the UTC clock.
+// At 2026-09-22T21:00Z Tehran is already on 1 Mehr, but the UTC day 31
+// Shahrivar is still collecting quotes: Shahrivar's month-end close is not
+// final, and the month must not enter the model yet. At 00:00 UTC it does.
+func TestBucketUSDRunningMonthFollowsTheUTCBucket(t *testing.T) {
+	days := []dayClose{{date("2026-08-23"), 1}, {date("2026-09-22"), 2}}
+	late := time.Date(2026, 9, 22, 21, 0, 0, 0, time.UTC)
+	if months, _ := bucketUSD(days, utcDay(late)); months[0].Complete {
+		t.Fatalf("Shahrivar is complete at %s while its last UTC day is still open: %+v", late, months[0])
+	}
+	next := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
+	if months, _ := bucketUSD(days, utcDay(next)); !months[0].Complete {
+		t.Fatalf("Shahrivar should be complete at %s: %+v", next, months[0])
+	}
+	// The whole response uses that clock: the history marks the month partial.
+	resp := buildDollarResponse(dollarInput{Now: late, USD: days, M2: unregistered(CodeLiquidity)}, 12)
+	if len(resp.History) == 0 || resp.History[0].Period != "1405-06" || !resp.History[0].Partial {
+		t.Fatalf("history %+v", resp.History)
 	}
 }

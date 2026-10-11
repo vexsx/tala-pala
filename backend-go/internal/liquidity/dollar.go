@@ -38,7 +38,10 @@ type moneyAsOfBlock struct {
 	GregorianEnd string     `json:"gregorian_end"`
 	PublishedAt  *time.Time `json:"published_at"`
 	AvailableAt  time.Time  `json:"available_at"`
-	Vintage      int        `json:"vintage"`
+	// AvailableAtApprox: available_at was reconstructed by the backfill, not
+	// seen (null when the row does not say).
+	AvailableAtApprox *bool `json:"available_at_approx"`
+	Vintage           int   `json:"vintage"`
 }
 
 type historyPoint struct {
@@ -148,9 +151,26 @@ type usdAge struct {
 	Warning        string  `json:"warning,omitempty"`
 }
 
+// dollarAge is the response's freshness. Its top level is the ANCHOR's -- the
+// newest dollar close, which every path starts from -- because that is what a
+// reader of this response checks first and what the page reads (stale,
+// age_days, warning). The money side's age, which moves the scenario rates,
+// is under money, and the dollar's again in full under usd.
 type dollarAge struct {
-	Money moneyAge `json:"money"`
-	USD   usdAge   `json:"usd"`
+	NewestClose    *string  `json:"newest_close"`
+	AgeDays        *int     `json:"age_days"`
+	Stale          bool     `json:"stale"`
+	StaleAfterDays int      `json:"stale_after_days"`
+	Warning        string   `json:"warning,omitempty"`
+	Money          moneyAge `json:"money"`
+	USD            usdAge   `json:"usd"`
+}
+
+func newDollarAge(money moneyAge, usd usdAge) dollarAge {
+	return dollarAge{
+		NewestClose: usd.NewestDay, AgeDays: usd.AgeDays, Stale: usd.Stale,
+		StaleAfterDays: usd.StaleAfterDays, Warning: usd.Warning, Money: money, USD: usd,
+	}
 }
 
 type dollarResponse struct {
@@ -219,19 +239,23 @@ func buildDollarResponse(in dollarInput, horizon int) dollarResponse {
 		Scenarios:   []scenarioBlock{},
 		Notes:       append([]string{}, dollarNotes...),
 	}
-	months, dropped := bucketUSD(in.USD, today)
+	// The running month is the one the newest UTC-day bucket falls in, not
+	// Tehran's: a day's close is the last quote of its UTC day (usd.go), so
+	// the last day of a month is still forming for the three and a half hours
+	// Tehran is already in the next one.
+	months, dropped := bucketUSD(in.USD, utcDay(in.Now))
 	if dropped > 0 {
 		out.Notes = append(out.Notes, fmt.Sprintf("%d stored daily close(s) were zero or negative and "+
 			"were left out as stored faults.", dropped))
 	}
-	out.DataAge = dollarAge{Money: buildMoneyAge(in.M2, today), USD: buildUSDAge(in.USD, today)}
+	out.DataAge = newDollarAge(buildMoneyAge(in.M2, today), buildUSDAge(in.USD, today))
 
 	newestM2, haveM2 := in.M2.newest()
 	if haveM2 {
 		out.MoneyAsOf = &moneyAsOfBlock{
 			Period: newestM2.Month.String(), GregorianEnd: newestM2.Month.End().Format(dateLayout),
 			PublishedAt: utcPtr(newestM2.PublishedAt), AvailableAt: newestM2.AvailableAt.UTC(),
-			Vintage: newestM2.Vintage,
+			AvailableAtApprox: newestM2.AvailableAtApprox, Vintage: newestM2.Vintage,
 		}
 	} else {
 		out.Unavailable = append(out.Unavailable, unavailableSeries(in.M2))
@@ -277,7 +301,7 @@ func buildDollarResponse(in dollarInput, horizon int) dollarResponse {
 	out.Available = true
 
 	band := p.band(targetClose, maxHorizon)
-	cov := p.coverage(targetClose, bandLowerQ, bandUpperQ, true)
+	cov := p.coverage(targetClose, bandLowerQ, bandUpperQ, true, evalStart)
 	out.Band = buildBandBlock(band, cov, horizon)
 
 	rates, notes := scenarioRates(in.M2)
@@ -379,7 +403,7 @@ func buildBandBlock(band []bandStep, cov map[int]coverageCell, horizon int) *ban
 		b.Coverage[key] = fptr(c.rate(), 3)
 		b.CoverageN[key] = c.N
 	}
-	short, long := b.Coverage["1-12"], b.Coverage["24"]
+	short, mid, long := b.Coverage["1-12"], b.Coverage["13-24"], b.Coverage["24"]
 	switch {
 	case len(band) == 0:
 		b.Note = "Fewer than 12 backtest errors are known at every horizon, so no band is drawn."
@@ -389,17 +413,36 @@ func buildBandBlock(band []bandStep, cov map[int]coverageCell, horizon int) *ban
 	default:
 		b.Note = fmt.Sprintf("The band is the 5th–95th percentile of the M2-paced path's past errors "+
 			"(month-end close, origins from %s, at least %d per horizon, widened so it never "+
-			"narrows). In the backtest, a band built this way from the errors known at each date "+
-			"held the actual price %s of the time at 1–12 months", evalStart, minErrors, pct(*short))
+			"narrows). In the backtest, the same rule, applied at each past date to the errors "+
+			"known by then, held the actual price %s of the time at 1–12 months", evalStart,
+			minErrors, pct(*short))
+		if mid != nil {
+			b.Note += fmt.Sprintf(", %s at 13–24 months", pct(*mid))
+		}
 		if long != nil {
-			b.Note += fmt.Sprintf(" and %s at 24 months", pct(*long))
+			n := b.CoverageN["24"]
+			b.Note += fmt.Sprintf(" and %s at 24 months (%d origins, about %d independent outcomes)",
+				pct(*long), n, max(1, int(math.Round(float64(n)/24))))
 		}
 		b.Note += "."
+		// Which measured rates fall short of the share the quantiles span,
+		// named rather than implied: one sentence must not cover a rate that
+		// did not fall short.
 		nominal := bandUpperQ - bandLowerQ
-		if *short < nominal-0.02 || (long != nil && *long < nominal-0.02) {
-			b.Note += fmt.Sprintf(" That is less often than the %s its quantiles span: later "+
+		under := []string{}
+		for _, r := range []struct {
+			label string
+			v     *float64
+		}{{"1–12 months", short}, {"13–24 months", mid}, {"24 months", long}} {
+			if r.v != nil && *r.v < nominal-0.02 {
+				under = append(under, r.label)
+			}
+		}
+		if len(under) > 0 {
+			b.Note += fmt.Sprintf(" At %s that is less often than the %s its quantiles span: later "+
 				"errors fell outside the range of the errors before them more often than that "+
-				"implies, and the future can surprise by more than the past did.", pct(nominal))
+				"implies, and the future can surprise by more than the past did.",
+				listWords(under), pct(nominal))
 		}
 		if s, ok := bandAt(band, 12); ok && math.Abs(s.Median) >= 0.01 {
 			dir := "above"
@@ -583,6 +626,11 @@ func listInts(hs []int) string {
 	for i, h := range hs {
 		parts[i] = fmt.Sprint(h)
 	}
+	return listWords(parts)
+}
+
+// listWords joins "a", "a and b", "a, b and c".
+func listWords(parts []string) string {
 	if len(parts) <= 1 {
 		return strings.Join(parts, "")
 	}
