@@ -470,6 +470,24 @@ func LoadMonthlyCPI(ctx context.Context, pool *pgxpool.Pool, asOf time.Time) ([]
 	return obs, err
 }
 
+// --- daily closes ---------------------------------------------------------------
+
+// LoadDailyCloses reads one close per UTC day for `symbol`, up to (and
+// excluding) asOf, through dailyCloseSelect -- THE daily series, the same
+// expression /market/candles and every return in this package are built from.
+// internal/liquidity groups USD_IRT's closes into Jalali months; a second
+// statement there would be a second answer to "what was the dollar's close on
+// that day". Ascending by day; empty, with no error, for a symbol with no
+// stored observation.
+func LoadDailyCloses(ctx context.Context, pool *pgxpool.Pool, symbol string, asOf time.Time) ([]Point, error) {
+	h := &Handler{Pool: pool}
+	series, err := h.loadDailySeries(ctx, []string{symbol}, asOf)
+	if err != nil {
+		return nil, err
+	}
+	return fromDailySeries(series[symbol]), nil
+}
+
 // --- helpers ------------------------------------------------------------------
 
 // quoteAtOrBefore is the carry-forward rule as a lookup: the last point at or
