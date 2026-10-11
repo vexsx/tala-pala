@@ -204,12 +204,32 @@ export function hasMoneyData(resp: LiquidityAggregatesResponse): boolean {
 }
 
 /**
- * CBI's monthly workbooks have arrived 10 to 137 days after the month they
- * describe, in batches (report_cbi.md, measured over every edition from Tir
- * 1399). A newest month older than the longest of those is late by CBI's own
- * record — either CBI has published nothing newer or it has not been read.
+ * CBI's measured publication lag, in days after the month ends: the
+ * last-saved times of the workbooks CBI has not visibly re-saved put each one
+ * 21 to 164 days late, often in batches. The API sends the same figures in
+ * `data_age.publication_lag_days`, and the page states the API's when it has
+ * them; these are only the fallback.
  */
-export const MONEY_STALE_AFTER_DAYS = 137
+export const CBI_LAG_DAYS: Readonly<{ min: number; max: number }> = { min: 21, max: 164 }
+
+/**
+ * When the newest month is called old, if the API does not say: the longest
+ * lag plus a month (31 days), because until the next month is published the
+ * newest STORED month is a month older than it — when 1403-12 arrived 164 days
+ * late, 1403-11 was 194 days old and nothing was overdue.
+ */
+export const MONEY_STALE_AFTER_DAYS = CBI_LAG_DAYS.max + 31
+
+/** The lag range to state: the API's measured one, else the fallback above. */
+export function publicationLag(age: LiquidityDataAge | null | undefined): { min: number; max: number } {
+  const lag = age?.publication_lag_days
+  return lag && Number.isFinite(lag.min) && Number.isFinite(lag.max) ? { min: lag.min, max: lag.max } : CBI_LAG_DAYS
+}
+
+/** The age past which the newest month is old: the API's bound, else the fallback above. */
+export function moneyStaleAfterDays(age: LiquidityDataAge | null | undefined): number {
+  return typeof age?.stale_after_days === 'number' ? age.stale_after_days : MONEY_STALE_AFTER_DAYS
+}
 
 /**
  * How old the dollar close every path starts from is, from either shape of
@@ -221,10 +241,10 @@ export function dollarCloseAge(age: LiquidityDollarDataAge | null | undefined): 
   return age
 }
 
-/** The server's verdict when it gives one; otherwise the bound above. */
+/** The server's verdict when it gives one; otherwise its bound, or the one above. */
 export function moneyIsStale(latest: LiquidityLatest | null, age: LiquidityDataAge | undefined): boolean {
   if (age && typeof age.stale === 'boolean') return age.stale
-  return latest !== null && latest.age_days > MONEY_STALE_AFTER_DAYS
+  return latest !== null && latest.age_days > moneyStaleAfterDays(age)
 }
 
 /**
@@ -369,14 +389,20 @@ export function methodSwitches(resp: LiquidityAggregatesResponse, code = CODE_BA
 }
 
 /**
- * The method changes to mark for a series: each listed break and each switch
- * the points show, once per period, oldest first.
+ * The method changes to mark for a series. Where the stored months carry
+ * their methods, only the switches between them: a break's `from` is the
+ * month CBI's footnote dates the redefinition to, and a stored month there
+ * may still be an old-method print (the API lists those in
+ * `old_method_after`) — a marker at it would say "the line breaks here"
+ * over a line that runs straight through. Only when no month records a
+ * method are the listed breaks all there is to mark.
  */
 export function methodChanges(resp: LiquidityAggregatesResponse, code = CODE_BASE): Array<{ from: string; x: number }> {
-  const byX = new Map<number, { from: string; x: number }>()
-  for (const b of breaksFor(resp.breaks, code)) byX.set(b.x, { from: b.from, x: b.x })
-  for (const s of methodSwitches(resp, code)) byX.set(s.x, s)
-  return [...byX.values()].sort((a, b) => a.x - b.x)
+  const points = findSeries(resp, code)?.points ?? []
+  if (points.some((p) => p.method)) return methodSwitches(resp, code)
+  return breaksFor(resp.breaks, code)
+    .map((b) => ({ from: b.from, x: b.x }))
+    .sort((a, b) => a.x - b.x)
 }
 
 /** The methods a series' stored months from `from` to `to` (inclusive) are on; null for a month with none recorded. */
@@ -423,6 +449,44 @@ export function monthlyRunStart(points: LiquidityPoint[]): string | null {
   return start ? start.period : null
 }
 
+/**
+ * The month a series' monthly record starts, as the API names it
+ * (`monthly_from`, the same month in every null reason it writes), else read
+ * from the points. One month, said the same way in every caption.
+ */
+export function seriesMonthlyFrom(resp: LiquidityAggregatesResponse, code = CODE_M2): string | null {
+  const s = findSeries(resp, code)
+  if (!s) return null
+  return s.monthly_from ?? monthlyRunStart(s.points)
+}
+
+/** The same month for the dollar response: the API's, else read from the history. */
+export function dollarMonthlyFrom(d: LiquidityDollarResponse): string | null {
+  return d.money_as_of?.monthly_from ?? historyMoneyRunStart(d.history)
+}
+
+/**
+ * The first month of a year-on-year line that runs unbroken: a year after
+ * the monthly record starts. Before it a month's comparison a year earlier
+ * is stored only at quarter-ends, so the line is a few dots.
+ */
+export function yoyRunStart(monthlyFrom: string | null): string | null {
+  const x = monthlyFrom ? periodOrdinal(monthlyFrom) : null
+  return x === null ? null : ordinalPeriod(x + 12)
+}
+
+/**
+ * A partial year whose stored months are all quarter-ends (tsdview's
+ * history, and the oldest workbook's Esfand): "quarter-ends only" says what
+ * it holds where "partial" would suggest a year cut short.
+ */
+export function quarterEndsOnly(resp: LiquidityAggregatesResponse, year: number, code = CODE_M2): boolean {
+  const months = (findSeries(resp, code)?.points ?? [])
+    .map((p) => parsePeriod(p.period))
+    .filter((p): p is { jy: number; jm: number } => p !== null && p.jy === year)
+  return months.length > 0 && months.length < 12 && months.every((p) => p.jm % 3 === 0)
+}
+
 /** The same for the dollar history: the first month of the unbroken run of months with a liquidity figure. */
 export function historyMoneyRunStart(history: LiquidityDollarHistoryPoint[]): string | null {
   const hs = [...history]
@@ -456,6 +520,24 @@ export function breakBetween(breaks: LiquidityBreak[], code: string, from: strin
 }
 
 // --- the annual view ---------------------------------------------------------------------
+
+/**
+ * What the money section can show for the view asked for. Right after the
+ * toggle, for one render before the request marks itself loading, the
+ * response in hand is still the monthly one: read as the annual answer it
+ * would flash "no yearly figures" at the reader (and a screen reader). An
+ * answer counts only when its `freq` is the view's; an annual answer that
+ * truly lacks its yearly block is the server's fault and is said.
+ */
+export function moneyView(
+  freq: 'monthly' | 'annual',
+  resp: LiquidityAggregatesResponse | null,
+  loading: boolean
+): 'ready' | 'loading' | 'missing' {
+  if (freq === 'monthly') return 'ready'
+  if (resp === null || loading || (resp.freq !== undefined && resp.freq !== freq)) return 'loading'
+  return resp.annual === undefined ? 'missing' : 'ready'
+}
 
 export type AnnualMeasure = 'end' | 'avg'
 
@@ -557,7 +639,7 @@ export function annualFigure(
   const served = annualMap(row, field)?.[code] ?? null
   if (served !== null) return { value: served, reason: null }
   if (fromApi) return { value: null, reason: fromApi }
-  const runStart = monthlyRunStart(findSeries(resp, code)?.points ?? [])
+  const runStart = seriesMonthlyFrom(resp, code)
   const runX = runStart ? periodOrdinal(runStart) : null
   const sparse = (year: number) =>
     runX !== null && year * 12 < runX ? `; before ${periodLabel(runStart!)} only some months are stored (CBI’s quarter-ends)` : ''
@@ -737,6 +819,19 @@ export function bandEdges(value: number, step: LiquidityBandStep): [number, numb
   return [value * Math.exp(step.lo), value * Math.exp(step.hi)]
 }
 
+/**
+ * A path point's band edges: the API's own when it sends them (computed from
+ * the unrounded quantiles), else the path × exp(quantile) of the band's step
+ * at that horizon; null when the band does not cover it.
+ */
+export function pathBand(
+  point: { h: number; value: number; lo?: number | null; hi?: number | null },
+  step: LiquidityBandStep | undefined
+): [number, number] | null {
+  if (typeof point.lo === 'number' && typeof point.hi === 'number') return [point.lo, point.hi]
+  return step ? bandEdges(point.value, step) : null
+}
+
 /** Which scenario the band wraps: the one the API names, or the reader's pick when it applies to each. */
 export function bandTarget(band: LiquidityBand | null, scenarioKeys: string[], picked: string | null): string | null {
   if (!band || scenarioKeys.length === 0) return null
@@ -787,10 +882,7 @@ export function dollarRows(
       const r = at(p.period)
       if (!r) continue
       r[key] = p.value
-      if (s.key === opts.bandKey) {
-        const step = steps.get(p.h)
-        r.band = step ? bandEdges(p.value, step) : null
-      }
+      if (s.key === opts.bandKey) r.band = pathBand(p, steps.get(p.h))
     }
     if (s.key === opts.bandKey && anchorRow && p0 !== null) anchorRow.band = [p0, p0]
   }
@@ -817,7 +909,7 @@ function rangeText(r: { from: number; to: number }): string {
   return r.from === r.to ? `${r.from} months` : `${r.from}–${r.to} months`
 }
 
-/** The measured coverage clauses, shortest horizons first: 'about 84% of the time at 1–12 months'. */
+/** The measured coverage clauses, shortest horizons first: 'about 80% of the time at 1–12 months'. */
 export function coverageClauses(coverage: Record<string, number | null>): string[] {
   return Object.entries(coverage)
     .map(([k, v]) => ({ r: parseCoverageKey(k), v }))
@@ -853,28 +945,35 @@ export function bandUndercovers(band: LiquidityBand): boolean {
 }
 
 /**
- * The coverage beyond twelve months, said beside the 24-month choice — and
- * whether it is lower than within twelve months, read from the numbers.
+ * The coverage beyond twelve months, said beside the 24-month choice with
+ * what each rate rests on — and no comparison with the shorter horizons. The
+ * single-horizon rate at 24 months is counted over origins whose windows
+ * overlap in all but one month, so it holds only a handful of independent
+ * outcomes (the API sends how many): too few to say the band holds more or
+ * less often that far out, whichever way the rate happens to fall.
  */
 export function longHorizonNote(band: LiquidityBand | null): string | null {
   if (!band) return null
-  const entries = Object.entries(band.coverage)
-    .map(([k, v]) => ({ r: parseCoverageKey(k), v }))
-    .filter((e): e is { r: { from: number; to: number }; v: number } => e.r !== null && Number.isFinite(e.v))
-    .sort((a, b) => a.r.from - b.r.from)
-  const short = entries.filter((e) => e.r.to <= 12)
-  const long = entries.filter((e) => e.r.to > 12)
+  const long = Object.entries(band.coverage)
+    .map(([k, v]) => ({ key: k, r: parseCoverageKey(k), v }))
+    .filter((e): e is { key: string; r: { from: number; to: number }; v: number } =>
+      e.r !== null && e.r.to > 12 && typeof e.v === 'number' && Number.isFinite(e.v))
+    .sort((a, b) => a.r.from - b.r.from || a.r.to - b.r.to)
   if (long.length === 0) return 'the band’s coverage beyond 12 months was not measured in the backtest.'
-  const said = (list: typeof entries) =>
-    list.map((e) => `about ${Math.round(e.v * 100)}% of the time at ${rangeText(e.r)}`).join(', ')
-  let compare = ''
-  if (short.length > 0) {
-    const lo = Math.min(...short.map((e) => e.v))
-    const hi = Math.max(...short.map((e) => e.v))
-    const verb = long.every((e) => e.v < lo) ? 'less often' : long.every((e) => e.v > hi) ? 'more often' : 'about as often'
-    compare = ` — ${verb} than within 12 months (${said(short)})`
-  }
-  return `in the backtest the band held the actual price ${said(long)}${compare}.`
+  const clauses = long.map((e) => {
+    const n = band.coverage_n?.[e.key]
+    const ind = band.coverage_independent?.[e.key]
+    const basis =
+      typeof ind === 'number' && typeof n === 'number'
+        ? ` (${formatGrouped(n)} overlapping origins, about ${formatGrouped(ind)} independent outcome${ind === 1 ? '' : 's'})`
+        : ''
+    return `about ${Math.round(e.v * 100)}% of the time at ${rangeText(e.r)}${basis}`
+  })
+  const thin = long.some((e) => typeof band.coverage_independent?.[e.key] === 'number')
+  return (
+    `in the backtest the band held the actual price ${clauses.join(' and ')}.` +
+    (thin ? ' So few independent outcomes cannot say whether it holds more or less often that far out than within a year.' : '')
+  )
 }
 
 /** The dollar ÷ liquidity index where it exists, on the month axis. */
@@ -969,6 +1068,63 @@ export function bestModel(bt: LiquidityBacktest, h: string): string | null {
   return tie ? null : best
 }
 
+/**
+ * The model whose error at a horizon is MEASURABLY the smallest: smaller
+ * than each other model's by a one-sided Diebold–Mariano test below `alpha`.
+ * The API tests the liquidity-paced path against the random walk and the
+ * trend, and the trend against the random walk; the reverse direction of a
+ * one-sided test on the same statistic is 1 − p. Null when the smallest
+ * RMSE is not measurably smaller — a lower last digit is not a better model,
+ * and a bold figure would say it is.
+ */
+export function measurablyBest(bt: LiquidityBacktest, h: string, alpha = 0.05): string | null {
+  const best = bestModel(bt, h)
+  if (!best) return null
+  const m2Rw = normalizeDm(bt.dm_vs_random_walk_p).m2_paced?.[h]
+  const m2Trend = normalizeDm(bt.dm_vs_trend_p).m2_paced?.[h]
+  const trendRw = normalizeDm(bt.dm_trend_vs_random_walk_p).m2_paced?.[h]
+  const below = (p: number | null | undefined) => typeof p === 'number' && p < alpha
+  const reverse = (p: number | null | undefined) => (typeof p === 'number' ? 1 - p : null)
+  const others = Object.keys(bt.rmse).filter((m) => m !== best && typeof bt.rmse[m]?.[h] === 'number')
+  const beats = (m: string): boolean => {
+    if (best === 'm2_paced') return m === 'random_walk' ? below(m2Rw) : m === 'dollar_trend' ? below(m2Trend) : false
+    if (best === 'dollar_trend') return m === 'random_walk' ? below(trendRw) : m === 'm2_paced' ? below(reverse(m2Trend)) : false
+    if (best === 'random_walk') return m === 'm2_paced' ? below(reverse(m2Rw)) : m === 'dollar_trend' ? below(reverse(trendRw)) : false
+    return false
+  }
+  return others.length > 0 && others.every(beats) ? best : null
+}
+
+/** The money multiplier at the precision CBI prints it, always three decimals. */
+export function formatMultiplier(value: number | null | undefined): string {
+  return value === null || value === undefined || !Number.isFinite(value) ? '—' : value.toFixed(3)
+}
+
+/**
+ * How the liquidity-paced path's errors compared with the trend's over some
+ * horizons, from the RMSE table: '0.8–6.0% smaller', '… larger', or the span
+ * when they differ in sign. Null with nothing to compare.
+ */
+export function rmseAgainstTrend(bt: LiquidityBacktest, hs: string[]): string | null {
+  const diffs = hs
+    .map((h) => {
+      const m2 = bt.rmse.m2_paced?.[h]
+      const tr = bt.rmse.dollar_trend?.[h]
+      return typeof m2 === 'number' && typeof tr === 'number' && tr > 0 ? 100 * (m2 / tr - 1) : null
+    })
+    .filter((v): v is number => v !== null)
+  if (diffs.length === 0) return null
+  const lo = Math.min(...diffs)
+  const hi = Math.max(...diffs)
+  const span = (a: number, b: number) => {
+    const [x, y] = [Math.abs(a), Math.abs(b)].sort((p, q) => p - q)
+    return x.toFixed(1) === y.toFixed(1) ? `${x.toFixed(1)}%` : `${x.toFixed(1)}–${y.toFixed(1)}%`
+  }
+  if (hi < 0) return `${span(lo, hi)} smaller`
+  if (lo > 0) return `${span(lo, hi)} larger`
+  return `between ${Math.abs(lo).toFixed(1)}% smaller and ${hi.toFixed(1)}% larger`
+}
+
 export function formatP(p: number): string {
   if (p < 0.001) return '< 0.001'
   return p < 0.01 ? p.toFixed(3) : p.toFixed(2)
@@ -1021,7 +1177,13 @@ export function backtestStatements(bt: LiquidityBacktest, alpha = 0.05): string[
   const trend = judge(vsTrend, 'the dollar’s own past trend')
   if (trend) {
     if (trend.yes.length === 0) {
-      out.push('In this test, pacing the dollar with liquidity growth added no skill the dollar’s own trend did not already have.')
+      // A failure to reject, said as one: the errors themselves may still
+      // differ, by an amount the test cannot tell from chance.
+      const rmse = rmseAgainstTrend(bt, trend.no)
+      out.push(
+        'In this test, pacing the dollar with liquidity growth was not measurably better than the dollar’s own trend' +
+          (rmse ? `: its typical miss was ${rmse}, a difference the test could not tell from chance.` : '.')
+      )
     } else if (trend.no.length === 0) {
       out.push('In this test, pacing the dollar with liquidity growth added measurable skill over the dollar’s own trend at every horizon tested.')
     } else {

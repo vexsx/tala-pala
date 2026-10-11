@@ -3892,9 +3892,47 @@ input[type='checkbox'] {
   font-weight: 500;
 }
 
-.lq-scn-name {
+/* A path's name and basis wrap, so the values beside them stay on screen.
+ * The selector carries .lq-table td: .table td (nowrap) would otherwise win
+ * on specificity and stretch the name column to a single 700 px line. */
+.lq-table td.lq-scn-name,
+.lq-table td.lq-wrap,
+.lq-table th.lq-wrap {
   white-space: normal;
+}
+
+.lq-table td.lq-scn-name {
   min-width: 220px;
+}
+
+/* A missing figure: a dash that opens to its reason (tap, click or key). */
+.lq-why {
+  display: inline-block;
+}
+
+.lq-why > summary {
+  cursor: pointer;
+  list-style: none;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.lq-why > summary::-webkit-details-marker {
+  display: none;
+}
+
+.lq-why[open] .lq-why-text {
+  display: block;
+  white-space: normal;
+  text-align: left;
+  min-width: 14rem;
+  max-width: 22rem;
+  margin-top: 4px;
+}
+
+.lq-chips-label {
+  align-self: center;
+  margin-right: 2px;
 }
 
 /* The smallest error at a horizon: weight, not colour. */
@@ -3949,7 +3987,42 @@ input[type='checkbox'] {
 }
 
 @media (max-width: 640px) {
-  .lq-scn-name {
-    min-width: 170px;
+  /* The scenario table as one block per path: its name and basis across the
+   * top, its growth and values in a row of equal columns beneath (--lq-cols,
+   * set on the table), so a phone sees every number without scrolling the
+   * table sideways. The band under a value wraps at its dash. */
+  .lq-scn-table,
+  .lq-scn-table thead,
+  .lq-scn-table tbody {
+    display: block;
+  }
+
+  .lq-scn-table thead tr,
+  .lq-scn-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(var(--lq-cols, 4), minmax(0, 1fr));
+  }
+
+  .lq-scn-table thead th:first-child {
+    display: none;
+  }
+
+  .lq-scn-table th,
+  .lq-scn-table td {
+    padding: 6px 4px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+  }
+
+  .lq-scn-table td.lq-scn-name {
+    grid-column: 1 / -1;
+    min-width: 0;
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .lq-why[open] .lq-why-text {
+    min-width: 11rem;
   }
 }

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   Area,
   Bar,
@@ -39,19 +39,18 @@ import {
   backtestHorizons,
   backtestModels,
   backtestStatements,
-  bandEdges,
   bandTarget,
   bandUndercovers,
-  bestModel,
   coverageSentence,
   dollarCloseAge,
+  dollarMonthlyFrom,
   esfandTicks,
   dollarRows,
   findSeries,
   formatMoney,
   formatMoneyNumber,
+  formatMultiplier,
   hasMoneyData,
-  historyMoneyRunStart,
   indexBasePeriod,
   indexExtremes,
   indexRows,
@@ -59,6 +58,7 @@ import {
   jalaliDatePeriod,
   lineKeys,
   longHorizonNote,
+  measurablyBest,
   methodChanges,
   modelLabel,
   moneyIsStale,
@@ -66,22 +66,26 @@ import {
   moneySortValue,
   moneyTableRows,
   moneyUnit,
-  monthlyRunStart,
+  moneyView,
   multiplierRows,
   newestOrdinal,
   ordinalPeriod,
+  pathBand,
   periodLabel,
   periodLabelFa,
   periodOrdinal,
   periodTickLabel,
   periodTicks,
+  publicationLag,
+  quarterEndsOnly,
   scenarioKey,
   scenarioStyle,
+  seriesMonthlyFrom,
   sortNullsLast,
   tehranDaysBetween,
   toDisplayMoney,
   windowStart,
-  MONEY_STALE_AFTER_DAYS,
+  yoyRunStart,
   type AnnualField,
   type AnnualMeasure,
   type AnnualSortKey,
@@ -111,9 +115,10 @@ import type {
  *     backtest card says what they are worth in sentences built from the
  *     API's own numbers — never from a sentence typed here.
  *  2. A NOMINAL BAND FOR A MEASURED ONE. The band is labelled only with how
- *     often a band built this way held the real price in the backtest (about
- *     84% where its quantiles promise 90), and the 24-month view says beside
- *     its own button that it held less often still.
+ *     often a band built this way held the real price in the backtest, and
+ *     beyond twelve months with how few independent outcomes that rate rests
+ *     on — never with the 90% its quantiles span, and never with a
+ *     comparison the sample cannot carry.
  *  3. TWO METHODS FOR ONE SERIES. CBI redefined base money from 1399-12. A
  *     figure on the old method and one on the revised method are different
  *     quantities, so no line joins them, the change is marked on every chart,
@@ -123,7 +128,8 @@ import type {
  *     methods, not from how the API happens to list its breaks.
  *  4. AN OLD MONTH FOR TODAY'S. CBI publishes months late and in batches; the
  *     newest month, its workbook's date and its age are the first line, and a
- *     notice says so when it is older than CBI has ever taken.
+ *     notice says so when it is older than CBI has ever taken — with the lag
+ *     and the bound the API measured, not figures typed here.
  *  5. RIAL FOR TOMAN. CBI's unit is هزار میلیارد ریال; the page shows همت with
  *     the app on toman and the published unit on rial, and prints which. A
  *     response in any other unit is refused, not divided by a guess.
@@ -165,9 +171,9 @@ function Fa({ children }: { children: string }) {
 
 /**
  * A growth rate as a plain figure: money growth is not good or bad news, so
- * it wears no colour. A missing one is a dash whose reason is its tooltip and
- * is read out to a screen reader — a hover alone reaches neither a keyboard
- * nor a phone's reader.
+ * it wears no colour. A missing one is a dash that opens to its reason —
+ * tapped, clicked or toggled from the keyboard, so the reason reaches a phone
+ * and a screen reader, not only a mouse hovering over a tooltip.
  */
 function Growth({ value, reason }: { value: number | null | undefined; reason?: string | null }) {
   if (value == null) return <Missing reason={reason} />
@@ -175,29 +181,52 @@ function Growth({ value, reason }: { value: number | null | undefined; reason?: 
 }
 
 function Missing({ reason }: { reason?: string | null }) {
+  if (!reason) {
+    return (
+      <span className="mono">
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">not stored</span>
+      </span>
+    )
+  }
   return (
-    <span className="mono" title={reason ?? undefined}>
-      <span aria-hidden="true">—</span>
-      <span className="sr-only">{reason ? `not measured: ${reason}` : 'not stored'}</span>
-    </span>
+    <details className="lq-why" title={reason}>
+      <summary className="mono">
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">not measured; show why</span>
+      </summary>
+      <span className="lq-why-text small muted">{reason}</span>
+    </details>
   )
 }
 
+/**
+ * A row of toggle chips. `shown` prints the group's name before it: chips
+ * that sit side by side ("12 months", "3 years") need their names on screen,
+ * or a horizon reads as a history window.
+ */
 function Chips<K extends string | number>({
   label,
   options,
   value,
   onChange,
-  testId
+  testId,
+  shown
 }: {
   label: string
   options: ReadonlyArray<{ key: K; label: string }>
   value: K
   onChange: (k: K) => void
   testId?: string
+  shown?: string
 }) {
   return (
     <div className="chip-row" role="group" aria-label={label} data-testid={testId}>
+      {shown ? (
+        <span className="field-label lq-chips-label" aria-hidden="true">
+          {shown}
+        </span>
+      ) : null}
       {options.map((o) => (
         <button
           key={o.key}
@@ -367,8 +396,9 @@ function AsOf({ resp, calendar }: { resp: LiquidityAggregatesResponse; calendar:
       ) : (
         <>CBI states no release date for it. </>
       )}
-      First readable here {formatDate(latest.available_at, calendar)}. On {formatDate(resp.as_of, calendar)} the
-      newest month is {formatGrouped(latest.age_days)} days old.{' '}
+      First readable here {formatDate(latest.available_at, calendar)}
+      {latest.available_at_approx ? ' (approximately: reconstructed from the workbook’s saved time, not seen then)' : ''}.
+      On {formatDate(resp.as_of, calendar)} the newest month is {formatGrouped(latest.age_days)} days old.{' '}
       {latest.source_url ? (
         <a href={latest.source_url} target="_blank" rel="noopener noreferrer">
           CBI’s workbook
@@ -378,20 +408,24 @@ function AsOf({ resp, calendar }: { resp: LiquidityAggregatesResponse; calendar:
   )
 }
 
+/**
+ * Said once: how old the newest month is, why that is overdue by CBI's own
+ * record (the API's measured lag), and what it means for everything below.
+ */
 function MoneyAgeNotice({ resp }: { resp: LiquidityAggregatesResponse }) {
   const latest = resp.latest
   if (!latest || !moneyIsStale(latest, resp.data_age)) return null
+  const lag = publicationLag(resp.data_age)
   return (
     <div className="callout callout-warn" data-testid="lq-stale" role="status">
       <div>
-        Nothing newer than <strong>{periodLabel(latest.period)}</strong> is stored: the newest money figures are{' '}
-        {formatGrouped(latest.age_days)} days old.
+        Nothing newer than <strong>{periodLabel(latest.period)}</strong> is stored, and it ended{' '}
+        {formatGrouped(latest.age_days)} days ago.
       </div>
       <div className="small">
-        CBI’s monthly workbooks have arrived 10 to {MONEY_STALE_AFTER_DAYS} days after the month they describe, in
-        batches, so either CBI has published nothing newer or it has not been read yet. Every money figure below — and
-        every scenario rate built on them — describes {periodLabel(latest.period)}, not today.
-        {resp.data_age?.warning ? ` ${resp.data_age.warning}` : ''}
+        CBI’s workbooks have arrived {lag.min} to {lag.max} days after the month they describe, so the next month is
+        overdue: CBI has not published it, or it has not been read yet. Every money figure below, and every scenario
+        rate built on them, describes {periodLabel(latest.period)}.
       </div>
     </div>
   )
@@ -423,7 +457,7 @@ function Headline({ resp, unit }: { resp: LiquidityAggregatesResponse; unit: Dis
       {tile('Base money', 'پایه پولی', at(CODE_BASE), 'lq-tile-base')}
       <div className="card bx-tile" data-testid="lq-tile-multiplier">
         <div className="field-label">Multiplier</div>
-        <div className="bx-tile-value">{mult ? formatGrouped(mult.value, 3) : '—'}</div>
+        <div className="bx-tile-value">{mult ? formatMultiplier(mult.value) : '—'}</div>
         <div className="muted small">liquidity ÷ base money, {periodLabel(period)}</div>
       </div>
     </div>
@@ -472,7 +506,7 @@ function LevelsCard({
   )
   const mu = moneyUnit(unit)
   const m2Points = findSeries(resp, CODE_M2)?.points ?? []
-  const runStart = monthlyRunStart(m2Points)
+  const runStart = seriesMonthlyFrom(resp)
   const runX = runStart ? periodOrdinal(runStart) : null
   // Months before the unbroken monthly run, inside the window: quarter-ends
   // and the odd month a workbook reaches back to.
@@ -562,6 +596,13 @@ function GrowthCard({
     .map((a) => ({ year: a.year, span: annualMethodSpan(resp, a, CODE_BASE, field) }))
     .filter((m) => m.span !== null)
   const allChanged = spans.every((m) => m.span === 'mixed')
+  // Liquidity's own gap: before a year after the monthly record starts, the
+  // month a year earlier is stored only at quarter-ends, so only those
+  // months have a year-on-year figure and the line is a few dots.
+  const monthlyFrom = seriesMonthlyFrom(resp)
+  const yoyFrom = yoyRunStart(monthlyFrom)
+  const yoyFromX = yoyFrom ? periodOrdinal(yoyFrom) : null
+  const sparseYoy = yoyFromX !== null && monthly.length > 0 && monthly[0].x < yoyFromX
   return (
     <div className="card" data-testid="lq-growth">
       <div className="row space-between wrap bx-card-head">
@@ -583,10 +624,15 @@ function GrowthCard({
       </div>
       {freq === 'monthly' ? (
         <>
-          <p className="muted small bx-unit">
+          <p className="muted small bx-unit" data-testid="lq-growth-caption">
             Each month’s stock against the same month a year before, as the API measured it. Base money’s line stops
             where CBI changed its method: a growth across the change compares two different definitions, so none is
             drawn.
+            {sparseYoy
+              ? ` Both lines run unbroken only from ${periodLabel(yoyFrom!)}: before ${periodLabel(
+                  monthlyFrom!
+                )} only CBI’s quarter-ends are stored, so a month a year after that has a comparison only at a quarter-end, drawn as a dot.`
+              : ''}
           </p>
           <MoneyLegend hasBreak={methodChanges(resp).length > 0} />
           <figure className="lq-figure" aria-label="Year-on-year growth of liquidity and base money">
@@ -685,7 +731,7 @@ function MultiplierCard({
             <CartesianGrid stroke="var(--border)" vertical={false} />
             {monthAxis(rows, freq === 'annual')}
             <YAxis tick={{ fontSize: 11 }} width={40} domain={['auto', 'auto']} tickFormatter={(v: number) => v.toFixed(1)} />
-            <Tooltip content={periodTip((v) => formatGrouped(v, 3), calendar, ends)} />
+            <Tooltip content={periodTip((v) => formatMultiplier(v), calendar, ends)} />
             {breakLines(resp, rows)}
             {lineKeys(rows, 'mult').map((k) => (
               <Line
@@ -878,7 +924,7 @@ function MonthlyTable({
                       </span>
                     ) : null}
                   </td>
-                  <td className="num mono">{r.multiplier == null ? '—' : formatGrouped(r.multiplier, 3)}</td>
+                  <td className="num mono">{formatMultiplier(r.multiplier)}</td>
                 </tr>
               )
             })}
@@ -964,7 +1010,11 @@ function AnnualTable({
               <tr key={a.year} data-testid={`lq-year-${a.year}`}>
                 <td>
                   {a.year}
-                  {a.partial ? <div className="muted small">partial year</div> : null}
+                  {a.partial ? (
+                    <div className="muted small">
+                      {quarterEndsOnly(resp, a.year) ? 'quarter-ends only' : `${a.months_present} of 12 months`}
+                    </div>
+                  ) : null}
                 </td>
                 {cells(a, CODE_M2)}
                 {cells(a, CODE_BASE)}
@@ -1039,6 +1089,7 @@ function DollarCard({
       <div className="row wrap bx-controls">
         <Chips<Horizon>
           label="Months ahead"
+          shown="Paths"
           options={HORIZONS.map((h) => ({ key: h, label: `${h} months` }))}
           value={horizon}
           onChange={setHorizon}
@@ -1046,6 +1097,7 @@ function DollarCard({
         />
         <Chips<DollarWindow>
           label="History shown"
+          shown="History"
           options={DOLLAR_WINDOWS.map((w) => ({ key: w.key, label: w.label }))}
           value={histWindow}
           onChange={setHistWindow}
@@ -1272,13 +1324,16 @@ function ScenarioTable({
   const far = hs[hs.length - 1]
   const ends = d.scenarios.map((s) => valueAt(s.path, far)).filter((v): v is number => v !== null)
   const bandScn = d.scenarios.find((s) => s.key === bandKey)
-  const bandEnd = bandScn ? valueAt(bandScn.path, far) : null
-  const farStep = steps.get(far)
-  const edges = bandEnd !== null && farStep ? bandEdges(bandEnd, farStep) : null
+  const bandEndPoint = bandScn?.path.find((p) => p.h === far)
+  const edges = bandEndPoint ? pathBand(bandEndPoint, steps.get(far)) : null
   return (
     <>
       <div className="table-wrap">
-        <table className="table bx-table lq-table" data-testid="lq-scenario-table">
+        <table
+          className="table bx-table lq-table lq-scn-table"
+          data-testid="lq-scenario-table"
+          style={{ ['--lq-cols' as string]: hs.length + 1 } as CSSProperties}
+        >
           <caption className="sr-only">Scenario path values, in {currencyLabel(unit)} per dollar</caption>
           <thead>
             <tr>
@@ -1309,13 +1364,13 @@ function ScenarioTable({
                 <td className="num mono">{s.annual_growth_pct === null ? '—' : `${s.annual_growth_pct.toFixed(1)}%`}</td>
                 {hs.map((h) => {
                   const v = valueAt(s.path, h)
-                  const step = steps.get(h)
-                  const e = s.key === bandKey && v !== null && step ? bandEdges(v, step) : null
+                  const point = s.path.find((p) => p.h === h)
+                  const e = s.key === bandKey && point ? pathBand(point, steps.get(h)) : null
                   return (
                     <td key={h} className="num mono">
                       {v === null ? '—' : fmt(v)}
                       {e ? (
-                        <div className="muted small" title="The band at this horizon">
+                        <div className="muted small lq-band-edges" title="The band at this horizon">
                           {fmt(e[0])} – {fmt(e[1])}
                         </div>
                       ) : null}
@@ -1365,7 +1420,7 @@ function IndexCard({ d, calendar }: { d: LiquidityDollarResponse; calendar: Cale
   const base = indexBasePeriod(d.history)
   const ext = indexExtremes(rows)
   const newest = rows[rows.length - 1]
-  const runStart = historyMoneyRunStart(d.history)
+  const runStart = dollarMonthlyFrom(d)
   const sparse = runStart !== null && rows.length > 0 && rows[0].x < (periodOrdinal(runStart) ?? -Infinity)
   return (
     <div className="card" data-testid="lq-index">
@@ -1438,9 +1493,11 @@ function LiquidityDollarCard({ d, unit }: { d: LiquidityDollarResponse; unit: Di
             <table className="table bx-table lq-table" data-testid="lq-ld-table">
               <thead>
                 <tr>
-                  <th scope="col">Across base months</th>
+                  <th scope="col" className="lq-wrap">
+                    Across base months
+                  </th>
                   <th scope="col">Base month</th>
-                  <th scope="col" className="num">
+                  <th scope="col" className="num lq-wrap">
                     Liquidity dollar, {periodLabel(ld.period)}
                   </th>
                 </tr>
@@ -1455,7 +1512,7 @@ function LiquidityDollarCard({ d, unit }: { d: LiquidityDollarResponse; unit: Di
                 ).map(([label, v]) => (
                   <tr key={label}>
                     <td>{label}</td>
-                    <td>
+                    <td className="lq-wrap">
                       {v.base
                         ? periodLabel(v.base)
                         : v.bases && v.bases.length === 2
@@ -1498,6 +1555,10 @@ function BacktestCard({ d }: { d: LiquidityDollarResponse }) {
   const statements = backtestStatements(bt, alpha)
   const from = bt.from ?? d.band?.origins_from ?? null
   const lag = bt.lag_months ?? d.band?.lag_months ?? null
+  const through = bt.outcomes_through ?? null
+  const realLag = publicationLag(d.data_age?.money)
+  const counts = hs.filter((h) => typeof bt.n_origins?.[h] === 'number')
+  const anyBold = hs.some((h) => measurablyBest(bt, h, alpha) !== null)
   return (
     <div className="card" data-testid="lq-backtest">
       <div className="card-title">How liquidity-paced paths did in a backtest</div>
@@ -1528,9 +1589,13 @@ function BacktestCard({ d }: { d: LiquidityDollarResponse }) {
                 <th scope="row">{modelLabel(m)}</th>
                 {hs.map((h) => {
                   const v = bt.rmse[m]?.[h]
-                  const best = bestModel(bt, h) === m
+                  const best = measurablyBest(bt, h, alpha) === m
                   return (
-                    <td key={h} className={`num mono ${best ? 'lq-best' : ''}`} title={best ? 'smallest at this horizon' : undefined}>
+                    <td
+                      key={h}
+                      className={`num mono ${best ? 'lq-best' : ''}`}
+                      title={best ? 'measurably the smallest at this horizon' : undefined}
+                    >
                       {v == null ? '—' : v.toFixed(3)}
                     </td>
                   )
@@ -1540,14 +1605,31 @@ function BacktestCard({ d }: { d: LiquidityDollarResponse }) {
           </tbody>
         </table>
       </div>
-      <p className="muted small">
-        Target: the {bt.target}. Root mean square of log errors — 0.10 is roughly a 10% miss — lower is better; the
-        smallest at each horizon is in bold. “Measurably” means a one-sided Diebold–Mariano test below p = {alpha}.
-        {from !== null && lag !== null
-          ? ` Forecasts were made from ${periodLabel(from)} on, each using liquidity only ${lag} months after its month ended, as it would have been known.`
+      <p className="muted small" data-testid="lq-backtest-method">
+        Target: the {bt.target}. Root mean square of log errors — 0.10 is roughly a 10% miss — lower is better.{' '}
+        {anyBold
+          ? 'A figure is in bold where it was measurably the smallest: below p = ' + alpha + ' against each other row.'
+          : `No figure is in bold: at no horizon was the smallest measurably smaller than the others (p = ${alpha}).`}{' '}
+        “Measurably” means a one-sided Diebold–Mariano test below p = {alpha}.
+        {from !== null
+          ? ` Forecasts were made at each month from ${periodLabel(from)}${
+              through ? ` and scored where the outcome was known by ${periodLabel(through)}` : ''
+            }${
+              counts.length > 0
+                ? ` — ${counts.map((h) => `${formatGrouped(bt.n_origins![h])} origins at ${h} months`).join(', ')}`
+                : ''
+            }.`
+          : ''}
+        {lag !== null
+          ? ` Each read liquidity as stored today, taken as known a fixed ${lag} months after its month ended; CBI’s workbooks actually arrived ${realLag.min} to ${realLag.max} days after the month, so for some origins that is early.`
           : ''}{' '}
         The windows overlap, so the long horizons rest on few independent outcomes.
       </p>
+      {bt.lag_check ? (
+        <p className="small" data-testid="lq-lag-check">
+          <strong>At a {bt.lag_check.lag_months}-month lag.</strong> {bt.lag_check.note}
+        </p>
+      ) : null}
     </div>
   )
 }
@@ -1564,7 +1646,8 @@ function NotesCard({
   unit: DisplayUnit
 }) {
   const apiNotes = [...(agg?.notes ?? []), ...(dollar?.notes ?? [])]
-  const monthlyFrom = agg ? monthlyRunStart(findSeries(agg, CODE_M2)?.points ?? []) : null
+  const monthlyFrom = agg ? seriesMonthlyFrom(agg) : null
+  const lag = publicationLag(agg?.data_age ?? dollar?.data_age?.money)
   return (
     <div className="card" data-testid="lq-notes">
       <div className="card-title">Sources, units and limits</div>
@@ -1589,9 +1672,9 @@ function NotesCard({
           </li>
         ) : null}
         <li>
-          <strong>Publication lag.</strong> CBI states no release date. Its monthly workbooks have arrived 10 to{' '}
-          {MONEY_STALE_AFTER_DAYS} days after the month they describe, often several at once; the line at the top gives
-          the newest one’s.
+          <strong>Publication lag.</strong> CBI states no release date. Its monthly workbooks have arrived {lag.min} to{' '}
+          {lag.max} days after the month they describe, measured from their own saved times, often several at once; the
+          line at the top gives the newest one’s.
         </li>
         <li>
           <strong>A scenario, not a forecast.</strong> Each path shows where the dollar would be if it kept pace with one
@@ -1669,9 +1752,11 @@ export default function Liquidity() {
   // A stock in a unit this page does not convert from is refused, not
   // divided by a factor guessed for it.
   const unitKnown = a !== null && a.unit === KNOWN_MONEY_UNIT
-  const annualReady = freq === 'monthly' || (a?.annual !== undefined && !agg.loading)
-  // An annual response without its annual block is a server fault: said, not spun on.
-  const annualMissing = freq === 'annual' && !agg.loading && a !== null && a.annual === undefined
+  // Only an answer to the view asked for is read as one (moneyView); an
+  // annual response without its annual block is a server fault: said, not spun on.
+  const view = moneyView(freq, a, agg.loading)
+  const annualReady = view === 'ready'
+  const annualMissing = view === 'missing'
 
   return (
     <div className="page bx lq">
@@ -1719,6 +1804,7 @@ export default function Liquidity() {
           <div className="row wrap bx-filter">
             <Chips<Freq>
               label="Frequency"
+              shown="View"
               options={[
                 { key: 'monthly', label: 'Monthly' },
                 { key: 'annual', label: 'Annual' }
@@ -1729,6 +1815,7 @@ export default function Liquidity() {
             />
             <Chips<MoneyWindow>
               label="Years shown"
+              shown="Years"
               options={MONEY_WINDOWS.map((w) => ({
                 key: w.key,
                 label: w.key === 'all' && firstYear ? `All (from ${firstYear})` : w.label
@@ -1758,8 +1845,8 @@ export default function Liquidity() {
                   {freq === 'annual'
                     ? 'Each Jalali year: its Esfand stock and, when all twelve months are stored, the yearly average, each with its growth.'
                     : 'Each month-end stock with its growth against the month before, the same month a year before, and the previous Esfand.'}{' '}
-                  In {moneyUnit(unit).label}. A dash is a growth the API did not measure; hover it for the reason. Select a
-                  heading to sort.
+                  In {moneyUnit(unit).label}. A dash is a figure the API did not measure; select it for the reason. Select
+                  a heading to sort.
                 </p>
                 {freq === 'annual' ? (
                   <AnnualTable resp={a} fromYear={fromX === undefined ? undefined : Math.floor(fromX / 12)} unit={unit} />

@@ -2628,10 +2628,11 @@ export interface SectorFlowSharesResponse {
 
 // ---------- Money & liquidity (/liquidity/*) ----------
 //
-// The contract is design §3 of the money-and-liquidity design; the field
-// names are its own. Where it leaves a block open ("{...}"), the shape below
-// is the one this page reads, said so beside it, until a production capture
-// pins it.
+// The contract is design §3 of the money-and-liquidity design, as
+// internal/liquidity serves it; the test fixtures are captures of those
+// routes (fixtures/README.md). Fields the page reads are typed; a few
+// readers still accept an older shape (normalizeDm, dollarCloseAge) and
+// say so where they do.
 
 /** One end-of-month stock, exactly as CBI published it. */
 export interface LiquidityPoint {
@@ -2650,7 +2651,10 @@ export interface LiquidityPoint {
   /** 'Q' for the quarter-end history before the monthly workbooks. */
   frequency: 'M' | 'Q'
   vintage: number
-  source: 'excel' | 'tsdview'
+  /** Null when the cited document is neither an Excel edition nor tsdview. */
+  source: 'excel' | 'tsdview' | null
+  /** True when the backfill reconstructed `available_at`; null when the row does not say. */
+  available_at_approx?: boolean | null
   /** Why a growth figure is null, keyed by its field name. */
   null_reason?: Record<string, string>
 }
@@ -2660,6 +2664,12 @@ export interface LiquiditySeries {
   code: string
   name_en: string
   name_fa: string
+  /**
+   * Where the unbroken run of monthly figures that ends at the newest month
+   * begins; before it only CBI's quarter-ends are stored. Every null reason
+   * the API writes names this same month. Null for an empty series.
+   */
+  monthly_from?: string | null
   /** Oldest first. */
   points: LiquidityPoint[]
 }
@@ -2671,9 +2681,14 @@ export interface LiquidityLatest {
   published_at: string | null
   /** When this system could first have read it. */
   available_at: string
+  /**
+   * True when `available_at` was reconstructed by the backfill (the
+   * workbook's saved time plus a day) rather than seen; null when not recorded.
+   */
+  available_at_approx?: boolean | null
   /** Whole days from the end of `period` to `as_of`. */
   age_days: number
-  source_url: string
+  source_url: string | null
 }
 
 /** One Jalali year; each map is keyed by series code. */
@@ -2698,26 +2713,33 @@ export interface LiquidityAnnualRow {
 
 export interface LiquidityBreak {
   code: string
-  /** The first period on the new method. */
+  /** The month CBI's footnote dates the new method from (not the first stored on it). */
   from: string
   note: string
+  /** The first stored month actually on the revised method; null when none is. */
+  first_revised?: string | null
   /**
-   * Stored months from `from` on that are still on the old method (CBI's
-   * 1400 prints), when the API lists them. The page reads every method
-   * switch from the points themselves either way.
+   * Stored months from `from` on that are still old-method prints. The page
+   * reads every method switch from the points themselves either way.
    */
   old_method_after?: string[]
 }
 
 /**
- * Design §3 leaves `data_age` open. These are the fields this page reads,
- * each optional until a capture pins the block; without `stale` the page
- * judges the newest month by its own `age_days`.
+ * How old the newest figures are. Every field is optional because the
+ * dollar response nests one of these per input (`usd`, `money`) beside its
+ * own top-level block; without `stale` the page judges the newest month by
+ * `age_days` against `stale_after_days`.
  */
 export interface LiquidityDataAge {
   stale?: boolean
   age_days?: number | null
   warning?: string | null
+  /** The age past which the API calls the newest month old. */
+  stale_after_days?: number
+  /** CBI's measured publication lag, days after the month ends. */
+  publication_lag_days?: { min: number; max: number }
+  note?: string
   [field: string]: unknown
 }
 
@@ -2733,6 +2755,8 @@ export interface LiquidityDollarDataAge extends LiquidityDataAge {
 
 export interface LiquidityAggregatesResponse {
   as_of: string
+  /** Which request this answers: an answer to the other one is not this view's. */
+  freq?: 'monthly' | 'annual'
   /** 'thousand_billion_rial': stored exactly as CBI publishes it. */
   unit: string
   display_unit_note: string
@@ -2772,6 +2796,9 @@ export interface LiquidityPathPoint {
   period: string
   /** Toman per dollar. */
   value: number
+  /** The band's edges at this point, as the API computed them (when the band applies to this path). */
+  lo?: number | null
+  hi?: number | null
 }
 
 export interface LiquidityScenario {
@@ -2804,11 +2831,19 @@ export interface LiquidityBand {
   /** A scenario key, or 'each'. */
   applied_to: string
   /**
-   * MEASURED backtest coverage by horizon range — '1-12', '24' — the share of
-   * past outcomes a band built this way actually held. The only figure the
-   * band is ever labelled with. Null where there was nothing to measure.
+   * MEASURED backtest coverage by horizon range — '1-12', '13-24', '24' — the
+   * share of past outcomes a band built this way actually held. The only
+   * figure the band is ever labelled with. Null where there was nothing to
+   * measure.
    */
   coverage: Record<string, number | null>
+  /** The (origin, horizon) pairs each coverage rate is over. */
+  coverage_n?: Record<string, number>
+  /**
+   * For a single-horizon rate ('24'), about how many non-overlapping outcomes
+   * its origins hold — the real sample behind it.
+   */
+  coverage_independent?: Record<string, number>
   origins_from: string
   lag_months: number
   n_by_h: Record<string, number>
@@ -2825,9 +2860,13 @@ export type LiquidityDmPValues = Record<string, Record<string, number | null> | 
 export interface LiquidityBacktest {
   /** 'month-end close' | 'monthly average' */
   target: string
-  /** The first and last forecast origin scored, when the API names them. */
+  /** The first forecast origin scored, and the end of the origin window. */
   from?: string
   to?: string
+  /** The newest month whose outcome is scored: each horizon's last origin is h months before it. */
+  outcomes_through?: string
+  /** Origins scored per horizon. */
+  n_origins?: Record<string, number>
   /** Months after a month's end its liquidity figure was first used. */
   lag_months?: number
   /** The one-sided p-value below which a difference counts as measured. */
@@ -2836,8 +2875,23 @@ export interface LiquidityBacktest {
   rmse: Record<string, Record<string, number | null>>
   dm_vs_random_walk_p: LiquidityDmPValues
   dm_vs_trend_p: LiquidityDmPValues
+  /** The same one-sided test for the trend against the random walk. */
+  dm_trend_vs_random_walk_p?: LiquidityDmPValues
   /** A plain-language sentence the server derives from these numbers. */
   verdict: string
+  note?: string
+  /**
+   * The comparison rerun with liquidity usable only `lag_months` after its
+   * month — later than any delay CBI is measured to have taken.
+   */
+  lag_check?: {
+    lag_months: number
+    rmse_m2_paced: Record<string, number | null>
+    dm_vs_random_walk_p: Record<string, number | null>
+    dm_vs_trend_p: Record<string, number | null>
+    same_conclusions: boolean
+    note: string
+  } | null
 }
 
 /** Design §3 shows the base entries as "{..}"; this page reads `base` and `value`. */
@@ -2868,7 +2922,14 @@ export interface LiquidityDollarResponse {
   unavailable?: string[]
   anchor: LiquidityDollarAnchor | null
   /** The newest liquidity month the scenario rates are read from. */
-  money_as_of: { period: string; published_at: string | null } | null
+  money_as_of: {
+    period: string
+    published_at: string | null
+    available_at?: string
+    available_at_approx?: boolean | null
+    /** Where liquidity's monthly record starts, as on /liquidity/aggregates. */
+    monthly_from?: string | null
+  } | null
   /** Monthly, Jalali months, oldest first. */
   history: LiquidityDollarHistoryPoint[]
   scenarios: LiquidityScenario[]

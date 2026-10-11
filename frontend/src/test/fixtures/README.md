@@ -140,6 +140,7 @@ Captured from production on 2026-09-24.
 | `economy-imf-irn-with-projections.json` | `IMF_PCPIPCH_IRN`, `include_projections=true` | **46 measured periods (1980–2025) and 6 projected (2026–2031)** — the boundary this page exists to draw |
 | `economy-imf-irn-measured.json` | the same series, default | `projections_in_page: 0` with `projections_available: 6`, which is the pair that stops "none in this page" being read as "this series has none" |
 | `economy-sci-urban-60.json` | `SCI_CPI_URBAN`, 60 periods | a monthly series with no projections at all |
+| `economy-series-list-rehearsal.json` | `GET /series` on the local rehearsal, 2026-10-11 (see *Money & liquidity* below) | only CBI's four money series: listed as a pointer to /liquidity, nothing charted |
 
 **Why the IMF pair had to be captured.** The measured/projected boundary sits
 at a specific year that moves with every WEO release, and a hand-written
@@ -614,373 +615,74 @@ func TestGenerateMoneyFlowFixtures(t *testing.T) {
 }
 ```
 
-## Money & liquidity (`liquidity-*.json`) — HAND-BUILT from research data, pending a production capture
+## Money & liquidity (`liquidity-*.json`) — CAPTURED from the local rehearsal of real CBI/TGJU data
 
-**These six files are NOT captures, and unlike the money-flow files above they
-were not emitted by the Go code that serves the routes either.** The page and
-`GET /api/v1/liquidity/aggregates` / `GET /api/v1/liquidity/dollar` were built
-in parallel (2026-10-11); when the page was written the endpoints existed only
-as design §3 of the money-and-liquidity design, so the fixtures are shaped
-field for field on that contract. Replace them with captures as soon as the
-endpoints are deployed (see *Refreshing* below), and read every prose field in
-them as illustrative.
+**These six files are verbatim response bodies of `GET /api/v1/liquidity/aggregates`
+and `GET /api/v1/liquidity/dollar`, served by `internal/liquidity` itself** on
+2026-10-11, from a local rehearsal of the stack (Postgres 16, the Go API, the
+Python service; never production) holding real data:
 
-What they are made of, so the difference between a number and a guess is
-visible:
+* **CBI's money aggregates**: all 48 monthly Selected Economic Indicators
+  workbooks CBI served from its website (Tir 1399 → Esfand 1404), ingested
+  through `POST /internal/economic/cbi-monetary` in `path` mode, oldest first,
+  under the file names and URLs CBI served them with; and CBI's tsdview
+  quarter-end history (1352 → Khordad 1398) through
+  `POST /internal/economic/cbi-history`. 1,057 observations, 49 documents.
+* **USD_IRT**: TGJU's daily cash-dollar closes 2011-11-26 → 2026-10-10 through
+  the TGJU backfill, and one BitMax USDT/toman close (264,630 on 2026-10-11)
+  from the live collector. The splice register therefore puts USD_IRT's change
+  of definition on 2026-10-11 — production's says 2022-04 — and the files say
+  so in their notes, read from that register.
 
-* **Every NUMBER is the research's**, read from the files it captured that day
-  in the lead's research folder (`money/` and `money/evidence/`): CBI's monthly
-  Selected Economic Indicators workbooks from Tir 1397 (`iran_m2_monthly.csv`,
-  `iran_base_money_monthly.csv`, each figure with its CBI method) and CBI's
-  quarter-end history before that (`iran_money_quarterly_tsd.csv`); the TGJU
-  dollar in Jalali-month buckets (`evidence/panel_monthly.csv`,
-  `evidence/table_monthly_money_usd.csv` for the partial month 1405-07 holding
-  the 265,100-toman close of 1405/07/18); the scenario paths
-  (`evidence/scenario_paths_m2_proportional.csv`); the production band — the
-  running 5%/95% quantiles of the liquidity-paced model's month-end errors
-  (`evidence/band_table_m2g_close_monotone.csv`); the backtest on the
-  month-end close (`evidence/backtest_metrics_L3_close.csv`,
-  `evidence/dm_money_models_vs_drift.csv`); and the liquidity dollar at every
-  base month (`evidence/liquidity_dollar_base_sensitivity.csv`).
-* **The arithmetic the API will do is redone here**, the way design §3 and the
-  research's "Parameters for production" describe it: m/m, y/y and
-  since-Esfand growth by stepping the Jalali label, never across a base-money
-  method (null with a reason); the multiplier; the annual block (Esfand
-  stock and growth; a yearly average only with all twelve monthly stocks on
-  one method); one `breaks` entry per switch of the stored method (1399-12,
-  1400-01, 1400-12 — CBI's monthly figures for 1400 are on the old method);
-  the dollar's own trend path at 0.0278 a month. If Track M's build differs,
-  the capture wins. It does in three places the page already reads: one
-  `breaks` entry at 1399-12 with the 1400 old-method prints in
-  `old_method_after` (the page reads every switch from the points' own
-  methods, and `Liquidity.test.tsx` runs both shapes); a per-input dollar
-  `data_age` (`usd`, `money`); and a yearly `avg_value` for base money even
-  over months on both methods, which the page refuses.
-* **The prose is the generator's own**: `notes`, `null_reason` sentences, the
-  scenario labels and `basis` strings, the band `note`, the backtest
-  `verdict`, the liquidity-dollar `note`, and the scenario keys `avg_3y` and
-  `slowest_3y` (design §3 fixes only `last_12m`).
-* **Where design §3 leaves a block open** (`"{...}"`), the files carry the
-  shape the page reads, and `api/types.ts` says so beside each: `data_age`
-  (`stale`, `age_days`, flat; the page also reads the dollar's age from a
-  `usd` block, and falls back to the newest month's own age), the `by_base`
-  entries (`base`, `value`; the median of 118 base months is the mean of the
-  two middle ones, 104,421 toman as the research has it, so its `base` is
-  null and `bases` names the two — Azar 1400 and Azar 1402), and the
-  Diebold–Mariano maps (model → horizon → p; the page also reads a flat
-  horizon → p map).
-* **Left out on purpose**: the API also lists `CBI_MONEY_M1` and
-  `CBI_QUASI_MONEY`. The page reads neither, and with them each aggregates file
-  is twice the size.
+Nothing in them is authored: every number, null reason, note, verdict and
+label is the server's. Where they differ from a production capture, it is
+because the data differs, and the differences are known:
+
+* `available_at` is the ingest time (2026-10-11 09:20 UTC) with
+  `available_at_approx: false`, because path mode records when this system saw
+  the file; production's backfill reconstructs it from each workbook's saved
+  time and flags it approximate.
+* Base money is on the old method through 1401-11 and revised from 1401-12
+  (`breaks[0].first_revised`): the Esfand 1400 and Esfand 1402 workbooks that
+  restate 1400-12 were not among the 48 files ingested. Tests that need other
+  layouts transform `method` explicitly and say so (`withMethods`).
+* The monthly record starts at Tir 1398 (`monthly_from`), as the ingest
+  stores it; the research panel had Tir 1397.
 
 | file | request | what it exercises |
 | --- | --- | --- |
-| `liquidity-aggregates-monthly.json` | `GET /liquidity/aggregates?freq=monthly`, clock 2026-10-11 | quarter-ends 1352 → 1397-03 and months 1397-04 → 1404-12; base money on the old method, revised at 1399-12 alone, old through 1400-11, revised from 1400-12 — growth null across each switch; the newest month Esfand 1404, its workbook saved 2026-06-21, **205 days old** — the real state on that day, and the stale notice |
-| `liquidity-aggregates-annual.json` | `…?freq=annual` | the same plus `annual`: 1399 base growth null (Esfand 1399 revised against Esfand 1398 old), no base yearly average for 1399 or 1400 (months on both methods), partial quarter-only years |
-| `liquidity-dollar-12.json` | `GET /liquidity/dollar?horizon=12` | 1390-10 → 1405-07 history, the dollar ÷ liquidity index (= 100 at 1397-04), three paths at 53.27 / 34.97 / 22.78% a year, the trend, a band applied to `each`, coverage `{"1-12": 0.84, "24": 0.70}`, the backtest and the liquidity-dollar range |
+| `liquidity-aggregates-monthly.json` | `GET /liquidity/aggregates?freq=monthly` | 266 months: tsdview quarter-ends 1352 → 1397-09 and 1398-03, Esfand 1397, months 1398-04 → 1404-12; base money old → revised at 1401-12 (growth null across it, with the API's reasons); the newest month Esfand 1404, its workbook saved 2026-06-21, **205 days old** — past the 195-day bound — so the stale notice; `publication_lag_days` 21–164 |
+| `liquidity-aggregates-annual.json` | `…?freq=annual` | the same plus `annual`: 1401 base money with no Esfand growth and no average (two methods), quarter-end-only years 1395–1397, 1398 with ten months |
+| `liquidity-dollar-12.json` | `GET /liquidity/dollar?horizon=12` | 1390-09 → 1405-07 history (1405-07 still running), the index (= 100 at Esfand 1390), paths at 53.27 / 34.97 / 22.78% a year, the trend at 39.59%, a band applied to `each` with coverage 0.804 / 0.856 / 0.899 over 1,368 / 1,080 / 79 pairs (about 3 independent outcomes at 24), the backtest with its six-month `lag_check`, the liquidity-dollar range over 110 bases |
 | `liquidity-dollar-24.json` | `…?horizon=24` | the same to 24 months |
-| `liquidity-aggregates-not-ingested.json` | `…?freq=monthly` before the first CBI ingest | `latest: null`, every series empty |
-| `liquidity-dollar-not-ingested.json` | `…?horizon=12` before the first CBI ingest | the dollar and its own trend only: no money month, path, band, backtest, index or liquidity dollar |
+| `liquidity-aggregates-not-ingested.json` | `…?freq=monthly`, CBI series removed | `available: false`, `latest: null`, every series unregistered with its reason |
+| `liquidity-dollar-not-ingested.json` | `…?horizon=12`, CBI series removed | the dollar and its own trend only: no money month, path, band, backtest, index or liquidity dollar, and `unavailable` saying why |
 
-### Regenerating
+`economy-series-list-rehearsal.json` is `GET /series` from the same
+rehearsal: the four CBI series and nothing else, which is how the Economy
+page's "charted on Money & liquidity" pointer and its empty state are tested.
 
-Save the generator below outside the repo and point it at the research
-folder; it rewrites the six files in place:
+### Refreshing
+
+Bring up a rehearsal that holds the data above (or newer), log in as a local
+test user, and capture the routes as they answer — the script the files above
+came from does exactly this:
 
 ```bash
-python3 -I liquidity_fixture_gen.py <research>/money frontend/src/test/fixtures
+# the four ordinary payloads, verbatim, from the API on :18180
+for q in "aggregates?freq=monthly:liquidity-aggregates-monthly" \
+         "aggregates?freq=annual:liquidity-aggregates-annual" \
+         "dollar?horizon=12:liquidity-dollar-12" "dollar?horizon=24:liquidity-dollar-24"; do
+  curl -fsS -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:18180/api/v1/liquidity/${q%%:*}" \
+    > "frontend/src/test/fixtures/${q##*:}.json" && echo >> "frontend/src/test/fixtures/${q##*:}.json"
+done
 ```
 
-If `Liquidity.test.tsx` or `liquidityLib.test.ts` then fails, read the diff
-before touching the test.
+The two not-ingested files come from a second API instance pointed at a copy
+of that database with the CBI series deleted (observations, their
+`source_documents`, the `economic_series` and `instruments` rows) — the state
+before a deployment's first CBI ingest — capturing `aggregates?freq=monthly`
+and `dollar?horizon=12`, then dropping the copy.
 
-### Refreshing (replace with captures)
-
-Once the endpoints are deployed, capture the four ordinary payloads with a
-throwaway user exactly as the Tehran market fixtures above were, keep the file
-names, and delete this generator. The two not-ingested files cannot be
-captured after the first ingest; regenerate them from a deployment with the
-CBI series removed, or keep these.
-
-```python
-"""Hand-built liquidity fixtures, shaped like design §3, from the research data.
-
-NOT a capture: the endpoints (Track M) were not deployed when the page was
-written. Every NUMBER below is read from the research files; the arithmetic
-the API will do (m/m, y/y, since-Esfand, the multiplier, the annual block,
-the band edges) is redone here the way design §3 and report_evidence.md
-"Parameters for production" describe it. Prose fields (notes, null reasons,
-labels, the verdict) are written here and are the part a capture replaces.
-
-usage: python -I liquidity_fixture_gen.py <research money dir> <fixtures dir>
-"""
-
-import csv
-import json
-import math
-import os
-import sys
-
-MONEY, OUT = sys.argv[1], sys.argv[2]
-EV = os.path.join(MONEY, "evidence")
-AS_OF = "2026-10-11T06:00:00Z"
-CODES = {
-    "m2": ("CBI_LIQUIDITY", "Liquidity (M2)", "نقدینگی"),
-    "base_money": ("CBI_BASE_MONEY", "Base money", "پایه پولی"),
-}
-# The API also lists CBI_MONEY_M1 and CBI_QUASI_MONEY. The page reads neither,
-# and with them each aggregates file is twice the size, so they are left out.
-
-
-def rows(path):
-    with open(path, encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
-def ordinal(p):
-    y, m = p.split("-")
-    return int(y) * 12 + int(m) - 1
-
-
-def period(o):
-    return f"{o // 12}-{o % 12 + 1:02d}"
-
-
-def pct(a, b):
-    return None if a is None or b is None else round((a / b - 1) * 100, 3)
-
-
-# --- the money series: tsdview quarter-ends before 1397-04, the monthly Excel from it
-FIRST_EXCEL = ordinal("1397-04")
-obs = {k: {} for k in CODES}
-for r in rows(os.path.join(MONEY, "iran_money_quarterly_tsd.csv")):
-    if r["series"] in obs and ordinal(r["jalali_month"]) < FIRST_EXCEL:
-        obs[r["series"]][ordinal(r["jalali_month"])] = {
-            "value": float(r["value"]), "gregorian_end": r["gregorian_month_end"], "frequency": "Q",
-            "vintage": 1, "source": "tsdview", "method": "old" if r["series"] == "base_money" else None,
-        }
-for name, path in (("m2", "iran_m2_monthly.csv"), ("base_money", "iran_base_money_monthly.csv")):
-    for r in rows(os.path.join(MONEY, path)):
-        o = ordinal(r["jalali_month"])
-        if o < FIRST_EXCEL:
-            continue
-        obs[name][o] = {
-            "value": float(r["value"]), "gregorian_end": r["gregorian_month_end"], "frequency": "M",
-            "vintage": int(r["n_vintages"]), "source": "excel",
-            "method": None if name == "m2" else ("revised" if r["base_money_method"] == "MFSMCG2016-revised" else "old"),
-        }
-
-
-def growth(name, o, ref, label):
-    """(pct, reason) of o against ref, never across a base-money method."""
-    s = obs[name]
-    if ref not in s:
-        return None, f"no {label} figure ({period(ref)}) is stored"
-    a, b = s[o], s[ref]
-    if a["method"] != b["method"]:
-        return None, (f"base money is on CBI's {a['method']} method in {period(o)} and its {b['method']} "
-                      f"method in {period(ref)}; growth is not measured across the change")
-    return pct(a["value"], b["value"]), None
-
-
-series = []
-for name, (code, en, fa) in CODES.items():
-    pts = []
-    for o in sorted(obs[name]):
-        p = obs[name][o]
-        reasons = {}
-        mom, why = growth(name, o, o - 1, "previous-month")
-        if why:
-            reasons["mom_pct"] = why
-        yoy, why = growth(name, o, o - 12, "same-month-last-year")
-        if why:
-            reasons["yoy_pct"] = why
-        ytd, why = growth(name, o, (o // 12 - 1) * 12 + 11, "previous Esfand")
-        if why:
-            reasons["ytd_pct"] = why
-        pt = {"period": period(o), "gregorian_end": p["gregorian_end"], "value": p["value"],
-              "mom_pct": mom, "yoy_pct": yoy, "ytd_pct": ytd, "method": p["method"],
-              "frequency": p["frequency"], "vintage": p["vintage"], "source": p["source"]}
-        if reasons:
-            pt["null_reason"] = reasons
-        pts.append(pt)
-    series.append({"code": code, "name_en": en, "name_fa": fa, "points": pts})
-
-multiplier = [{"period": period(o), "value": round(obs["m2"][o]["value"] / obs["base_money"][o]["value"], 3)}
-              for o in sorted(obs["m2"]) if o in obs["base_money"]]
-
-# Every switch of the stored base-money method is a break.
-breaks, prev = [], None
-for o in sorted(obs["base_money"]):
-    m = obs["base_money"][o]["method"]
-    if prev is not None and m != prev:
-        breaks.append({"code": "CBI_BASE_MONEY", "from": period(o), "note": (
-            f"CBI's base money is on its {m} method from {period(o)} (the {prev} method before): the "
-            "revised method revalues foreign assets and follows the IMF MFSMCG 2016; growth is not "
-            "measured across the change")})
-    prev = m
-
-annual = []
-for y in range(1352, 1405):
-    months = [o for o in range(y * 12, y * 12 + 12) if o in obs["m2"]]
-    row = {"year": y, "end_value": {}, "end_growth_pct": {}, "avg_value": None, "avg_growth_pct": None,
-           "months_present": len(months), "partial": len(months) < 12}
-    full = len(months) == 12 and all(obs["m2"][o]["frequency"] == "M" for o in months)
-    if full:
-        row["avg_value"], row["avg_growth_pct"] = {}, {}
-    for name, (code, _, _) in CODES.items():
-        s, esf = obs[name], y * 12 + 11
-        row["end_value"][code] = s[esf]["value"] if esf in s else None
-        row["end_growth_pct"][code] = growth(name, esf, esf - 12, "")[0] if esf in s else None
-        if full:
-            mine = [s[o] for o in range(y * 12, y * 12 + 12) if o in s]
-            # A mean of months on two base-money methods mixes two definitions.
-            one_method = len({p["method"] for p in mine}) == 1
-            avg = sum(p["value"] for p in mine) / 12 if len(mine) == 12 and one_method else None
-            row["avg_value"][code] = round(avg, 2) if avg is not None else None
-            before = [s.get(o) for o in range((y - 1) * 12, y * 12)]
-            same = len({p["method"] for p in mine + before if p}) == 1
-            if avg is not None and all(before) and same and all(p["frequency"] == "M" for p in before):
-                row["avg_growth_pct"][code] = pct(avg, sum(p["value"] for p in before) / 12)
-            else:
-                row["avg_growth_pct"][code] = None
-    annual.append(row)
-
-aggregates = {
-    "as_of": AS_OF,
-    "unit": "thousand_billion_rial",
-    "display_unit_note": "÷10 = همت (trillion toman)",
-    "latest": {"period": "1404-12", "published_at": "2026-06-21T05:41:00Z", "available_at": "2026-06-22T05:41:00Z",
-               "age_days": 205, "source_url": "https://www.cbi.ir/page/35570.aspx"},
-    "series": series,
-    "multiplier": multiplier,
-    "breaks": breaks,
-    "notes": [
-        "Every value is an end-of-month stock as CBI publishes it, in thousand billion rials (هزار میلیارد ریال).",
-        "Months from Tir 1397 come from CBI's monthly Selected Economic Indicators workbooks; earlier periods are "
-        "quarter-ends from CBI's time-series database.",
-        "CBI states no release date: published_at is the workbook's own saved time, a lower bound, and "
-        "available_at is when this system could first have read it.",
-    ],
-    "data_age": {"newest_period": "1404-12", "age_days": 205, "stale": True, "stale_after_days": 137},
-}
-
-# --- the dollar: Jalali-month buckets of the USD_IRT close, research panel
-usd = {}
-for r in rows(os.path.join(EV, "panel_monthly.csv")):
-    if r["usd_avg_toman"]:
-        usd[ordinal(r["jalali_month"])] = (float(r["usd_avg_toman"]), float(r["usd_close_toman"]))
-for r in rows(os.path.join(EV, "table_monthly_money_usd.csv")):
-    if r["jalali_month"] == "1405-07":  # the partial month that holds the anchor close
-        usd[ordinal(r["jalali_month"])] = (float(r["usd_avg_toman"]), float(r["usd_close_toman"]))
-base_o = ordinal("1397-04")
-base_ratio = usd[base_o][0] / obs["m2"][base_o]["value"]
-history = []
-for o in range(ordinal("1390-10"), ordinal("1405-07") + 1):
-    avg, close = usd[o]
-    m2 = obs["m2"].get(o, {}).get("value")
-    history.append({"period": period(o), "usd_avg": round(avg, 2), "usd_close": close, "m2": m2,
-                    "usd_per_m2_index": None if m2 is None else round(avg / m2 / base_ratio * 100, 3)})
-
-P0, ANCHOR_O = 265100.0, ordinal("1405-07")
-paths = rows(os.path.join(EV, "scenario_paths_m2_proportional.csv"))
-specs = [
-    ("last_12m", "S1_last_12m_(1403-12..1404-12)_path", 53.27, "Liquidity growth of the last 12 months",
-     "رشد نقدینگی ۱۲ ماه اخیر", "M2 growth Esfand 1403 → Esfand 1404"),
-    ("avg_3y", "S2_3y_avg_(1401-12..1404-12)_path", 34.97, "Average liquidity growth of the last 3 years",
-     "میانگین رشد نقدینگی سه سال اخیر", "M2 growth a year, Esfand 1401 → Esfand 1404"),
-    ("slowest_3y", "S3_slowest_3y_since_1390_(1394-12..1397-12)_path", 22.78,
-     "Slowest 3-year liquidity growth since 1390", "کندترین رشد سه‌ساله نقدینگی از ۱۳۹۰",
-     "M2 growth a year, Esfand 1394 → Esfand 1397"),
-]
-band_rows = rows(os.path.join(EV, "band_table_m2g_close_monotone.csv"))
-close_metrics = {(r["h_months"], r["model"]): r for r in rows(os.path.join(EV, "backtest_metrics_L3_close.csv"))
-                 if r["window"].startswith("full")}
-dm_trend = {r["h"]: float(r["DM_sq_p_model_better"]) for r in rows(os.path.join(EV, "dm_money_models_vs_drift.csv"))
-            if r["variant"] == "L3_close" and r["window"] == "full" and r["model"] == "M2G"}
-sens = sorted(rows(os.path.join(EV, "liquidity_dollar_base_sensitivity.csv")),
-              key=lambda r: float(r["liquidity_dollar_at_1404_12"]))
-# The median of an even number of bases is the mean of the two middle ones,
-# as the research reports it (104,421); no single base month gives it.
-mid = sens[len(sens) // 2 - 1: len(sens) // 2 + 1] if len(sens) % 2 == 0 else sens[len(sens) // 2: len(sens) // 2 + 1]
-median = ({"base": None, "bases": [r["base"] for r in mid],
-           "value": round(sum(float(r["liquidity_dollar_at_1404_12"]) for r in mid) / 2, 2)} if len(mid) == 2
-          else {"base": mid[0]["base"], "value": float(mid[0]["liquidity_dollar_at_1404_12"])})
-
-
-def dollar(horizon):
-    def scen(key, col, g, en, fa, basis):
-        return {"key": key, "label_en": en, "label_fa": fa, "annual_growth_pct": g, "basis": basis,
-                "path": [{"h": int(r["h_months"]), "period": r["approx_jalali_month"], "value": float(r[col])}
-                         for r in paths if 1 <= int(r["h_months"]) <= horizon]}
-    hs = ("3", "6", "12", "24")
-    return {
-        "as_of": AS_OF,
-        "anchor": {"date": "2026-10-10", "jalali": "1405/07/18", "close_toman": P0,
-                   "source": "USD_IRT daily close (TGJU price_dollar_rl)",
-                   "note": "free-market rate (USDT/toman since 2022-04)"},
-        "money_as_of": {"period": "1404-12", "published_at": "2026-06-21T05:41:00Z"},
-        "history": history,
-        "scenarios": [scen(*s) for s in specs],
-        "trend": {"annual_growth_pct": 39.59, "since": "1390-10",
-                  "path": [{"h": h, "period": period(ANCHOR_O + h), "value": round(P0 * math.exp(0.0278 * h), -2)}
-                           for h in range(1, horizon + 1)]},
-        "band": {"lower_q": 0.05, "upper_q": 0.95,
-                 "by_h": [{"h": int(r["h"]), "lo": float(r["q050_mono"]), "hi": float(r["q950_mono"])}
-                          for r in band_rows if int(r["h"]) <= horizon],
-                 "applied_to": "each", "coverage": {"1-12": 0.84, "24": 0.70}, "origins_from": "1394-01",
-                 "lag_months": 3, "n_by_h": {r["h"]: int(r["n"]) for r in band_rows if int(r["h"]) <= horizon},
-                 "note": "How often a band built this way held the real month-end price in the backtest"},
-        "backtest": {
-            "target": "month-end close",
-            "rmse": {m: {h: float(close_metrics[(h, src)]["RMSE_log"]) for h in hs}
-                     for m, src in (("random_walk", "RW"), ("dollar_trend", "DRIFT_all"), ("m2_paced", "M2G"))},
-            "dm_vs_random_walk_p": {m: {h: float(close_metrics[(h, src)]["DM_sq_p_better"]) for h in hs}
-                                    for m, src in (("m2_paced", "M2G"), ("dollar_trend", "DRIFT_all"))},
-            "dm_vs_trend_p": {"m2_paced": {h: dm_trend[h] for h in hs}},
-            "verdict": ("Pacing the dollar with liquidity growth missed by less than assuming no change at every "
-                        "horizon tested (p ≤ 0.002), and by no measurably less than the dollar's own past trend "
-                        "(p 0.16–0.30): in this backtest liquidity adds nothing the trend does not already carry."),
-        },
-        "liquidity_dollar": {
-            "period": "1404-12", "actual_avg": 162494.79,
-            "by_base": {"min": {"base": sens[0]["base"], "value": float(sens[0]["liquidity_dollar_at_1404_12"])},
-                        "median": median,
-                        "max": {"base": sens[-1]["base"], "value": float(sens[-1]["liquidity_dollar_at_1404_12"])}},
-            "bases_considered": len(sens),
-            "note": "Not a fair value: the base month chosen decides it.",
-        },
-        "notes": [
-            "Scenario paths, not forecasts: each assumes the dollar grows from the last close at the stated "
-            "liquidity growth rate.",
-            "A month's dollar is the mean (and the last) of the daily USD_IRT closes inside that Jalali month, "
-            "Tehran days.",
-            "Liquidity growth is read from the newest CBI month published; the backtest used each month only "
-            "3 months after it ended.",
-        ],
-        "data_age": {"newest_close": "2026-10-10", "age_days": 1, "stale": False},
-    }
-
-
-def dump(name, obj):
-    with open(os.path.join(OUT, name), "w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=False, indent=1)
-        f.write("\n")
-
-
-dump("liquidity-aggregates-monthly.json", aggregates)
-dump("liquidity-aggregates-annual.json", dict(aggregates, annual=annual))
-dump("liquidity-dollar-12.json", dollar(12))
-dump("liquidity-dollar-24.json", dollar(24))
-
-# Before the first CBI ingest: no money observation at all.
-dump("liquidity-aggregates-not-ingested.json", dict(
-    aggregates, latest=None, multiplier=[], breaks=[],
-    series=[{"code": c, "name_en": e, "name_fa": f, "points": []} for c, e, f in CODES.values()],
-    data_age={"newest_period": None, "age_days": None, "stale": False, "stale_after_days": 137}))
-none = dollar(12)
-dump("liquidity-dollar-not-ingested.json", dict(
-    none, money_as_of=None, scenarios=[], band=None, backtest=None, liquidity_dollar=None,
-    history=[dict(h, m2=None, usd_per_m2_index=None) for h in history],
-    notes=none["notes"] + ["No CBI liquidity figure is stored, so no scenario path, band or backtest exists."]))
-```
+If `Liquidity.test.tsx` or `liquidityLib.test.ts` then fails, the data or the
+contract changed: read the diff before touching the test.
