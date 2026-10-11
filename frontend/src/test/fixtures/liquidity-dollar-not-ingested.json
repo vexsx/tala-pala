@@ -1,0 +1,1340 @@
+{
+ "as_of": "2026-10-11T06:00:00Z",
+ "anchor": {
+  "date": "2026-10-10",
+  "jalali": "1405/07/18",
+  "close_toman": 265100.0,
+  "source": "USD_IRT daily close (TGJU price_dollar_rl)",
+  "note": "free-market rate (USDT/toman since 2022-04)"
+ },
+ "money_as_of": null,
+ "history": [
+  {
+   "period": "1390-10",
+   "usd_avg": 1659.2,
+   "usd_close": 1930.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1390-11",
+   "usd_avg": 1881.41,
+   "usd_close": 1940.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1390-12",
+   "usd_avg": 1896.72,
+   "usd_close": 1912.3,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-01",
+   "usd_avg": 1864.22,
+   "usd_close": 1806.5,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-02",
+   "usd_avg": 1684.91,
+   "usd_close": 1685.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-03",
+   "usd_avg": 1772.47,
+   "usd_close": 1876.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-04",
+   "usd_avg": 1931.55,
+   "usd_close": 1899.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-05",
+   "usd_avg": 2053.27,
+   "usd_close": 2136.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-06",
+   "usd_avg": 2311.47,
+   "usd_close": 2447.3,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-07",
+   "usd_avg": 3192.85,
+   "usd_close": 3600.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-08",
+   "usd_avg": 3126.4,
+   "usd_close": 2840.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-09",
+   "usd_avg": 2960.05,
+   "usd_close": 3110.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-10",
+   "usd_avg": 3281.01,
+   "usd_close": 3410.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-11",
+   "usd_avg": 3717.07,
+   "usd_close": 3725.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1391-12",
+   "usd_avg": 3547.63,
+   "usd_close": 3450.5,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-01",
+   "usd_avg": 3497.63,
+   "usd_close": 3535.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-02",
+   "usd_avg": 3544.77,
+   "usd_close": 3565.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-03",
+   "usd_avg": 3567.83,
+   "usd_close": 3220.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-04",
+   "usd_avg": 3276.15,
+   "usd_close": 3120.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-05",
+   "usd_avg": 3176.32,
+   "usd_close": 3120.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-06",
+   "usd_avg": 3164.2,
+   "usd_close": 2935.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-07",
+   "usd_avg": 3032.13,
+   "usd_close": 3013.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-08",
+   "usd_avg": 3013.23,
+   "usd_close": 3006.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-09",
+   "usd_avg": 2950.28,
+   "usd_close": 2958.1,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-10",
+   "usd_avg": 2975.82,
+   "usd_close": 2934.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-11",
+   "usd_avg": 2949.08,
+   "usd_close": 2953.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1392-12",
+   "usd_avg": 3025.08,
+   "usd_close": 3017.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-01",
+   "usd_avg": 3107.6,
+   "usd_close": 3240.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-02",
+   "usd_avg": 3283.85,
+   "usd_close": 3287.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-03",
+   "usd_avg": 3246.57,
+   "usd_close": 3192.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-04",
+   "usd_avg": 3132.23,
+   "usd_close": 3133.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-05",
+   "usd_avg": 3122.42,
+   "usd_close": 3091.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-06",
+   "usd_avg": 3169.89,
+   "usd_close": 3188.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-07",
+   "usd_avg": 3234.92,
+   "usd_close": 3228.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-08",
+   "usd_avg": 3247.54,
+   "usd_close": 3249.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-09",
+   "usd_avg": 3390.67,
+   "usd_close": 3507.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-10",
+   "usd_avg": 3500.42,
+   "usd_close": 3461.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-11",
+   "usd_avg": 3438.8,
+   "usd_close": 3412.7,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1393-12",
+   "usd_avg": 3381.67,
+   "usd_close": 3343.6,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-01",
+   "usd_avg": 3326.18,
+   "usd_close": 3339.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-02",
+   "usd_avg": 3322.7,
+   "usd_close": 3288.7,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-03",
+   "usd_avg": 3296.45,
+   "usd_close": 3262.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-04",
+   "usd_avg": 3262.16,
+   "usd_close": 3248.5,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-05",
+   "usd_avg": 3327.16,
+   "usd_close": 3350.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-06",
+   "usd_avg": 3383.68,
+   "usd_close": 3384.6,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-07",
+   "usd_avg": 3393.01,
+   "usd_close": 3385.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-08",
+   "usd_avg": 3401.53,
+   "usd_close": 3394.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-09",
+   "usd_avg": 3403.19,
+   "usd_close": 3386.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-10",
+   "usd_avg": 3387.07,
+   "usd_close": 3384.3,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-11",
+   "usd_avg": 3393.51,
+   "usd_close": 3449.2,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1394-12",
+   "usd_avg": 3442.47,
+   "usd_close": 3426.3,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-01",
+   "usd_avg": 3470.01,
+   "usd_close": 3458.3,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-02",
+   "usd_avg": 3448.66,
+   "usd_close": 3444.3,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-03",
+   "usd_avg": 3460.27,
+   "usd_close": 3460.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-04",
+   "usd_avg": 3498.87,
+   "usd_close": 3503.4,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-05",
+   "usd_avg": 3532.6,
+   "usd_close": 3547.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-06",
+   "usd_avg": 3554.97,
+   "usd_close": 3562.5,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-07",
+   "usd_avg": 3580.22,
+   "usd_close": 3587.1,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-08",
+   "usd_avg": 3632.98,
+   "usd_close": 3680.9,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-09",
+   "usd_avg": 3864.56,
+   "usd_close": 3978.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-10",
+   "usd_avg": 3948.7,
+   "usd_close": 3819.9,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-11",
+   "usd_avg": 3831.64,
+   "usd_close": 3793.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1395-12",
+   "usd_avg": 3767.79,
+   "usd_close": 3748.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-01",
+   "usd_avg": 3756.44,
+   "usd_close": 3748.5,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-02",
+   "usd_avg": 3758.03,
+   "usd_close": 3735.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-03",
+   "usd_avg": 3739.4,
+   "usd_close": 3756.8,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-04",
+   "usd_avg": 3781.16,
+   "usd_close": 3775.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-05",
+   "usd_avg": 3813.87,
+   "usd_close": 3833.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-06",
+   "usd_avg": 3886.97,
+   "usd_close": 3892.7,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-07",
+   "usd_avg": 3975.04,
+   "usd_close": 4018.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-08",
+   "usd_avg": 4076.96,
+   "usd_close": 4121.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-09",
+   "usd_avg": 4179.43,
+   "usd_close": 4192.9,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-10",
+   "usd_avg": 4347.98,
+   "usd_close": 4597.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-11",
+   "usd_avg": 4638.22,
+   "usd_close": 4575.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1396-12",
+   "usd_avg": 4708.6,
+   "usd_close": 4899.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-01",
+   "usd_avg": 5153.77,
+   "usd_close": 5192.9,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-02",
+   "usd_avg": 6104.06,
+   "usd_close": 6387.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-03",
+   "usd_avg": 6681.73,
+   "usd_close": 7491.1,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-04",
+   "usd_avg": 8167.77,
+   "usd_close": 9370.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-05",
+   "usd_avg": 10300.49,
+   "usd_close": 10546.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-06",
+   "usd_avg": 12921.92,
+   "usd_close": 14934.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-07",
+   "usd_avg": 14290.07,
+   "usd_close": 14194.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-08",
+   "usd_avg": 12200.91,
+   "usd_close": 12771.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-09",
+   "usd_avg": 10945.08,
+   "usd_close": 10097.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-10",
+   "usd_avg": 10924.4,
+   "usd_close": 11630.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-11",
+   "usd_avg": 11881.46,
+   "usd_close": 12970.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1397-12",
+   "usd_avg": 13026.96,
+   "usd_close": 12894.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-01",
+   "usd_avg": 13454.79,
+   "usd_close": 13470.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-02",
+   "usd_avg": 14594.81,
+   "usd_close": 14401.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-03",
+   "usd_avg": 13461.55,
+   "usd_close": 13200.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-04",
+   "usd_avg": 12763.6,
+   "usd_close": 12524.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-05",
+   "usd_avg": 11870.55,
+   "usd_close": 11600.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-06",
+   "usd_avg": 11411.62,
+   "usd_close": 11393.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-07",
+   "usd_avg": 11435.28,
+   "usd_close": 11232.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-08",
+   "usd_avg": 11553.91,
+   "usd_close": 11794.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-09",
+   "usd_avg": 12855.56,
+   "usd_close": 13169.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-10",
+   "usd_avg": 13381.46,
+   "usd_close": 13439.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-11",
+   "usd_avg": 13758.12,
+   "usd_close": 14393.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1398-12",
+   "usd_avg": 15410.78,
+   "usd_close": 14903.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-01",
+   "usd_avg": 15594.62,
+   "usd_close": 15442.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-02",
+   "usd_avg": 16517.44,
+   "usd_close": 17701.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-03",
+   "usd_avg": 17889.24,
+   "usd_close": 19480.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-04",
+   "usd_avg": 21719.0,
+   "usd_close": 21800.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-05",
+   "usd_avg": 22697.12,
+   "usd_close": 22502.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-06",
+   "usd_avg": 25036.6,
+   "usd_close": 27497.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-07",
+   "usd_avg": 29633.5,
+   "usd_close": 29644.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-08",
+   "usd_avg": 27352.96,
+   "usd_close": 25620.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-09",
+   "usd_avg": 25697.0,
+   "usd_close": 25604.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-10",
+   "usd_avg": 25044.77,
+   "usd_close": 22645.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-11",
+   "usd_avg": 24350.6,
+   "usd_close": 25171.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1399-12",
+   "usd_avg": 24851.45,
+   "usd_close": 23963.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-01",
+   "usd_avg": 24890.8,
+   "usd_close": 24184.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-02",
+   "usd_avg": 22700.37,
+   "usd_close": 22300.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-03",
+   "usd_avg": 23731.48,
+   "usd_close": 24259.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-04",
+   "usd_avg": 24771.73,
+   "usd_close": 24628.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-05",
+   "usd_avg": 26107.14,
+   "usd_close": 27666.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-06",
+   "usd_avg": 27465.11,
+   "usd_close": 27521.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-07",
+   "usd_avg": 27627.03,
+   "usd_close": 27415.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-08",
+   "usd_avg": 27969.6,
+   "usd_close": 28440.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-09",
+   "usd_avg": 29554.35,
+   "usd_close": 30077.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-10",
+   "usd_avg": 28378.46,
+   "usd_close": 27525.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-11",
+   "usd_avg": 27052.83,
+   "usd_close": 25417.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1400-12",
+   "usd_avg": 25992.87,
+   "usd_close": 26252.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-01",
+   "usd_avg": 27499.27,
+   "usd_close": 27862.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-02",
+   "usd_avg": 28461.44,
+   "usd_close": 30323.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-03",
+   "usd_avg": 31423.85,
+   "usd_close": 31978.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-04",
+   "usd_avg": 31583.77,
+   "usd_close": 31883.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-05",
+   "usd_avg": 30895.03,
+   "usd_close": 29335.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-06",
+   "usd_avg": 30623.68,
+   "usd_close": 31666.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-07",
+   "usd_avg": 32641.75,
+   "usd_close": 32812.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-08",
+   "usd_avg": 34672.16,
+   "usd_close": 35658.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-09",
+   "usd_avg": 37132.53,
+   "usd_close": 39761.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-10",
+   "usd_avg": 41059.07,
+   "usd_close": 43976.1,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-11",
+   "usd_avg": 45039.57,
+   "usd_close": 49902.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1401-12",
+   "usd_avg": 51000.53,
+   "usd_close": 48101.4,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-01",
+   "usd_avg": 51288.14,
+   "usd_close": 51606.9,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-02",
+   "usd_avg": 52936.39,
+   "usd_close": 52331.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-03",
+   "usd_avg": 50024.08,
+   "usd_close": 49731.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-04",
+   "usd_avg": 49422.72,
+   "usd_close": 48336.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-05",
+   "usd_avg": 49244.52,
+   "usd_close": 49023.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-06",
+   "usd_avg": 49422.26,
+   "usd_close": 49393.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-07",
+   "usd_avg": 50585.51,
+   "usd_close": 50616.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-08",
+   "usd_avg": 51150.54,
+   "usd_close": 50219.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-09",
+   "usd_avg": 50442.97,
+   "usd_close": 50076.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-10",
+   "usd_avg": 51522.62,
+   "usd_close": 53908.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-11",
+   "usd_avg": 56125.69,
+   "usd_close": 56506.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1402-12",
+   "usd_avg": 59341.73,
+   "usd_close": 60351.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-01",
+   "usd_avg": 62379.57,
+   "usd_close": 62900.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-02",
+   "usd_avg": 61491.92,
+   "usd_close": 60470.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-03",
+   "usd_avg": 60607.83,
+   "usd_close": 61480.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-04",
+   "usd_avg": 59314.42,
+   "usd_close": 57596.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-05",
+   "usd_avg": 59479.23,
+   "usd_close": 58410.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-06",
+   "usd_avg": 59408.33,
+   "usd_close": 59550.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-07",
+   "usd_avg": 62433.27,
+   "usd_close": 66150.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-08",
+   "usd_avg": 68341.73,
+   "usd_close": 69225.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-09",
+   "usd_avg": 72390.42,
+   "usd_close": 76240.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-10",
+   "usd_avg": 80140.8,
+   "usd_close": 81020.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-11",
+   "usd_avg": 86497.71,
+   "usd_close": 92170.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1403-12",
+   "usd_avg": 92189.78,
+   "usd_close": 97780.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-01",
+   "usd_avg": 95269.0,
+   "usd_close": 81975.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-02",
+   "usd_avg": 82766.15,
+   "usd_close": 82710.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-03",
+   "usd_avg": 82504.69,
+   "usd_close": 83535.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-04",
+   "usd_avg": 88067.05,
+   "usd_close": 87990.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-05",
+   "usd_avg": 91901.04,
+   "usd_close": 95060.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-06",
+   "usd_avg": 100504.79,
+   "usd_close": 104000.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-07",
+   "usd_avg": 110958.08,
+   "usd_close": 107560.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-08",
+   "usd_avg": 109471.8,
+   "usd_close": 113520.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-09",
+   "usd_avg": 122915.0,
+   "usd_close": 131225.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-10",
+   "usd_avg": 141768.8,
+   "usd_close": 145540.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-11",
+   "usd_avg": 156167.67,
+   "usd_close": 163640.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1404-12",
+   "usd_avg": 162494.79,
+   "usd_close": 159280.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1405-01",
+   "usd_avg": 156335.21,
+   "usd_close": 151190.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1405-02",
+   "usd_avg": 173620.93,
+   "usd_close": 179080.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1405-03",
+   "usd_avg": 170614.58,
+   "usd_close": 159600.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1405-04",
+   "usd_avg": 179145.83,
+   "usd_close": 192405.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1405-05",
+   "usd_avg": 189113.48,
+   "usd_close": 192700.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1405-06",
+   "usd_avg": 221119.81,
+   "usd_close": 233200.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  },
+  {
+   "period": "1405-07",
+   "usd_avg": 254300.33,
+   "usd_close": 265100.0,
+   "m2": null,
+   "usd_per_m2_index": null
+  }
+ ],
+ "scenarios": [],
+ "trend": {
+  "annual_growth_pct": 39.59,
+  "since": "1390-10",
+  "path": [
+   {
+    "h": 1,
+    "period": "1405-08",
+    "value": 272600.0
+   },
+   {
+    "h": 2,
+    "period": "1405-09",
+    "value": 280300.0
+   },
+   {
+    "h": 3,
+    "period": "1405-10",
+    "value": 288200.0
+   },
+   {
+    "h": 4,
+    "period": "1405-11",
+    "value": 296300.0
+   },
+   {
+    "h": 5,
+    "period": "1405-12",
+    "value": 304600.0
+   },
+   {
+    "h": 6,
+    "period": "1406-01",
+    "value": 313200.0
+   },
+   {
+    "h": 7,
+    "period": "1406-02",
+    "value": 322100.0
+   },
+   {
+    "h": 8,
+    "period": "1406-03",
+    "value": 331100.0
+   },
+   {
+    "h": 9,
+    "period": "1406-04",
+    "value": 340500.0
+   },
+   {
+    "h": 10,
+    "period": "1406-05",
+    "value": 350100.0
+   },
+   {
+    "h": 11,
+    "period": "1406-06",
+    "value": 359900.0
+   },
+   {
+    "h": 12,
+    "period": "1406-07",
+    "value": 370100.0
+   }
+  ]
+ },
+ "band": null,
+ "backtest": null,
+ "liquidity_dollar": null,
+ "notes": [
+  "Scenario paths, not forecasts: each assumes the dollar grows from the last close at the stated liquidity growth rate.",
+  "A month's dollar is the mean (and the last) of the daily USD_IRT closes inside that Jalali month, Tehran days.",
+  "Liquidity growth is read from the newest CBI month published; the backtest used each month only 3 months after it ended.",
+  "No CBI liquidity figure is stored, so no scenario path, band or backtest exists."
+ ],
+ "data_age": {
+  "newest_close": "2026-10-10",
+  "age_days": 1,
+  "stale": false
+ }
+}

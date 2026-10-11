@@ -31,6 +31,7 @@ import Bourse from './pages/Bourse'
 import MoneyFlow from './pages/MoneyFlow'
 import StockDetail from './pages/StockDetail'
 import Economy from './pages/Economy'
+import Liquidity from './pages/Liquidity'
 import Portfolio from './pages/Portfolio'
 import Alerts from './pages/Alerts'
 import Models from './pages/Models'
@@ -46,6 +47,7 @@ const NAV_ITEMS: Array<{ to: string; label: string; end?: boolean; adminOnly?: b
   { to: '/drivers', label: 'Drivers' },
   { to: '/markets', label: 'Purchasing power' },
   { to: '/economy', label: 'Economy' },
+  { to: '/liquidity', label: 'Money & liquidity' },
   { to: '/relative-value', label: 'Relative value' },
   { to: '/bourse', label: 'Tehran market' },
   { to: '/money-flow', label: 'Money flow' },
@@ -207,6 +209,7 @@ export default function App() {
               <Route path="/markets" element={<Markets />} />
               <Route path="/relative-value" element={<RelativeValue />} />
               <Route path="/economy" element={<Economy />} />
+              <Route path="/liquidity" element={<Liquidity />} />
               <Route path="/bourse" element={<Bourse />} />
               <Route path="/money-flow" element={<MoneyFlow />} />
               <Route path="/stocks" element={<Stocks />} />

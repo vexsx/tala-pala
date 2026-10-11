@@ -3819,3 +3819,137 @@ input[type='checkbox'] {
 .mf-notes li {
   margin-bottom: 4px;
 }
+
+/* --- money & liquidity (/liquidity) ---------------------------------------- */
+
+/* Every colour here is an existing token: the measured dollar wears the text
+ * ink, the scenarios the validated --series trio (each with its own dash, so
+ * identity never rests on hue alone), the dollar's own trend the muted ink,
+ * and the band a pale wash of the path it surrounds. */
+
+.lq-section {
+  margin-top: 8px;
+}
+
+.lq-section > .section-title {
+  margin: 4px 0 10px;
+}
+
+.lq-asof {
+  max-width: 95ch;
+  line-height: 1.6;
+  margin: 10px 0;
+}
+
+.lq-figure {
+  margin: 0;
+  min-width: 0;
+}
+
+/* A dashed line key for a scenario path or the trend. */
+.bx-key.lq-key-dash {
+  border-top-style: dashed;
+}
+
+/* The band's key: a wash of its path's hue with no stroke. */
+.bx-key.lq-key-area {
+  height: 10px;
+  border-top: 0;
+  border-radius: 2px;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+/* The base-money method change: a short dashed vertical, as on the charts. */
+.lq-key-break {
+  display: inline-block;
+  width: 0;
+  height: 12px;
+  border-left: 1px dashed var(--muted);
+  margin: 0 4px;
+}
+
+/* Two heading rows: a group over its columns, then the sortable columns. */
+.lq-table th.lq-group {
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.lq-table .lq-sort {
+  display: inline-flex;
+  text-align: inherit;
+}
+
+.lq-table td,
+.lq-table th {
+  vertical-align: top;
+}
+
+.lq-table th[scope='row'] {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.lq-scn-name {
+  white-space: normal;
+  min-width: 220px;
+}
+
+/* The smallest error at a horizon: weight, not colour. */
+.lq-table td.lq-best {
+  font-weight: 700;
+}
+
+.lq-statements {
+  margin: 6px 0 12px;
+  padding-left: 18px;
+  line-height: 1.6;
+  max-width: 95ch;
+}
+
+.lq-notes {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  line-height: 1.6;
+  max-width: 100ch;
+}
+
+.lq-notes li {
+  margin-bottom: 6px;
+}
+
+.lq-more {
+  gap: 10px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+/* With 24 months on screen the lower coverage is said in the text ink. */
+.lq-coverage-strong {
+  color: var(--text);
+}
+
+.lq .bx-controls {
+  align-items: center;
+}
+
+/* These legend labels are sentences ("Path 1: Liquidity growth of the last 12
+ * months (53.3% a year)"): they wrap inside their item, the key stays at its
+ * start, and a phone never scrolls sideways for one. */
+.lq .bx-legend-item {
+  white-space: normal;
+  max-width: 100%;
+}
+
+.lq .bx-legend-item > .bx-key,
+.lq .bx-legend-item > .lq-key-break {
+  flex: none;
+}
+
+@media (max-width: 640px) {
+  .lq-scn-name {
+    min-width: 170px;
+  }
+}

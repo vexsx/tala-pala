@@ -1,0 +1,33 @@
+{
+ "as_of": "2026-10-11T06:00:00Z",
+ "unit": "thousand_billion_rial",
+ "display_unit_note": "÷10 = همت (trillion toman)",
+ "latest": null,
+ "series": [
+  {
+   "code": "CBI_LIQUIDITY",
+   "name_en": "Liquidity (M2)",
+   "name_fa": "نقدینگی",
+   "points": []
+  },
+  {
+   "code": "CBI_BASE_MONEY",
+   "name_en": "Base money",
+   "name_fa": "پایه پولی",
+   "points": []
+  }
+ ],
+ "multiplier": [],
+ "breaks": [],
+ "notes": [
+  "Every value is an end-of-month stock as CBI publishes it, in thousand billion rials (هزار میلیارد ریال).",
+  "Months from Tir 1397 come from CBI's monthly Selected Economic Indicators workbooks; earlier periods are quarter-ends from CBI's time-series database.",
+  "CBI states no release date: published_at is the workbook's own saved time, a lower bound, and available_at is when this system could first have read it."
+ ],
+ "data_age": {
+  "newest_period": null,
+  "age_days": null,
+  "stale": false,
+  "stale_after_days": 137
+ }
+}

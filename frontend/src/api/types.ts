@@ -2625,3 +2625,220 @@ export interface SectorFlowSharesResponse {
   notes: string[]
   data_age: BourseDataAge
 }
+
+// ---------- Money & liquidity (/liquidity/*) ----------
+//
+// The contract is design §3 of the money-and-liquidity design; the field
+// names are its own. Where it leaves a block open ("{...}"), the shape below
+// is the one this page reads, said so beside it, until a production capture
+// pins it.
+
+/** One end-of-month stock, exactly as CBI published it. */
+export interface LiquidityPoint {
+  /** The Jalali month whose END the stock is measured at: 'YYYY-MM'. */
+  period: string
+  /** The Gregorian date that month ends on. */
+  gregorian_end: string
+  /** In the response's `unit`: thousand billion rial (هزار میلیارد ریال). */
+  value: number
+  mom_pct: number | null
+  yoy_pct: number | null
+  /** Against the previous Esfand: CBI's own second growth column. */
+  ytd_pct: number | null
+  /** Base money only: the CBI method the figure is on. Never mixed in a growth. */
+  method: 'revised' | 'old' | null
+  /** 'Q' for the quarter-end history before the monthly workbooks. */
+  frequency: 'M' | 'Q'
+  vintage: number
+  source: 'excel' | 'tsdview'
+  /** Why a growth figure is null, keyed by its field name. */
+  null_reason?: Record<string, string>
+}
+
+export interface LiquiditySeries {
+  /** CBI_LIQUIDITY | CBI_BASE_MONEY | CBI_MONEY_M1 | CBI_QUASI_MONEY */
+  code: string
+  name_en: string
+  name_fa: string
+  /** Oldest first. */
+  points: LiquidityPoint[]
+}
+
+/** The newest CBI month stored. Null before the first ingest. */
+export interface LiquidityLatest {
+  period: string
+  /** The workbook's own saved time — CBI states no release date — or null. */
+  published_at: string | null
+  /** When this system could first have read it. */
+  available_at: string
+  /** Whole days from the end of `period` to `as_of`. */
+  age_days: number
+  source_url: string
+}
+
+/** One Jalali year; each map is keyed by series code. */
+export interface LiquidityAnnualRow {
+  year: number
+  /** The Esfand stock. */
+  end_value: Record<string, number | null>
+  /** Esfand over the previous Esfand: CBI's headline growth. */
+  end_growth_pct: Record<string, number | null>
+  /** The mean of the twelve month-end stocks, only when all twelve are stored. */
+  avg_value: Record<string, number | null> | null
+  avg_growth_pct: Record<string, number | null> | null
+  months_present: number
+  partial: boolean
+}
+
+export interface LiquidityBreak {
+  code: string
+  /** The first period on the new method. */
+  from: string
+  note: string
+}
+
+/**
+ * Design §3 leaves `data_age` open. These are the fields this page reads,
+ * each optional until a capture pins the block; without `stale` the page
+ * judges the newest month by its own `age_days`.
+ */
+export interface LiquidityDataAge {
+  stale?: boolean
+  age_days?: number | null
+  warning?: string | null
+  [field: string]: unknown
+}
+
+export interface LiquidityAggregatesResponse {
+  as_of: string
+  /** 'thousand_billion_rial': stored exactly as CBI publishes it. */
+  unit: string
+  display_unit_note: string
+  latest: LiquidityLatest | null
+  series: LiquiditySeries[]
+  /** M2 ÷ base money, same month. */
+  multiplier: Array<{ period: string; value: number }>
+  /** Only when freq=annual. */
+  annual?: LiquidityAnnualRow[]
+  breaks: LiquidityBreak[]
+  notes: string[]
+  data_age: LiquidityDataAge
+}
+
+export interface LiquidityDollarAnchor {
+  /** The last stored close: the point every scenario path starts from. */
+  date: string
+  jalali: string
+  close_toman: number
+  source: string
+  note: string
+}
+
+/** One Jalali month of the free-market dollar, toman per dollar. */
+export interface LiquidityDollarHistoryPoint {
+  period: string
+  usd_avg: number | null
+  usd_close: number | null
+  /** The month's liquidity stock when one is stored (thousand billion rial). */
+  m2: number | null
+  usd_per_m2_index: number | null
+}
+
+export interface LiquidityPathPoint {
+  /** Months after the anchor. */
+  h: number
+  period: string
+  /** Toman per dollar. */
+  value: number
+}
+
+export interface LiquidityScenario {
+  key: string
+  label_en: string
+  label_fa: string
+  annual_growth_pct: number | null
+  /** Which liquidity growth the rate is: "M2 growth Esfand 1403→1404". */
+  basis: string
+  path: LiquidityPathPoint[]
+}
+
+export interface LiquidityTrend {
+  annual_growth_pct: number
+  since: string
+  path: LiquidityPathPoint[]
+}
+
+/** The band's log-error quantiles at one horizon: its edges are path × exp(lo | hi). */
+export interface LiquidityBandStep {
+  h: number
+  lo: number
+  hi: number
+}
+
+export interface LiquidityBand {
+  lower_q: number
+  upper_q: number
+  by_h: LiquidityBandStep[]
+  /** A scenario key, or 'each'. */
+  applied_to: string
+  /**
+   * MEASURED backtest coverage by horizon range — '1-12', '24' — the share of
+   * past outcomes a band built this way actually held. The only figure the
+   * band is ever labelled with.
+   */
+  coverage: Record<string, number>
+  origins_from: string
+  lag_months: number
+  n_by_h: Record<string, number>
+  note: string
+}
+
+/**
+ * Design §3 shows these p-value maps only as "{...}". The page reads either
+ * nesting — model → horizon → p, or horizon → p for the liquidity-paced
+ * model alone — through normalizeDm in lib/liquidity.
+ */
+export type LiquidityDmPValues = Record<string, Record<string, number | null> | number | null>
+
+export interface LiquidityBacktest {
+  /** 'month-end close' | 'monthly average' */
+  target: string
+  /** Model → horizon in months → root mean square log error. */
+  rmse: Record<string, Record<string, number | null>>
+  dm_vs_random_walk_p: LiquidityDmPValues
+  dm_vs_trend_p: LiquidityDmPValues
+  /** A plain-language sentence the server derives from these numbers. */
+  verdict: string
+}
+
+/** Design §3 shows the base entries as "{..}"; this page reads `base` and `value`. */
+export interface LiquidityDollarAtBase {
+  /** The base month whose dollar is scaled by liquidity growth since then. */
+  base: string | null
+  /** Toman per dollar. */
+  value: number
+}
+
+export interface LiquidityDollarRange {
+  period: string
+  actual_avg: number | null
+  by_base: { min: LiquidityDollarAtBase; median: LiquidityDollarAtBase; max: LiquidityDollarAtBase }
+  bases_considered: number
+  note: string
+}
+
+export interface LiquidityDollarResponse {
+  as_of: string
+  anchor: LiquidityDollarAnchor | null
+  /** The newest liquidity month the scenario rates are read from. */
+  money_as_of: { period: string; published_at: string | null } | null
+  /** Monthly, Jalali months, oldest first. */
+  history: LiquidityDollarHistoryPoint[]
+  scenarios: LiquidityScenario[]
+  trend: LiquidityTrend | null
+  band: LiquidityBand | null
+  backtest: LiquidityBacktest | null
+  liquidity_dollar: LiquidityDollarRange | null
+  notes: string[]
+  data_age: LiquidityDataAge
+}
