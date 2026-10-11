@@ -529,6 +529,37 @@ def test_renames_resectors_delistings_and_relistings(engine):
     assert back["relisted"] == 1 and _share(engine, GLPA)["listed"] is True
 
 
+def test_a_share_trading_in_the_newest_sessions_stays_listed_when_a_watch_leaves_it_out(engine):
+    """A watch fetched early in a session lists main boards only (2026-10-11:
+    732 shares against 1,160). A share with a row in one of the newest
+    stored day files is still listed by TSETMC; one with none is delisted as
+    before; and a share an earlier partial watch delisted is listed again."""
+    _universe(engine)
+    payload = load_fixture_json("tsetmc_market_watch_subset.json")
+    partial = copy.deepcopy(payload)
+    partial["marketwatch"] = [r for r in partial["marketwatch"] if r["insCode"] not in (GLPA, SDPT)]
+    day = date(2026, 9, 28)
+    with engine.begin() as conn:
+        conn.execute(market_session_files.insert().values(
+            trade_date=day, rows_total=1, rows_shares=1, ingested_at=MARKET_WATCH_AT))
+        conn.execute(market_share_sessions.insert().values(
+            ins_code=SDPT, trade_date=day, close=1000, last_trade=1000, price_yesterday=990,
+            value=1e9, volume=1e6, trades=10))
+    report = ingest_universe(engine, partial, now=MARKET_WATCH_AT + timedelta(days=1))
+    assert (report["delisted"], report["kept_listed_traded"]) == (1, 1)
+    assert _share(engine, SDPT)["listed"] is True
+    assert _share(engine, GLPA)["listed"] is False
+
+    # GLPA now trades, still missing from the watch: listed again.
+    with engine.begin() as conn:
+        conn.execute(market_share_sessions.insert().values(
+            ins_code=GLPA, trade_date=day, close=1000, last_trade=1000, price_yesterday=990,
+            value=1e9, volume=1e6, trades=10))
+    again = ingest_universe(engine, partial, now=MARKET_WATCH_AT + timedelta(days=2))
+    assert (again["delisted"], again["relisted_traded"]) == (0, 1)
+    assert _share(engine, GLPA)["listed"] is True
+
+
 def test_a_truncated_market_watch_cannot_delist_the_market(engine):
     _seed_sectors(engine)
     with engine.begin() as conn:
@@ -1671,6 +1702,16 @@ def test_the_copy_is_handed_to_the_service_user_before_any_ingest_reads_it(fetch
     assert "docker compose cp" not in commands[0] and "-u 0" not in commands[0]
 
 
+def test_a_stored_share_that_traded_recently_is_fetched_even_when_the_watch_omits_it(fetch):
+    since = date(2026, 6, 13)
+    assert fetch._recently_active({"flow_last_date": "2026-09-29"}, since)
+    assert fetch._recently_active({"flow_last_date": "2025-01-01",
+                                   "session_last_date": "2026-06-13"}, since)
+    assert not fetch._recently_active({"flow_last_date": "2026-06-12",
+                                       "session_last_date": None}, since)
+    assert not fetch._recently_active({}, since)
+
+
 def test_the_pacer_spaces_request_starts(fetch, monkeypatch):
     clock = {"now": 100.0}
     slept = []
@@ -1981,6 +2022,12 @@ def test_a_day_the_server_calls_incomplete_is_fetched_again(fetch, wired, engine
     for row in flows["clientType"]:
         row["insCode"] = "12345678"
     ingest_client_flows(engine, flows, now=CAPTURED)
+    # The share is in no market watch but traded recently, so its history is
+    # fetched too (RECENT_SHARE_DAYS); TSETMC serves what was stored.
+    served = _tsetmc(fetch)
+    monkeypatch.setattr(fetch, "_curl", lambda url, timeout=120: (
+        json.dumps(flows).encode("utf-8") if url.endswith("/GetClientTypeHistory/12345678")
+        else served(url, timeout)))
     assert fetch.run(_args(tmp_path)) == 0
     assert os.listdir(tmp_path / "out" / "shares" / "days") == ["day-20260928.json"]
     assert share_state(engine)["session_dates_incomplete"] == []

@@ -187,6 +187,21 @@ SHARE_PREFIXES = ("IRO1", "IRO3", "IRO5", "IRO7")
 # than this is truncated, and shipping it would ask the server to delist
 # hundreds of shares (which the ingest refuses anyway).
 MIN_MARKET_WATCH_SHARES = 500
+# A stored share whose newest flow row or session row is younger than this is
+# fetched even when today's watch leaves it out (see run()). A share that has
+# not traded for four months costs nothing to skip and is fetched again the
+# day a watch lists it.
+RECENT_SHARE_DAYS = 120
+
+
+def _recently_active(item: dict, since: date) -> bool:
+    """Did a share the server holds trade on or after ``since``, by its stored
+    flow or session coverage?"""
+    for key in ("flow_last_date", "session_last_date"):
+        value = item.get(key)
+        if value and date.fromisoformat(value) >= since:
+            return True
+    return False
 
 # How many of the newest STORED flow rows are re-shipped with a share's new
 # ones: compared, never written, so a TSETMC restatement of recent history
@@ -1390,6 +1405,27 @@ def run(args: argparse.Namespace) -> int:
                 print(f"NOTICE     : roster share {item.get('symbol_fa')} ({c}) is not in "
                       "today's market watch; fetching its money flow anyway.")
                 shares.append((c, "", str(item.get("symbol_fa") or "")))
+                listed_codes.add(c)
+        # A share the server holds that traded recently keeps its flow current
+        # whether or not today's watch lists it. The watch is not the whole
+        # listing at every hour: fetched at 09:35 Tehran on 2026-10-11 it
+        # carried 2,724 rows and 732 shares — main boards only, none of the 413
+        # block and second boards — against 3,867 rows and 1,160 shares at
+        # 19:35 on 2026-09-29. Fetching flows for the watch alone would have
+        # left those boards' sessions unstored while the day files still show
+        # them trading, and the money-flow calendar would refuse every new
+        # session for want of 90% coverage.
+        recent = date.today() - timedelta(days=RECENT_SHARE_DAYS)
+        kept = [
+            (c, "", str(item.get("symbol_fa") or ""))
+            for c, item in sorted(by_code.items())
+            if c not in listed_codes and _recently_active(item, recent)
+        ]
+        if kept:
+            print(f"NOTICE     : {len(kept)} share(s) the server holds are not in today's "
+                  f"market watch but traded within {RECENT_SHARE_DAYS} days; fetching their "
+                  "money flow anyway.")
+            shares.extend(kept)
         try:
             blob, static = fetch_json(STATIC_DATA_PATH, "staticData")
             if not any(isinstance(r, dict) and r.get("type") == "IndustrialGroup"

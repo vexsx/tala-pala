@@ -118,6 +118,15 @@ DELIST_GUARD_MIN = 50
 # ten-share SME board (or a small test universe) is never refused.
 DELIST_GUARD_MARKET_MIN = 5
 
+# A share absent from a market watch is still listed when it traded in one of
+# the newest TRADED_LISTING_SESSIONS stored sessions (its own row in a
+# whole-market day file).  The watch is not the whole listing at every hour:
+# fetched at 09:35 Tehran on 2026-10-11 it carried 732 shares — main boards
+# only, none of the 413 block and second boards — against 1,160 at 19:35 on
+# 2026-09-29, and reading that as 428 delistings would have turned every
+# second board's share-list entry off until an evening fetch turned it on.
+TRADED_LISTING_SESSIONS = 20
+
 # The day-file date check.  At least DATE_CHECK_MIN shares must have a flow
 # row to compare against before a verdict is reached, and a share "agrees"
 # when its session value is within DATE_CHECK_TOLERANCE of its flow total —
@@ -154,6 +163,19 @@ def _chunks(items: list, size: int = _IN_CHUNK) -> Iterable[list]:
 
 
 # --- state, for the fetch ----------------------------------------------------
+
+
+def _recently_traded(conn: Connection) -> set[str]:
+    """The shares with a session row in one of the newest
+    TRADED_LISTING_SESSIONS ingested day files — trading the exchange
+    recorded, whatever a given market watch happened to list."""
+    d, s = market_session_files, market_share_sessions
+    newest = select(d.c.trade_date).order_by(d.c.trade_date.desc()).limit(TRADED_LISTING_SESSIONS)
+    return set(
+        conn.execute(
+            select(s.c.ins_code).where(s.c.trade_date.in_(newest)).distinct()
+        ).scalars()
+    )
 
 
 def _incomplete_session_dates(conn: Connection) -> list[date]:
@@ -289,9 +311,12 @@ def ingest_universe(
 
     New shares are inserted; a listed share takes TSETMC's latest symbol,
     name, sector, board and insID; a share absent from this market watch is
-    marked ``listed = FALSE``.  Nothing is deleted.  ``static_data``, when
-    given, refreshes ``market_sectors.name_fa`` first, so the unknown-sector
-    count is taken against the vocabulary as it now stands.
+    marked ``listed = FALSE`` — unless it traded in one of the newest
+    TRADED_LISTING_SESSIONS stored sessions, which a share TSETMC no longer
+    lists cannot have done; such a share stays (or becomes again) listed.
+    Nothing is deleted.  ``static_data``, when given, refreshes
+    ``market_sectors.name_fa`` first, so the unknown-sector count is taken
+    against the vocabulary as it now stands.
     """
     at = ensure_utc(now) or utcnow()
     watch = parse_market_watch(market_watch)
@@ -306,8 +331,18 @@ def ingest_universe(
             for r in conn.execute(select(s.c.ins_code, s.c.listed, *[s.c[f] for f in fields]))
         }
         served = {share.ins_code for share in watch.shares}
+        traded = _recently_traded(conn) & set(existing)
         listed_before = [code for code, r in existing.items() if r.listed]
-        delisted = sorted(code for code in listed_before if code not in served)
+        delisted = sorted(
+            code for code in listed_before if code not in served and code not in traded
+        )
+        kept_traded = sorted(
+            code for code in listed_before if code not in served and code in traded
+        )
+        relisted_traded = sorted(
+            code for code, r in existing.items()
+            if not r.listed and code not in served and code in traded
+        )
         if (
             len(delisted) >= DELIST_GUARD_MIN
             and len(delisted) > MAX_DELIST_FRACTION * len(listed_before)
@@ -386,6 +421,10 @@ def ingest_universe(
             conn.execute(
                 update(s).where(s.c.ins_code.in_(chunk)).values(listed=False, updated_at=at)
             )
+        for chunk in _chunks(relisted_traded):
+            conn.execute(
+                update(s).where(s.c.ins_code.in_(chunk)).values(listed=True, updated_at=at)
+            )
 
         known = set(conn.execute(select(market_sectors.c.sector_code)).scalars())
     unknown = Counter(
@@ -401,8 +440,12 @@ def ingest_universe(
         "inserted": len(inserts),
         "renamed": len(renamed),
         "resectored": len(resectored),
-        "relisted": relisted,
+        "relisted": relisted + len(relisted_traded),
         "delisted": len(delisted),
+        # Absent from this watch but trading in the newest stored sessions:
+        # still listed (TRADED_LISTING_SESSIONS).
+        "kept_listed_traded": len(kept_traded),
+        "relisted_traded": len(relisted_traded),
         # Examples, not the whole list: a first run inserts ~1,150 rows (and
         # "relists" the twenty roster rows 0030 seeded unlisted), and the
         # counts above are what a report needs.
