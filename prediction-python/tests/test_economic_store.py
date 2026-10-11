@@ -111,6 +111,52 @@ def test_ensure_series_is_idempotent(engine):
         assert conn.execute(select(func.count()).select_from(instruments)).scalar() == 1
 
 
+def test_ensure_series_moves_updated_at_only_when_the_definition_changes(engine, monkeypatch):
+    """A daily ingest re-asserts every catalog row. Re-asserting what is
+    already stored must leave ``updated_at`` alone: readers key caches on it
+    (the Go liquidity routes' revision key reads economic_series'), so an
+    unchanged definition that looked changed would rebuild them on every
+    run. A real catalog edit still moves it, in both tables."""
+    import dataclasses
+
+    import app.economic.store as store
+
+    clock = iter(
+        datetime(2026, 10, 11, h, tzinfo=timezone.utc) for h in (1, 2, 3, 4)
+    )
+    monkeypatch.setattr(store, "utcnow", lambda: next(clock))
+    spec = _spec()
+
+    def stamps():
+        with engine.connect() as conn:
+            return (
+                conn.execute(
+                    select(instruments.c.updated_at).where(instruments.c.code == spec.code)
+                ).scalar(),
+                conn.execute(
+                    select(economic_series.c.updated_at).where(
+                        economic_series.c.code == spec.code
+                    )
+                ).scalar(),
+            )
+
+    ensure_series(engine, spec)
+    first = stamps()
+    ensure_series(engine, spec)
+    assert stamps() == first
+
+    ensure_series(engine, dataclasses.replace(spec, notes=spec.notes + " Edited."))
+    moved = stamps()
+    assert moved[0] != first[0] and moved[0].hour == 3
+    assert moved[1] == first[1]  # the series row's own columns did not change
+
+    ensure_series(engine, dataclasses.replace(spec, notes=spec.notes + " Edited.",
+                                              publication_lag_days=60))
+    # Only the series row's definition changed this time, so only it moves.
+    last = stamps()
+    assert last[0] == moved[0] and last[1].hour == 4
+
+
 def test_ensure_series_does_not_re_enable_what_an_operator_disabled(engine, series):
     """The catalog declares what a series is; the operator decides if it runs."""
     spec = _spec()

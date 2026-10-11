@@ -54,7 +54,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Iterator, Optional, Union
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.engine import Connection, Engine
 
 from ..db import (
@@ -266,6 +266,18 @@ _SERIES_MANAGED = (
 )
 
 
+def _differs(table, stmt, names: tuple[str, ...]):
+    """True for a conflicting row whose managed columns differ from the new ones.
+
+    The upsert's WHERE: a re-asserted row that is already what the catalog
+    says is left alone, ``updated_at`` included.  ``updated_at`` then means
+    "the definition last changed", not "an ingest last ran" — readers key
+    caches on it (the Go liquidity revision key reads economic_series'), and
+    a daily ingest that changed nothing must not look like a change.
+    """
+    return or_(*(table.c[name].is_distinct_from(stmt.excluded[name]) for name in names))
+
+
 def ensure_series(bind: Bind, entry: SeriesSpec) -> int:
     """Upsert the ``instruments`` + ``economic_series`` rows; return series id.
 
@@ -317,6 +329,7 @@ def ensure_series(bind: Bind, entry: SeriesSpec) -> int:
                 set_={
                     name: stmt.excluded[name] for name in _INSTRUMENT_MANAGED
                 } | {"updated_at": now},
+                where=_differs(instruments, stmt, _INSTRUMENT_MANAGED),
             )
         )
 
@@ -342,6 +355,7 @@ def ensure_series(bind: Bind, entry: SeriesSpec) -> int:
                 index_elements=[economic_series.c.code],
                 set_={name: stmt.excluded[name] for name in _SERIES_MANAGED}
                 | {"updated_at": now},
+                where=_differs(economic_series, stmt, _SERIES_MANAGED),
             )
         )
 
