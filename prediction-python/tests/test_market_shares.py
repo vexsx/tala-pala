@@ -1702,6 +1702,19 @@ def test_the_copy_is_handed_to_the_service_user_before_any_ingest_reads_it(fetch
     assert "docker compose cp" not in commands[0] and "-u 0" not in commands[0]
 
 
+def test_a_day_of_zero_rows_is_not_a_session(fetch):
+    """TSETMC carries a row of zeros for 621 shares on 2026-02-28, while the
+    market was shut; its day file is empty. Only traded rows make a session."""
+    zero = {"buy_I_Value": 0.0, "buy_N_Value": 0.0}
+    assert not fetch._traded(zero)
+    assert fetch._traded({"buy_I_Value": 0.0, "buy_N_Value": 5.0})
+    assert not fetch._traded({"buy_I_Value": None})
+    rows = {str(i): [date(2026, 2, 25)] + ([date(2026, 2, 28)] if fetch._traded(zero) else [])
+            for i in range(300)}
+    assert fetch.market_sessions(rows, floor=date(2025, 3, 21), before=date(2026, 3, 1),
+                                 min_shares=200) == [date(2026, 2, 25)]
+
+
 def test_a_stored_share_that_traded_recently_is_fetched_even_when_the_watch_omits_it(fetch):
     since = date(2026, 6, 13)
     assert fetch._recently_active({"flow_last_date": "2026-09-29"}, since)

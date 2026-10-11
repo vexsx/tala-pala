@@ -688,6 +688,14 @@ def settled_cutoff(now: datetime) -> date:
     return local.date() + timedelta(days=1) if local.hour >= SETTLED_AFTER_HOUR else local.date()
 
 
+def _traded(row: dict) -> bool:
+    """A money-flow row with any traded value (buying, which equals selling)."""
+    try:
+        return float(row.get("buy_I_Value") or 0) + float(row.get("buy_N_Value") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def market_sessions(
     dates_by_share: Mapping[str, Iterable[date]],
     *,
@@ -697,8 +705,9 @@ def market_sessions(
 ) -> list[date]:
     """The market's session calendar, read off the flow histories. Pure.
 
-    A date is a session when at least ``min_shares`` shares have a flow row
-    on it; only settled sessions (before ``before``) from the floor on count.
+    A date is a session when at least ``min_shares`` shares traded on it (the
+    caller passes each share's dates with traded value, :func:`_traded`); only
+    settled sessions (before ``before``) from the floor on count.
     """
     counts: Counter = Counter()
     for dates in dates_by_share.values():
@@ -865,7 +874,10 @@ def download_share_flows(
             print(f"  NOTICE {code} {symbol} ({ins_id}): TSETMC serves no money-flow rows "
                   "for it — a listing that has not traded yet.")
             continue
-        dates[code] = [_rec_date(r["recDate"]) for r in rows]
+        # The session calendar counts trading, not rows: TSETMC carries a row
+        # of zeros for 621 shares on 2026-02-28, a day the market was shut,
+        # whose day file is empty — read as a session it failed every run.
+        dates[code] = [_rec_date(r["recDate"]) for r in rows if _traded(r)]
         trimmed = trim_client_types(
             rows,
             last_stored=date.fromisoformat(held["flow_last_date"]) if stored_count else None,
@@ -905,7 +917,7 @@ def download_day_files(sessions: list[date], days_dir: Path, failures: Failures)
             if not payload["closingPriceDailyHistoryWithInstDetails"]:
                 raise FetchError(
                     f"{stamp}: TSETMC's day file is empty for a date on which at least "
-                    f"{SESSION_MIN_SHARES} shares have money flow")
+                    f"{SESSION_MIN_SHARES} shares traded by their money flow")
         except FetchError as exc:
             failures.add("session", session.isoformat(), str(exc))
             continue
