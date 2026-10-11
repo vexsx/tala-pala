@@ -579,7 +579,9 @@ monthly, `calendar='jalali'`, `quality_tier='official'`. Body: exactly one of
 oldest first, available from the moment it was fetched), `{"backfill_from": "1399-04"}` (the first
 population, run once by hand; editions older than the newest stored one are skipped without a
 request, so it resumes), or `{"path": "...", "filename": "", "url": "", "allow_older": false}` (a
-workbook already in the container). `dry_run` performs everything inside a rolled-back transaction.
+workbook already in the container). `dry_run` performs everything inside a rolled-back transaction —
+in a website mode ONE transaction across every edition, so each is compared with the ones before it
+and the report's revisions, counts and availability are the ones the real run then stores.
 Unlike SCI this one fetches: `www.cbi.ir` answers the production host (slowly — 90 s per request,
 four attempts with backoff). The walk is section page → year list → month page → «فرمت Excel», and a
 response is accepted only as an OLE2 file (`d0cf11e0`); an HTML page there is a challenge or an
@@ -595,9 +597,13 @@ cannot read refuses the workbook); a restatement under the other method is a new
 equal value. The backfill stamps `available_at` = last-saved + 1 day, never earlier than the newest
 availability already stored from an edition, with `available_at_approx = TRUE`. An edition older than
 the newest stored one → `409 stale_edition`; `fetch_latest` before any edition is stored → `409
-backfill_required`; a website run that could not get a workbook or refused one stops there (newer
-editions are not ingested past it) and answers `502` (`upstream_failed` / `document_refused`) with
-the full report; a posted workbook refused → `400`. With `data_providers.enabled = FALSE` for `cbi`
+backfill_required`; a call while another CBI ingest is running (the half-hour backfill and the daily
+tick must not interleave) → `409 run_in_progress`, nothing touched; an edition that would restate a
+base-money month the store holds as `revised` as `old` (CBI's footnote dropped or reworded) is refused
+whole unless `allow_older`; a year's month list with an item that is not a month name fails the run
+(`502 upstream_failed`) rather than being skipped; a website run that could not get a workbook or
+refused one stops there (newer editions are not ingested past it) and answers `502`
+(`upstream_failed` / `document_refused`) with the full report; a posted workbook refused → `400`. With `data_providers.enabled = FALSE` for `cbi`
 the website modes answer `200` `status: "skipped"` without a request.
 
 **Internal:** `POST /internal/economic/cbi-history` body `{"path":"...","dry_run":false}` — the CBI
@@ -606,8 +612,10 @@ time-series viewer's quarter-end values of the same four series (1352 on), fetch
 quarter-ends no Excel edition can carry are written (before Esfand 1397, and Khordad 1398), with
 `available_at` = ingest time and `published_at` NULL, base money `method='old'`; overlapping months
 are compared with the stored editions and M2/M1/quasi-money must agree to the last printed digit or
-the whole payload is refused (`400`). Every row must be quarterly and in the viewer's
-thousand-billion-rial unit id. Archived with `edition_label = 'tsdview'`. Idempotent; no cron.
+the whole payload is refused (`400`); a series with no stored month to compare is named in
+`overlap_unverified` (posted before the backfill, the check compares nothing — re-post it after).
+Every row must be quarterly and in the viewer's thousand-billion-rial unit id. Archived with
+`edition_label = 'tsdview'`. Idempotent; no cron.
 
 **Migration `0025`** re-enables `tgju`, disabled by `0023` after 2,047 consecutive failures. Re-tested
 from the production host on 2026-09-08: `call2/call3/call4.tgju.org` all `200` (~179 KB) and

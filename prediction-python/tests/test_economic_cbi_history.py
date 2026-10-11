@@ -276,13 +276,23 @@ def test_the_history_first_does_not_disturb_the_backfill_after_it(engine, tmp_pa
     """The two sources never write the same month, so the order they run in
     does not matter: a backfill after the history still reconstructs its
     availability from the workbook, not from the history's ingest time."""
-    ingest_cbi_history(engine, FIXTURE, now=LATER)
+    first = ingest_cbi_history(engine, FIXTURE, now=LATER)
     path = tmp_path / "pol1400,12.xls"
     with gzip.open(os.path.join(FIXTURES_DIR, "cbi_1400-12_pol1400-12.xls.gz")) as handle:
         path.write_bytes(handle.read())
     report = ingest_edition_file(engine, str(path), backfill=True, now=LATER)
     assert report["available_at"] == "2022-08-23T07:55:46+00:00"
     assert report["available_at_approx"] is True and report["inserted"] == 12
+
+    # But posted first, the history was checked against nothing, and its
+    # report says so instead of showing an empty disagreement list as
+    # agreement. Posting it again after the edition runs the check.
+    assert first["overlap_unverified"] == ["CBI_LIQUIDITY", "CBI_MONEY_M1", "CBI_QUASI_MONEY"]
+    assert "NOT checked against a printed edition" in first["overlap_note"]
+    again = ingest_cbi_history(engine, FIXTURE, now=LATER)
+    assert again["overlap_unverified"] == [] and "overlap_note" not in again
+    assert again["overlap_with_editions"]["CBI_LIQUIDITY"]["agreed"] == 1
+    assert again["inserted"] == 0
 
 
 def test_a_dry_run_writes_nothing(engine):

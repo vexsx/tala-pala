@@ -34,6 +34,14 @@ Base money is compared and reported but not held to it: the viewer carries
 the redefined method from Esfand 1399 on (its 4,506.7 there is the revised
 figure), where the editions of 1399-1401 print the old one (4,588.9).
 
+The check can only be as good as what is stored. Posted before any edition
+(the order docs/deployment.md avoids, but nothing forbids), it compares
+nothing — and then the unit id and the category mapping are all that stand
+behind the payload. The report says so in ``overlap_unverified``, naming each
+strict series with no stored month to compare, rather than presenting an
+empty disagreement list as agreement; posting the same payload again after
+the backfill runs the comparison and writes nothing new.
+
 THE PAYLOAD'S OWN GUARDS
 ------------------------
 Every row must carry the quarterly sub-frequency id and the
@@ -319,6 +327,9 @@ def ingest_cbi_history(
         written[code] = [p for p in history if not excel_can_carry(p.year, p.month)]
         overlap[code] = [p for p in history if excel_can_carry(p.year, p.month)]
     overlap_report = _check_overlap(engine, overlap, started)
+    unverified = [
+        code for code in STRICT_OVERLAP_CODES if overlap_report[code]["compared"] == 0
+    ]
 
     document_url = url or TSDVIEW_URL
     report: dict[str, Any] = {
@@ -331,9 +342,18 @@ def ingest_cbi_history(
         "dry_run": bool(dry_run),
         "shape": shape,
         "overlap_with_editions": overlap_report,
+        "overlap_unverified": unverified,
         "series": {},
         "inserted": 0, "unchanged": 0, "revised": 0, "raced": 0,
     }
+    if unverified:
+        report["overlap_note"] = (
+            f"no stored Excel edition shares a quarter with the viewer for "
+            f"{', '.join(unverified)}, so its values were NOT checked against a "
+            "printed edition: only the unit id and the category mapping stand behind "
+            "them. Run the backfill (docs/deployment.md) and post this payload again "
+            "to check it; that writes nothing new."
+        )
     specs = {spec.code: spec for spec in cbi_specs()}
     conn = engine.connect()
     transaction = conn.begin()

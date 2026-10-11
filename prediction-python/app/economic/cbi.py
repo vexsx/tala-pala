@@ -66,7 +66,14 @@ What a stored row claims
   start the footnote states («از اسفند 1399 به بعد» / «از سال 1400 به بعد»),
   ``'old'`` otherwise.  A footnote that mentions MFSMCG without a start this
   can read refuses the workbook: a method that cannot be stated is not
-  guessed.  ``None`` for the three other series.
+  guessed.  ``None`` for the three other series.  An edition that would
+  restate a month the store holds as ``'revised'`` as ``'old'`` is refused
+  too, unless its workbook was saved before the one that printed the revised
+  figure (a file CBI never re-saved after the redefinition: what it printed
+  then) or it is replayed deliberately with ``allow_older``.  CBI does not
+  un-revise a month, so a later workbook doing so is a footnote this parser
+  can no longer find, and storing it would put a method break where there is
+  none.
 * ``published_at``: the workbook's own OLE "last saved" time — CBI states no
   publication date, and a file cannot have been published before it was saved
   (140412.xls: 2026-06-21 05:41:31 UTC, the day CBI's news item announced it).
@@ -92,6 +99,7 @@ import os
 import re
 import struct
 import tempfile
+import threading
 import time as time_module
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -218,6 +226,19 @@ class CbiBackfillRequiredError(ValueError):
 
 class CbiFetchError(RuntimeError):
     """www.cbi.ir did not give us the document: network, markup or content."""
+
+
+class CbiRunInProgressError(RuntimeError):
+    """Another CBI ingest is running in this service right now.
+
+    Two runs must not interleave. The one-off backfill takes about half an
+    hour and is started by hand; if the scheduled run (or a posted workbook)
+    lands in the middle of it, that run reads the backfill's progress as "the
+    newest stored edition", ingests every later edition stamped with TODAY's
+    availability instead of the reconstructed one, and the backfill's next
+    edition is then refused as older than stored. So the second caller is told
+    to come back, and nothing is written.
+    """
 
 
 # --- text --------------------------------------------------------------------
@@ -967,7 +988,7 @@ def _empty_counts() -> dict[str, Any]:
 
 
 def ingest_edition_file(
-    engine: Engine,
+    bind: Union[Engine, Connection],
     path: str,
     *,
     url: str = "",
@@ -994,6 +1015,13 @@ def ingest_edition_file(
     file is available from the moment this call had it.  ``dry_run`` performs
     every step inside a transaction that is rolled back, so the report's
     counts are exactly what a real run would write.
+
+    ``bind`` is normally the engine, and the edition gets a transaction of its
+    own.  A :class:`~sqlalchemy.engine.Connection` joins the CALLER's open
+    transaction instead and neither commits nor rolls back: that is how a
+    website dry run ingests every edition into one transaction it rolls back at
+    the end, so the second edition is compared with the first exactly as a real
+    run would compare it (:func:`ingest_cbi_monetary`).
     """
     started = ensure_utc(now) or utcnow()
     name = filename or os.path.basename(path)
@@ -1004,17 +1032,6 @@ def ingest_edition_file(
             f"{name}: the CBI website lists this file as the {expected.label} edition "
             f"but the workbook's own title says {edition.label}; refusing rather than "
             "filing it under either"
-        )
-
-    newest = newest_stored_edition(engine)
-    if newest is not None and edition < newest and not allow_older:
-        raise CbiStaleEditionError(
-            f"{name!r} is the {edition.label} edition, but this deployment already "
-            f"holds the {newest.label} edition. Ingesting it would write older values "
-            "as the newest vintage and they would become the answer every reader gets "
-            "-- available_at cannot prevent that, because it records when THIS system "
-            "saw the file, not which edition it is. Pass allow_older=True only to "
-            "replay deliberately."
         )
 
     published_at = document.saved_at
@@ -1044,110 +1061,218 @@ def ingest_edition_file(
     report["url"] = document_url
     report["url_reconstructed"] = not url
 
-    specs = {spec.code: spec for spec in cbi_specs()}
-    conn = engine.connect()
-    transaction = conn.begin()
-    try:
-        if backfill:
-            available_at, approx = backfill_available_at(
-                document.saved_at, newest_edition_available_at(conn), started
-            )
-        else:
-            available_at, approx = started, False
-        report["available_at"] = available_at.isoformat()
-        report["available_at_approx"] = approx
-        if backfill and not approx:
-            report["available_at_note"] = (
-                "observed, not reconstructed: the workbook carries no last-saved time"
-                if document.saved_at is None
-                else "observed: the reconstruction would not be earlier than now"
-            )
-
-        document_id, document_inserted = record_source_document(
-            conn,
-            provider_code=CBI_PROVIDER,
-            url=document_url,
-            title=(
-                "Central Bank of Iran, Selected Economic Indicators (monetary), "
-                f"{edition.label} edition ({name})"
-            ),
-            media_type=MEDIA_TYPE_XLS,
-            byte_size=document.byte_size,
-            content_sha256=document.sha256,
-            fetched_at=started,
-            edition_label=edition.label,
-            document_saved_at=document.saved_at,
-        )
-        report["document"] = {
-            "id": document_id,
-            "status": "inserted" if document_inserted else "existing",
-        }
-
-        for code, points in sorted(parsed.observations.items()):
-            series_id = ensure_series(conn, specs[code])
-            counts = _empty_counts() | {"observations": len(points), "revisions": []}
-            for point in points:
-                start, end = jalali_month_span(point.year, point.month)
-                # A stock CBI prints is always for a month that has ended; the
-                # check exists so that one that had not would be stored flagged
-                # rather than scored.
-                is_projection = available_at.date() <= end
-                counts["projections"] += int(is_projection)
-                written = record_observation(
-                    conn,
-                    series_id,
-                    ref_period_start=start,
-                    ref_period_end=end,
-                    ref_period_label=point.ref_period_label,
-                    value=point.value,
-                    available_at=available_at,
-                    published_at=published_at,
-                    is_projection=is_projection,
-                    source_document_id=document_id,
-                    collected_at=started,
-                    method=point.method,
-                    available_at_approx=approx,
-                )
-                counts[written.status] += 1
-                if written.status == STATUS_REVISED:
-                    counts["revisions"].append({
-                        "period": point.ref_period_label,
-                        "from": written.previous_value,
-                        "to": str(point.value),
-                        "from_method": written.previous_method,
-                        "to_method": point.method,
-                        "vintage": written.vintage,
-                    })
-                    log.info(
-                        "CBI revision: %s %s %s -> %s (vintage %d)",
-                        code, point.ref_period_label, written.previous_value,
-                        point.value, written.vintage,
-                    )
-            counts["periods"] = [point.ref_period_label for point in points]
-            counts["values"] = [str(point.value) for point in points]
-            if code == BASE_MONEY_CODE:
-                counts["methods"] = [point.method for point in points]
-            report["series"][code] = counts
-            for key in (STATUS_INSERTED, STATUS_UNCHANGED, STATUS_REVISED, STATUS_RACED):
-                report[key] += counts[key]
-            report["projections"] += counts["projections"]
-        if dry_run:
+    write = dict(
+        name=name, parsed=parsed, document=document, published_at=published_at,
+        document_url=document_url, backfill=backfill, allow_older=allow_older,
+        started=started, report=report,
+    )
+    if isinstance(bind, Connection):
+        _write_edition(bind, **write)
+    else:
+        conn = bind.connect()
+        transaction = conn.begin()
+        try:
+            _write_edition(conn, **write)
+            if dry_run:
+                transaction.rollback()
+            else:
+                transaction.commit()
+        except BaseException:
             transaction.rollback()
-        else:
-            transaction.commit()
-    except BaseException:
-        transaction.rollback()
-        raise
-    finally:
-        conn.close()
+            raise
+        finally:
+            conn.close()
 
     log.info(
         "CBI %s edition %s: document %s (%s), %d inserted, %d unchanged, %d revised%s",
         "dry run of" if dry_run else "ingest of", edition.label, report["document"]["id"],
         report["document"]["status"], report["inserted"], report["unchanged"],
-        report["revised"], "" if not approx else " (availability reconstructed)",
+        report["revised"],
+        " (availability reconstructed)" if report["available_at_approx"] else "",
     )
     return report
+
+
+def _print_saved_at(
+    conn: Connection, series_id: int, ref_period_start, vintage: Optional[int]
+) -> Optional[datetime]:
+    """The last-saved time of the workbook behind one stored print, if known."""
+    if vintage is None:
+        return None
+    value = conn.execute(
+        select(source_documents.c.document_saved_at)
+        .select_from(
+            economic_observations.join(
+                source_documents,
+                economic_observations.c.source_document_id == source_documents.c.id,
+            )
+        )
+        .where(
+            and_(
+                economic_observations.c.series_id == series_id,
+                economic_observations.c.ref_period_start == ref_period_start,
+                economic_observations.c.vintage == vintage,
+            )
+        )
+    ).scalar()
+    return ensure_utc(value)
+
+
+def _saved_before(incoming: Optional[datetime], stored: Optional[datetime]) -> bool:
+    """True when the incoming workbook was saved before the one behind a stored print.
+
+    Such a workbook predates the print it would restate, so an old-method
+    figure in it is simply what CBI printed THEN — an edition whose file CBI
+    never re-saved after the redefinition (it replaced some in place, not
+    necessarily all) — and is stored as the vintage it is.  Unknown on either
+    side is not "before".
+    """
+    return incoming is not None and stored is not None and ensure_utc(incoming) < stored
+
+
+def _write_edition(
+    conn: Connection,
+    *,
+    name: str,
+    parsed: ParsedEdition,
+    document: WorkbookFile,
+    published_at: Optional[datetime],
+    document_url: str,
+    backfill: bool,
+    allow_older: bool,
+    started: datetime,
+    report: dict[str, Any],
+) -> None:
+    """The write half of :func:`ingest_edition_file`, inside ``conn``'s transaction.
+
+    Everything it decides from the store — the newest edition, the backfill's
+    availability floor, each period's current print — is read through the
+    same connection it writes through, so an edition written earlier in the
+    same transaction counts exactly as a committed one does.
+    """
+    edition = parsed.edition
+    newest = newest_stored_edition(conn)
+    if newest is not None and edition < newest and not allow_older:
+        raise CbiStaleEditionError(
+            f"{name!r} is the {edition.label} edition, but this deployment already "
+            f"holds the {newest.label} edition. Ingesting it would write older values "
+            "as the newest vintage and they would become the answer every reader gets "
+            "-- available_at cannot prevent that, because it records when THIS system "
+            "saw the file, not which edition it is. Pass allow_older=True only to "
+            "replay deliberately."
+        )
+
+    if backfill:
+        available_at, approx = backfill_available_at(
+            document.saved_at, newest_edition_available_at(conn), started
+        )
+    else:
+        available_at, approx = started, False
+    report["available_at"] = available_at.isoformat()
+    report["available_at_approx"] = approx
+    if backfill and not approx:
+        report["available_at_note"] = (
+            "observed, not reconstructed: the workbook carries no last-saved time"
+            if document.saved_at is None
+            else "observed: the reconstruction would not be earlier than now"
+        )
+
+    document_id, document_inserted = record_source_document(
+        conn,
+        provider_code=CBI_PROVIDER,
+        url=document_url,
+        title=(
+            "Central Bank of Iran, Selected Economic Indicators (monetary), "
+            f"{edition.label} edition ({name})"
+        ),
+        media_type=MEDIA_TYPE_XLS,
+        byte_size=document.byte_size,
+        content_sha256=document.sha256,
+        fetched_at=started,
+        edition_label=edition.label,
+        document_saved_at=document.saved_at,
+    )
+    report["document"] = {
+        "id": document_id,
+        "status": "inserted" if document_inserted else "existing",
+    }
+
+    specs = {spec.code: spec for spec in cbi_specs()}
+    for code, points in sorted(parsed.observations.items()):
+        series_id = ensure_series(conn, specs[code])
+        counts = _empty_counts() | {"observations": len(points), "revisions": []}
+        for point in points:
+            start, end = jalali_month_span(point.year, point.month)
+            # A stock CBI prints is always for a month that has ended; the
+            # check exists so that one that had not would be stored flagged
+            # rather than scored.
+            is_projection = available_at.date() <= end
+            counts["projections"] += int(is_projection)
+            written = record_observation(
+                conn,
+                series_id,
+                ref_period_start=start,
+                ref_period_end=end,
+                ref_period_label=point.ref_period_label,
+                value=point.value,
+                available_at=available_at,
+                published_at=published_at,
+                is_projection=is_projection,
+                source_document_id=document_id,
+                collected_at=started,
+                method=point.method,
+                available_at_approx=approx,
+            )
+            if (
+                written.status == STATUS_REVISED
+                and written.previous_method == METHOD_REVISED
+                and point.method == METHOD_OLD
+                and not allow_older
+                and not _saved_before(
+                    document.saved_at,
+                    _print_saved_at(conn, series_id, start, written.previous_vintage),
+                )
+            ):
+                # The caller's transaction is rolled back with this, so the
+                # rows written before it in this edition go too.
+                footnote = (
+                    "starts the redefinition later" if parsed.revision_start
+                    else "does not mention MFSMCG"
+                )
+                raise CbiParseError(
+                    f"{name}: the {edition.label} edition reads base money at "
+                    f"{point.ref_period_label} as the OLD method (its footnote "
+                    f"{footnote}), but the store already holds that month on CBI's "
+                    "REVISED method, from a workbook saved no later than this one. "
+                    "CBI does not un-revise a month: it has most likely dropped or "
+                    "reworded the footnote this parser reads the method from, and "
+                    "storing it would label revised figures 'old' and break growth "
+                    "where there is no break. Refusing the workbook; a deliberate "
+                    "replay passes allow_older=True"
+                )
+            counts[written.status] += 1
+            if written.status == STATUS_REVISED:
+                counts["revisions"].append({
+                    "period": point.ref_period_label,
+                    "from": written.previous_value,
+                    "to": str(point.value),
+                    "from_method": written.previous_method,
+                    "to_method": point.method,
+                    "vintage": written.vintage,
+                })
+                log.info(
+                    "CBI revision: %s %s %s -> %s (vintage %d)",
+                    code, point.ref_period_label, written.previous_value,
+                    point.value, written.vintage,
+                )
+        counts["periods"] = [point.ref_period_label for point in points]
+        counts["values"] = [str(point.value) for point in points]
+        if code == BASE_MONEY_CODE:
+            counts["methods"] = [point.method for point in points]
+        report["series"][code] = counts
+        for key in (STATUS_INSERTED, STATUS_UNCHANGED, STATUS_REVISED, STATUS_RACED):
+            report[key] += counts[key]
+        report["projections"] += counts["projections"]
 
 
 # --- the website --------------------------------------------------------------
@@ -1229,7 +1354,17 @@ def parse_month_list(page: str, year: int, allow_empty: bool = False) -> list[Mo
 
     A month whose link is a ``/page/`` is a document linked directly — the PDF
     of the years before Tir 1399 — and is reported as such; a ``/simplelist/``
-    is a month page carrying the Excel link.  Anything else is ignored.
+    is a month page carrying the Excel link.
+
+    Every item of the list must be exactly that: a Jalali month name linking
+    to a same-site list or page.  Anything else REFUSES the page rather than
+    being skipped (an off-site link is still never fetched).  In every year
+    list CBI has published the items are the twelve month names and nothing
+    else, so an item that is not one means CBI changed how it labels them —
+    «فروردین ۱۴۰۵», say — and skipping it would make the scheduled run report
+    success while it silently stopped finding new editions, and make a
+    backfill pass over an edition it can then never ingest (older than
+    stored).
 
     A page with no month list at all is a failure — unless ``allow_empty``,
     which the walk passes for the section page only: a new Jalali year can
@@ -1243,10 +1378,21 @@ def parse_month_list(page: str, year: int, allow_empty: bool = False) -> list[Mo
         raise CbiFetchError(f"the {year} month list (ul.simplelist) is not on the page")
     months: dict[int, MonthLink] = {}
     for href, label in _ITEM_RE.findall(block.group(1)):
-        month = month_number(_text(label))
+        text = _text(label)
+        month = month_number(text)
         url = _absolute(href)
-        if month is None or url is None:
-            continue
+        if month is None:
+            raise CbiFetchError(
+                f"the {year} month list has an item «{text}» that is not a Jalali month "
+                "name; CBI changed how it labels the months, and skipping it could "
+                "skip an edition for good"
+            )
+        if url is None:
+            raise CbiFetchError(
+                f"the {year} month list links {JALALI_MONTHS[month - 1]} to {href!r}, "
+                "which is not a same-site /simplelist/ or /page/ link; it is not "
+                "followed, and the month is not skipped silently either"
+            )
         if month in months:
             raise CbiFetchError(f"the {year} list links {JALALI_MONTHS[month - 1]} twice")
         months[month] = MonthLink(
@@ -1381,7 +1527,7 @@ def _listed_editions(
 
 
 def _run(
-    engine: Engine,
+    bind: Union[Engine, Connection],
     site: CbiSite,
     links: Sequence[MonthLink],
     *,
@@ -1396,6 +1542,10 @@ def _run(
     stored edition stays before it and the next run retries it; carrying on to
     a NEWER edition would make the failed one "older than an edition already
     stored" and lock it out for good.
+
+    ``bind`` is the engine for a real run (each edition commits on its own, so
+    a failure keeps what was stored before it) and, for a dry run, the one
+    connection whose transaction :func:`ingest_cbi_monetary` rolls back.
     """
     with tempfile.TemporaryDirectory(prefix="cbi-") as workdir:
         for link in links:
@@ -1408,7 +1558,7 @@ def _run(
                     handle.write(download.content)
                 entry.update(
                     ingest_edition_file(
-                        engine,
+                        bind,
                         path,
                         url=download.url,
                         filename=download.filename,
@@ -1427,6 +1577,11 @@ def _run(
                 return
             for key in ("inserted", "unchanged", "revised", "raced"):
                 report[key] += entry.get(key, 0)
+
+
+# One CBI ingest at a time in this service (it runs as a single uvicorn
+# process). See CbiRunInProgressError for what an interleaving does.
+_RUN_LOCK = threading.Lock()
 
 
 def ingest_cbi_monetary(
@@ -1465,12 +1620,56 @@ def ingest_cbi_monetary(
 
     The website modes stop at the first edition that fails and report it under
     ``failed`` — see :func:`_run`.
+
+    ``dry_run`` in a website mode ingests every edition into ONE transaction
+    and rolls it back at the end, so each edition is compared with the ones
+    before it in the same run — its revisions, its unchanged months and the
+    backfill's monotone availability are reported exactly as a real run would
+    store them.  (Rolled back per edition instead, every edition would be
+    measured against the store as it was before the run, and a dry run of the
+    backfill would show none of the base-money restatements it exists to
+    preview.)  The transaction stays open while the editions download.
+
+    Only one run at a time: a call made while another is in progress raises
+    :class:`CbiRunInProgressError` and touches nothing.
     """
     modes = [bool(fetch_latest), backfill_from is not None, path is not None]
     if sum(modes) != 1:
         raise ValueError(
             "exactly one of fetch_latest, backfill_from or path must be given"
         )
+    if not _RUN_LOCK.acquire(blocking=False):
+        raise CbiRunInProgressError(
+            "another CBI ingest is running in this service (the one-off backfill takes "
+            "about half an hour). Interleaving with it would stamp the editions after "
+            "its progress point with today's availability and lock the backfill out of "
+            "them, so nothing was done; the next scheduled run picks up from wherever "
+            "it finished."
+        )
+    try:
+        return _ingest_cbi_monetary(
+            engine, fetch_latest=fetch_latest, backfill_from=backfill_from, path=path,
+            filename=filename, url=url, allow_older=allow_older, dry_run=dry_run,
+            now=now, site=site,
+        )
+    finally:
+        _RUN_LOCK.release()
+
+
+def _ingest_cbi_monetary(
+    engine: Engine,
+    *,
+    fetch_latest: bool,
+    backfill_from: Optional[str],
+    path: Optional[str],
+    filename: str,
+    url: str,
+    allow_older: bool,
+    dry_run: bool,
+    now: Optional[datetime],
+    site: Optional[CbiSite],
+) -> dict[str, Any]:
+    """:func:`ingest_cbi_monetary`'s body, under its lock."""
     started = ensure_utc(now) or utcnow()
     clock = time_module.monotonic()
 
@@ -1546,8 +1745,17 @@ def ingest_cbi_monetary(
             ),
         }
     links = _listed_editions(site, since, report)
-    _run(engine, site, links, backfill=not fetch_latest, dry_run=dry_run,
-         report=report, now=now)
+    if dry_run:
+        with engine.connect() as conn:
+            transaction = conn.begin()
+            try:
+                _run(conn, site, links, backfill=not fetch_latest, dry_run=True,
+                     report=report, now=now)
+            finally:
+                transaction.rollback()
+    else:
+        _run(engine, site, links, backfill=not fetch_latest, dry_run=False,
+             report=report, now=now)
     report["requests"] = site.requests
     report["seconds"] = round(time_module.monotonic() - clock, 1)
     report["finished_at"] = utcnow().isoformat()

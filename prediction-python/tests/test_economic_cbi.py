@@ -46,7 +46,7 @@ from app.db import (
     instruments,
     source_documents,
 )
-from app.economic import jalali, sci
+from app.economic import cbi, jalali, sci
 from app.economic.catalog import (
     BASE_MONEY_CODE,
     CBI_UNIT,
@@ -824,6 +824,64 @@ def test_a_method_restated_alone_is_a_new_vintage(engine):
                                   method=METHOD_REVISED, **period)
     assert (first.status, same.status, restated.status) == ("inserted", "unchanged", "revised")
     assert restated.vintage == 2 and restated.previous_method == METHOD_OLD
+
+
+def _without_footnote(edition: str, saved_at=None):
+    """The real edition's sheet with CBI's MFSMCG footnote blanked, as a parsed
+    workbook with bytes of its own: what a 1405 edition would look like if CBI
+    stopped printing the note this parser reads the method from."""
+    grid = _rows(edition)
+    r, c = _cell(grid, "MFSMCG")
+    grid[r][c] = ""
+    return parse_sheet(grid), cbi.WorkbookFile(sha256="ab" * 32, byte_size=1, saved_at=saved_at)
+
+
+def test_a_newer_edition_cannot_un_revise_a_stored_month(engine, tmp_path, monkeypatch):
+    """Mehr 1403 stores Esfand 1402's base money on the revised method. The
+    Esfand 1404 edition stripped of its footnote reads the same 10,921.3 as
+    'old': before, that was written as vintage 2 with method 'old', labelling
+    a revised figure old and putting a method break where there is none. It is
+    refused whole, and nothing of it is written."""
+    ingest_edition_file(engine, _file(tmp_path, "1403-07"), now=NOW)
+    before = _count(engine, economic_observations)
+    stripped = _without_footnote("1404-12")
+    # The lambda reads ``stripped`` when called, so reassigning it below swaps
+    # the workbook the next ingest sees.
+    monkeypatch.setattr(cbi, "read_workbook", lambda path: stripped)
+    with pytest.raises(CbiParseError, match="reads base money at 1402-12 as the OLD method"):
+        ingest_edition_file(engine, "140412.xls", now=LATER)
+    assert _count(engine, economic_observations) == before
+    assert _count(engine, source_documents) == 1
+    assert newest_stored_edition(engine) == Edition(1403, 7)
+    esfand_1402 = vintages_for_period(engine, BASE_MONEY_CODE, date(2024, 2, 20))
+    assert [(h["vintage"], h["method"]) for h in esfand_1402] == [(1, METHOD_REVISED)]
+
+    # Saved AFTER the workbook behind the revised print (Mehr 1403's, 2024-12-07):
+    # refused just the same.
+    stripped = _without_footnote("1404-12", saved_at=datetime(2025, 1, 1, tzinfo=timezone.utc))
+    with pytest.raises(CbiParseError, match="saved no later than this one"):
+        ingest_edition_file(engine, "140412.xls", now=LATER)
+
+    # A deliberate replay is the operator's call, as with an older edition.
+    report = ingest_edition_file(engine, "140412.xls", allow_older=True, now=LATER)
+    assert report["series"][BASE_MONEY_CODE]["revisions"][0]["to_method"] == METHOD_OLD
+
+
+def test_a_workbook_saved_before_the_revision_keeps_the_method_it_printed(
+    engine, tmp_path, monkeypatch
+):
+    """CBI replaced some editions in place after the redefinition (1402-12 and
+    1403/01-06 all carry 2024-12-30), not necessarily all. A newer edition
+    whose file was saved BEFORE the workbook that printed a month as revised
+    predates the redefinition: its old-method figure is what CBI printed then,
+    and it is stored as the vintage it is, labelled old."""
+    ingest_edition_file(engine, _file(tmp_path, "1403-07"), now=NOW)       # saved 2024-12-07
+    early = datetime(2024, 11, 1, tzinfo=timezone.utc)
+    monkeypatch.setattr(cbi, "read_workbook", lambda path: _without_footnote("1404-12", early))
+    report = ingest_edition_file(engine, "140412.xls", now=LATER)
+    revision = report["series"][BASE_MONEY_CODE]["revisions"][0]
+    assert (revision["period"], revision["from_method"], revision["to_method"]) == \
+        ("1402-12", METHOD_REVISED, METHOD_OLD)
 
 
 def test_point_in_time_serves_the_print_that_stood_at_the_cutoff(engine, tmp_path):

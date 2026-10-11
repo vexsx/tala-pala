@@ -25,6 +25,7 @@ from app.economic import cbi
 from app.economic.cbi import (
     CbiBackfillRequiredError,
     CbiFetchError,
+    CbiRunInProgressError,
     CbiSite,
     Edition,
     MonthLink,
@@ -150,10 +151,48 @@ def test_only_same_site_list_and_page_links_are_ever_followed():
     )
     with pytest.raises(CbiFetchError, match="0 «فرمت Excel» links"):
         parse_excel_link(page)
-    assert parse_month_list(
-        "<ul class='simplelist'><li><a href='//cdn.example/simplelist/1.aspx'>مهر</a></li></ul>",
-        1404,
-    ) == []
+    # Not followed -- and not skipped in silence either: a month that cannot be
+    # followed is a month the run would never ingest.
+    with pytest.raises(CbiFetchError, match="links مهر to '//cdn.example/simplelist/1.aspx'"):
+        parse_month_list(
+            "<ul class='simplelist'><li><a href='//cdn.example/simplelist/1.aspx'>مهر</a></li></ul>",
+            1404,
+        )
+
+
+def test_a_month_list_item_that_is_not_a_month_name_refuses_the_page():
+    """Every year list CBI has published is the twelve month names and nothing
+    else. Were the labels to change («فروردین ۱۴۰۵»), skipping what does not
+    parse would leave the scheduled run reporting success with no editions
+    found, forever; a backfill would pass over the edition and then refuse it
+    as older than stored."""
+    page = load_fixture_text("cbi_section_2692.html").replace(
+        "\t\t\tاسفند\n", "\t\t\tاسفند ۱۴۰۴\n"
+    )
+    assert "اسفند ۱۴۰۴" in page
+    with pytest.raises(CbiFetchError, match="«اسفند ۱۴۰۴» that is not a Jalali month name"):
+        parse_month_list(page, 1404)
+    # Even for the newest year, whose list may legitimately be empty.
+    with pytest.raises(CbiFetchError, match="not a Jalali month name"):
+        parse_month_list(page, 1404, allow_empty=True)
+
+
+def test_relabelled_months_fail_the_scheduled_run_instead_of_finding_nothing(
+    client, engine, tmp_path, mocked, quiet_site
+):
+    path = tmp_path / "140412.xls"
+    path.write_bytes(_xls(XLS_140412))
+    ingest_edition_file(engine, str(path), now=NOW)
+    relabelled = load_fixture_text("cbi_section_2692.html")
+    from app.economic.jalali import JALALI_MONTHS
+
+    for name in JALALI_MONTHS:
+        relabelled = relabelled.replace(f"\t\t\t{name}\n", f"\t\t\t{name} 1404\n")
+    mocked.get(SECTION).mock(return_value=httpx.Response(200, text=relabelled, headers=HTML))
+    resp = client.post("/internal/economic/cbi-monetary", json={"fetch_latest": True}, headers=AUTH)
+    assert resp.status_code == 502
+    assert resp.json()["error"]["code"] == "upstream_failed"
+    assert "not a Jalali month name" in resp.json()["error"]["message"]
 
 
 def test_a_page_without_the_markup_is_a_fetch_failure_not_an_empty_answer():
@@ -356,6 +395,96 @@ def test_a_backfill_from_before_the_excel_era_starts_at_tir_1399(engine, mocked)
     assert report["failed"]["kind"] == "CbiFetchError"
     # Farvardin-Khordad 1399 are PDFs and were never requested.
     assert report["pdf_only"] == []
+
+
+def _serve_backfill_1400_12_to_1403_07(router):
+    """A website holding three editions in order: Esfand 1400 (base money on
+    the old method), Esfand 1402 (which restates Esfand 1400 on the revised
+    one) and Mehr 1403 (saved 2024-12-07, BEFORE the Esfand 1402 re-save, so a
+    backfill clamps its availability). 1404's list is empty."""
+    section = load_fixture_text("cbi_section_2692.html")
+    head, _, _ = section.partition('<ul class="simplelist">')
+    router.get(SECTION).mock(return_value=httpx.Response(200, text=head, headers=HTML))
+    for year_id, months in ((21999, {12: 50012}), (23808, {}), (27853, {12: 50212}),
+                            (30380, {7: 50307})):
+        router.get(f"https://www.cbi.ir/simplelist/{year_id}.aspx").mock(
+            return_value=httpx.Response(200, text=_year_page(months), headers=HTML))
+    for month_id, fixture, name in (
+        (50012, "cbi_1400-12_pol1400-12.xls.gz", "pol1400,12.xls"),
+        (50212, "cbi_1402-12_pol1402-12.xls.gz", "pol1402,12.xls"),
+        (50307, XLS_1403_07, "pol1403,7.xls"),
+    ):
+        router.get(f"https://www.cbi.ir/simplelist/{month_id}.aspx").mock(
+            return_value=httpx.Response(200, text=_month_page(month_id + 1), headers=HTML))
+        router.get(f"https://www.cbi.ir/page/{month_id + 1}.aspx").mock(
+            return_value=_workbook_response(_xls(fixture), name))
+
+
+def test_a_dry_run_backfill_reports_what_the_real_backfill_then_stores(engine):
+    """Each edition in a dry run is measured against the editions before it in
+    the same run, as the real run measures it. Rolled back edition by edition,
+    the dry run showed the Esfand 1402 workbook as twelve fresh inserts -- not
+    the base-money restatement of Esfand 1400 it carries -- and Mehr 1403 as
+    available from 2024-12-08, where the real backfill stores 2024-12-31."""
+    def editions(report):
+        return [
+            (e["edition"], e["inserted"], e["unchanged"], e["revised"],
+             e["available_at"], e["available_at_approx"],
+             e["series"]["CBI_BASE_MONEY"]["revisions"])
+            for e in report["editions"]
+        ]
+
+    with respx.mock(assert_all_called=False) as router:
+        _serve_backfill_1400_12_to_1403_07(router)
+        dry = ingest_cbi_monetary(engine, backfill_from="1400-12", dry_run=True,
+                                  site=_site(), now=NOW)
+    assert dry["status"] == "ok" and dry["dry_run"] is True
+    assert _count(engine, economic_observations) == 0
+    assert _count(engine, source_documents) == 0
+    assert newest_stored_edition(engine) is None
+
+    with respx.mock(assert_all_called=False) as router:
+        _serve_backfill_1400_12_to_1403_07(router)
+        real = ingest_cbi_monetary(engine, backfill_from="1400-12", site=_site(), now=NOW)
+    assert real["status"] == "ok"
+    assert editions(dry) == editions(real)
+    assert (dry["inserted"], dry["unchanged"], dry["revised"]) == \
+        (real["inserted"], real["unchanged"], real["revised"])
+    # What the comparison is about, spelled out.
+    _, restated, mehr = editions(dry)
+    assert restated[3] == 1 and restated[6][0]["period"] == "1400-12"
+    assert restated[6][0]["from_method"] == "old" and restated[6][0]["to_method"] == "revised"
+    assert mehr[4] == "2024-12-31T07:17:53+00:00"
+
+
+def test_only_one_cbi_run_at_a_time(client, engine, tmp_path, mocked, quiet_site):
+    """The backfill takes about half an hour and is started by hand. A run that
+    lands inside it -- the daily tick, a posted workbook -- would read the
+    backfill's progress as the newest stored edition, stamp every later
+    edition with today's availability, and lock the backfill out of them. It
+    is refused instead, and nothing is touched."""
+    path = tmp_path / "140412.xls"
+    path.write_bytes(_xls(XLS_140412))
+    ingest_edition_file(engine, str(path), now=NOW)
+    assert cbi._RUN_LOCK.acquire(blocking=False)
+    try:
+        with pytest.raises(CbiRunInProgressError, match="another CBI ingest is running"):
+            ingest_cbi_monetary(engine, fetch_latest=True, site=_site())
+        with pytest.raises(CbiRunInProgressError):
+            ingest_cbi_monetary(engine, path=str(path))
+        resp = client.post("/internal/economic/cbi-monetary", json={"fetch_latest": True},
+                           headers=AUTH)
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "run_in_progress"
+    finally:
+        cbi._RUN_LOCK.release()
+    assert not mocked.calls
+    assert _count(engine, source_documents) == 1
+    # Released after every run, including a failed one.
+    with pytest.raises(ValueError, match="backfill_from"):
+        ingest_cbi_monetary(engine, backfill_from="Tir 1399", site=_site())
+    assert cbi._RUN_LOCK.acquire(blocking=False)
+    cbi._RUN_LOCK.release()
 
 
 def test_an_operator_switch_stops_every_request(engine, mocked):

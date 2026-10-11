@@ -669,14 +669,17 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
 
         Codes: 409 ``stale_edition`` for an edition older than the newest
         stored one (``path`` mode; ``allow_older`` replays it deliberately), 409
-        ``backfill_required`` as above, 400 for a malformed request or a refused
-        workbook posted by ``path``. ``data_providers.enabled = FALSE`` for
-        ``cbi`` skips the website modes without a request.
+        ``backfill_required`` as above, 409 ``run_in_progress`` while another
+        CBI ingest is running (the half-hour backfill and the daily tick must
+        not interleave), 400 for a malformed request or a refused workbook
+        posted by ``path``. ``data_providers.enabled = FALSE`` for ``cbi``
+        skips the website modes without a request.
         """
         from .economic.cbi import (
             CbiBackfillRequiredError,
             CbiFetchError,
             CbiParseError,
+            CbiRunInProgressError,
             CbiStaleEditionError,
             ingest_cbi_monetary,
             make_site,
@@ -706,6 +709,12 @@ def create_app(settings: Optional[Settings] = None, engine=None) -> FastAPI:
             return JSONResponse(
                 status_code=409,
                 content={"error": {"code": "backfill_required", "message": str(exc)}},
+            )  # type: ignore[return-value]
+        except CbiRunInProgressError as exc:
+            # Nothing was attempted, so the provider's health is untouched.
+            return JSONResponse(
+                status_code=409,
+                content={"error": {"code": "run_in_progress", "message": str(exc)}},
             )  # type: ignore[return-value]
         except CbiFetchError as exc:
             # The section or a year page could not be read: before any edition.

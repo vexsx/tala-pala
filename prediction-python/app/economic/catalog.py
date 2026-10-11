@@ -347,9 +347,10 @@ _CBI_NOTE = (
     "values (four decimals rather than one; published_at NULL, available_at the "
     "day they were ingested). CBI states no publication "
     "date: published_at is the workbook's own last-saved timestamp, a lower "
-    "bound. Editions arrive 1 to 4.5 months after the month ends, often in "
-    "batches. A value restated in a later edition is a new vintage beside the "
-    "print it revises. NOT seasonally adjusted."
+    "bound. Editions arrive three weeks to five and a half months after the "
+    "month ends (21 to 164 days measured), often in batches. A value restated "
+    "in a later edition is a new vintage beside the print it revises. NOT "
+    "seasonally adjusted."
 )
 
 _CBI_M2_CAVEAT = (
@@ -414,7 +415,8 @@ def _cbi_spec(
         revisable=True,
         splice_policy=splice,
         notes=_CBI_NOTE + extra,
-        # 10 to 137 days measured (median 53-96 by year); not a characterisation.
+        # 21 to 164 days measured (median 61; 53 to 96 by year); not a
+        # characterisation.
         publication_lag_days=None,
     )
 

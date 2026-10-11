@@ -161,7 +161,13 @@ docker compose exec api wget -qO- -T 3600 --header "Content-Type: application/js
   --post-data '{"backfill_from": "1399-04"}' http://prediction-service:8500/internal/economic/cbi-monetary
 ```
 
+While it runs, a scheduled tick answers 409 `run_in_progress` and does nothing.
 If it stops part-way (a 502 names the edition and why), run the same command
-again: editions already stored are not re-downloaded. Then, from a machine
-that can reach `tsdview.cis.cbi.ir` (not the server), load the quarterly
-history before 1398: `make refresh-cbi-history`.
+again — editions already stored are not re-downloaded — and do it before the
+next 13:35 UTC tick: once the backfill has stopped, the scheduled run carries
+on from the newest stored edition and stamps the remaining editions as first
+seen that day rather than with their reconstructed availability. Then, from a
+machine that can reach `tsdview.cis.cbi.ir` (not the server), load the
+quarterly history before 1398: `make refresh-cbi-history` (its report's
+`overlap_unverified` must be empty: it is checked against the editions just
+stored).

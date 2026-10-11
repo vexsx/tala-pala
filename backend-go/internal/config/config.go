@@ -194,8 +194,8 @@ func Load(env map[string]string, readFile FileReader) (*Config, error) {
 			// announced the same day, so a run after the office closes sees a
 			// same-day release the day it appears, which is what its
 			// available_at records. More often would re-read an unchanged page:
-			// editions arrive one to four and a half months after their month
-			// ends. The minute is clear of collect (*/10), tgju-daily (:25)
+			// editions arrive three weeks to five and a half months after their
+			// month ends. The minute is clear of collect (*/10), tgju-daily (:25)
 			// and the hourly jobs.
 			CBIMonetary: get("SCHEDULE_CBI_MONETARY_CRON", "35 13 * * *"),
 		},
