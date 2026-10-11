@@ -3,11 +3,11 @@ import {
   CODE_BASE,
   CODE_M2,
   MONEY_STALE_AFTER_DAYS,
-  annualAverageReason,
-  annualGrowthCrossesBreak,
-  annualGrowthReason,
+  annualFigure,
   annualGrowthRows,
   annualLevelRows,
+  annualMethodSpan,
+  annualSortValue,
   backtestStatements,
   bandEdges,
   bandTarget,
@@ -16,11 +16,13 @@ import {
   breakBetween,
   coverageClauses,
   coverageSentence,
+  dollarCloseAge,
   dollarRows,
   esfandTicks,
   formatMoney,
   formatP,
   hasMoneyData,
+  historyMoneyRunStart,
   indexBasePeriod,
   indexExtremes,
   indexRows,
@@ -28,11 +30,14 @@ import {
   jalaliDatePeriod,
   lineKeys,
   longHorizonNote,
+  methodChanges,
+  methodSwitches,
   moneyIsStale,
   moneyRows,
   moneySortValue,
   moneyTableRows,
   moneyUnit,
+  monthlyRunStart,
   multiplierRows,
   normalizeDm,
   ordinalPeriod,
@@ -68,6 +73,22 @@ const D12 = dollar12Json as unknown as LiquidityDollarResponse
 const D24 = dollar24Json as unknown as LiquidityDollarResponse
 
 const rowAt = (rows: SeriesRow[], period: string) => rows.find((r) => r.period === period)!
+
+/**
+ * The API as Track M builds it lists the base-money change as ONE break at
+ * 1399-12 (with the old-method 1400 prints in `old_method_after`) instead of
+ * one entry per switch. Everything the page says about the change has to
+ * hold for both shapes, so it is read from the points' own methods.
+ */
+const ONE_BREAK = [
+  {
+    code: CODE_BASE,
+    from: '1399-12',
+    note: 'CBI redefined base money from Esfand 1399.',
+    old_method_after: Array.from({ length: 11 }, (_, i) => `1400-${String(i + 1).padStart(2, '0')}`)
+  }
+]
+const ANNUAL_ONE_BREAK: LiquidityAggregatesResponse = { ...ANNUAL, breaks: ONE_BREAK }
 
 describe('Jalali periods', () => {
   it('reads, orders and names a month', () => {
@@ -142,6 +163,14 @@ describe('the money series', () => {
     expect(hasMoneyData(EMPTY)).toBe(false)
   })
 
+  it('reads the dollar close’s age from either shape of the dollar’s data_age', () => {
+    expect(dollarCloseAge({ stale: true, age_days: 9 })).toEqual({ stale: true, age_days: 9 })
+    // One block per input, as Track M builds it: the dollar's is `usd`.
+    const nested = { money: { stale: true, age_days: 205 }, usd: { stale: false, age_days: 1 } }
+    expect(dollarCloseAge(nested)).toEqual({ stale: false, age_days: 1 })
+    expect(dollarCloseAge(undefined)).toEqual({})
+  })
+
   it('calls the newest month old by the server’s word, or past CBI’s longest lag', () => {
     expect(MONTHLY.latest!.age_days).toBe(205)
     expect(moneyIsStale(MONTHLY.latest, MONTHLY.data_age)).toBe(true)
@@ -206,6 +235,47 @@ describe('the money series', () => {
     expect(multiplierRows(MONTHLY, { esfandOnly: true }).every((r) => r.period.endsWith('-12'))).toBe(true)
   })
 
+  it('reads every method switch from the points, however the breaks are listed', () => {
+    const switches = ['1399-12', '1400-01', '1400-12']
+    expect(methodSwitches(MONTHLY).map((s) => s.from)).toEqual(switches)
+    expect(methodChanges(MONTHLY).map((s) => s.from)).toEqual(switches)
+    // One listed break: the same three switches.
+    expect(methodChanges({ ...MONTHLY, breaks: ONE_BREAK }).map((s) => s.from)).toEqual(switches)
+    // No break listed at all: the points still say it.
+    expect(methodChanges({ ...MONTHLY, breaks: [] }).map((s) => s.from)).toEqual(switches)
+    // Liquidity has no method.
+    expect(methodSwitches(MONTHLY, CODE_M2)).toEqual([])
+    // A month with no recorded method is not a switch.
+    const unrecorded = {
+      ...MONTHLY,
+      breaks: [],
+      series: MONTHLY.series.map((s) =>
+        s.code === CODE_BASE
+          ? { ...s, points: s.points.map((p) => (p.period === '1399-12' ? { ...p, method: null } : p)) }
+          : s
+      )
+    }
+    expect(methodSwitches(unrecorded).map((s) => s.from)).toEqual(['1400-12'])
+  })
+
+  it('finds where the unbroken monthly run starts, from the data', () => {
+    expect(monthlyRunStart(MONTHLY.series[0].points)).toBe('1397-04')
+    // As the CBI ingest stores it: monthly from Tir 1398, with Esfand 1397
+    // alone among quarter-ends before it.
+    const ingest = MONTHLY.series[0].points
+      .filter((p) => p.period >= '1398-04' || ['1397-06', '1397-09', '1397-12', '1398-03'].includes(p.period) || p.period < '1397-04')
+      .map((p) => (p.period < '1398-04' && p.period !== '1397-12' ? { ...p, frequency: 'Q' as const } : p))
+    expect(monthlyRunStart(ingest)).toBe('1398-04')
+    // Order does not matter.
+    expect(monthlyRunStart([...ingest].reverse())).toBe('1398-04')
+    expect(monthlyRunStart([])).toBeNull()
+    // The dollar history carries no frequency: the quarter-end Khordad 1397
+    // touches Tir 1397, so the unbroken run of months with liquidity starts
+    // there — and every month before it is still one of only some.
+    expect(historyMoneyRunStart(D12.history)).toBe('1397-03')
+    expect(historyMoneyRunStart(D12.history.map((h) => ({ ...h, m2: null })))).toBeNull()
+  })
+
   it('finds a break between two months', () => {
     expect(breakBetween(MONTHLY.breaks, CODE_BASE, '1398-12', '1399-12')).toBe(true)
     expect(breakBetween(MONTHLY.breaks, CODE_BASE, '1401-12', '1402-12')).toBe(false)
@@ -214,42 +284,90 @@ describe('the money series', () => {
 })
 
 describe('the annual view', () => {
+  const year = (y: number, resp: LiquidityAggregatesResponse = ANNUAL) => resp.annual!.find((a) => a.year === y)!
+
   it('reads Esfand-over-Esfand and yearly-average growth from the annual block', () => {
-    const end = annualGrowthRows(ANNUAL.annual!, 'end', 1397)
+    const end = annualGrowthRows(ANNUAL, 'end', 1397)
     expect(end.find((r) => r.year === 1404)).toEqual({ year: 1404, m2: 53.269, base: 61.533 })
     expect(end.find((r) => r.year === 1399)!.base).toBeNull()
     expect(end[0].year).toBe(1397)
-    const avg = annualGrowthRows(ANNUAL.annual!, 'avg')
+    const avg = annualGrowthRows(ANNUAL, 'avg')
     expect(avg.find((r) => r.year === 1404)!.m2).toBe(39.74)
     expect(avg.find((r) => r.year === 1396)!.m2).toBeNull()
   })
 
-  it('says why an annual growth is missing', () => {
-    const year = (y: number) => ANNUAL.annual!.find((a) => a.year === y)!
-    expect(annualGrowthReason(ANNUAL, year(1399), CODE_BASE, 'end')).toMatch(/changed its base-money method/)
-    expect(annualGrowthReason(ANNUAL, year(1400), CODE_BASE, 'avg')).toMatch(/changed its base-money method/)
-    expect(annualGrowthReason(ANNUAL, year(1398), CODE_M2, 'avg')).toMatch(/all twelve monthly stocks/)
-    expect(annualGrowthReason(ANNUAL, year(1404), CODE_M2, 'end')).toBeNull()
-    // The structured answer the growth chart lists its missing bars by.
-    const crossing = ANNUAL.annual!.filter((a) => annualGrowthCrossesBreak(ANNUAL, a, CODE_BASE, 'end')).map((a) => a.year)
-    expect(crossing).toEqual([1399])
-    const crossingAvg = ANNUAL.annual!.filter((a) => annualGrowthCrossesBreak(ANNUAL, a, CODE_BASE, 'avg')).map((a) => a.year)
-    expect(crossingAvg).toEqual([1399, 1400, 1401])
-    expect(annualGrowthCrossesBreak(ANNUAL, year(1399), CODE_M2, 'end')).toBe(false)
+  it('reads which years compare two methods from the points, with one break or three', () => {
+    for (const resp of [ANNUAL, ANNUAL_ONE_BREAK]) {
+      const spans = (field: 'end_growth_pct' | 'avg_growth_pct' | 'avg_value') =>
+        resp.annual!.filter((a) => annualMethodSpan(resp, a, CODE_BASE, field) !== null).map((a) => a.year)
+      // Esfand 1399 (revised) against Esfand 1398 (old). Esfand 1400 against
+      // Esfand 1399 is revised against revised: one definition.
+      expect(spans('end_growth_pct')).toEqual([1399])
+      // A yearly average reads every month: 1399 and 1400 hold both methods.
+      expect(spans('avg_value')).toEqual([1399, 1400])
+      expect(spans('avg_growth_pct')).toEqual([1399, 1400, 1401])
+      expect(annualMethodSpan(resp, year(1399, resp), CODE_M2, 'end_growth_pct')).toBeNull()
+    }
   })
 
-  it('takes no yearly average across a method change, and says why', () => {
-    const year = (y: number) => ANNUAL.annual!.find((a) => a.year === y)!
-    // 1399 holds eleven old-method months and one revised; 1400 the same the other way.
-    for (const y of [1399, 1400]) {
-      expect(year(y).avg_value![CODE_BASE]).toBeNull()
-      expect(annualAverageReason(ANNUAL, year(y), CODE_BASE)).toBe(
-        `CBI changed its base-money method during ${y}: a mean across the change would mix two definitions`
+  it('says why an annual figure is missing, the same with one break listed', () => {
+    for (const resp of [ANNUAL, ANNUAL_ONE_BREAK]) {
+      expect(annualFigure(resp, year(1399, resp), CODE_BASE, 'end_growth_pct').reason).toMatch(/changed its base-money method/)
+      expect(annualFigure(resp, year(1400, resp), CODE_BASE, 'avg_growth_pct').reason).toMatch(/changed its base-money method/)
+      // 1401 and 1400 both have all twelve months: the gap is the method, not a missing month.
+      const y1401 = annualFigure(resp, year(1401, resp), CODE_BASE, 'avg_growth_pct')
+      expect(y1401).toEqual({ value: null, reason: expect.stringMatching(/changed its base-money method/) })
+      expect(annualFigure(resp, year(1398, resp), CODE_M2, 'avg_growth_pct').reason).toMatch(
+        /all twelve monthly stocks of 1398 and of 1397; before Tir 1397 only some months are stored/
       )
-      expect(annualAverageReason(ANNUAL, year(y), CODE_M2)).toBeNull()
+      expect(annualFigure(resp, year(1404, resp), CODE_M2, 'end_growth_pct')).toEqual({ value: 53.269, reason: null })
     }
-    expect(annualAverageReason(ANNUAL, year(1396), CODE_M2)).toMatch(/needs all twelve monthly stocks of 1396/)
-    expect(annualAverageReason(ANNUAL, year(1401), CODE_BASE)).toBeNull()
+  })
+
+  it('prefers the API’s own reason when it gives one', () => {
+    const withReason = {
+      ...year(1398),
+      null_reason: { [CODE_M2]: { avg_growth_pct: '1397 does not have all twelve months' } }
+    }
+    expect(annualFigure(ANNUAL, withReason, CODE_M2, 'avg_growth_pct')).toEqual({
+      value: null,
+      reason: '1397 does not have all twelve months'
+    })
+  })
+
+  it('takes no yearly average across a method change, even when a response carries one', () => {
+    for (const y of [1399, 1400]) {
+      // As Track M's annual block does: a mean of all twelve months whatever their method.
+      const served = { ...year(y), avg_value: { ...year(y).avg_value!, [CODE_BASE]: 5000 } }
+      expect(annualFigure(ANNUAL, served, CODE_BASE, 'avg_value')).toEqual({
+        value: null,
+        reason: `CBI changed its base-money method during ${y}: a mean across the change would mix two definitions`
+      })
+      expect(annualFigure(ANNUAL, served, CODE_M2, 'avg_value').value).not.toBeNull()
+      // …and it sorts with the missing, as it is shown.
+      expect(annualSortValue(ANNUAL, served, 'base_avg')).toBeNull()
+    }
+    // Nor a growth across the change.
+    const growth = { ...year(1399), end_growth_pct: { ...year(1399).end_growth_pct, [CODE_BASE]: 30.052 } }
+    expect(annualFigure(ANNUAL, growth, CODE_BASE, 'end_growth_pct').value).toBeNull()
+    expect(annualFigure(ANNUAL, year(1396), CODE_M2, 'avg_value').reason).toMatch(/needs all twelve monthly stocks of 1396/)
+    expect(annualFigure(ANNUAL, year(1401), CODE_BASE, 'avg_value')).toEqual({ value: 7092.12, reason: null })
+  })
+
+  it('says a mean or growth over a month with no recorded method is not taken', () => {
+    const unrecorded: LiquidityAggregatesResponse = {
+      ...ANNUAL,
+      series: ANNUAL.series.map((s) =>
+        s.code === CODE_BASE
+          ? { ...s, points: s.points.map((p) => (p.period === '1402-05' ? { ...p, method: null } : p)) }
+          : s
+      )
+    }
+    const y = unrecorded.annual!.find((a) => a.year === 1402)!
+    expect(annualFigure(unrecorded, y, CODE_BASE, 'avg_value')).toEqual({
+      value: null,
+      reason: 'the months of 1402 are not all on one recorded base-money method, so no mean is taken across them'
+    })
   })
 
   it('places each Esfand stock on the month axis, split by method', () => {

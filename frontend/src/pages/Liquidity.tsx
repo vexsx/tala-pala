@@ -30,11 +30,11 @@ import {
 import {
   CODE_BASE,
   CODE_M2,
-  annualAverageReason,
-  annualGrowthCrossesBreak,
-  annualGrowthReason,
+  KNOWN_MONEY_UNIT,
+  annualFigure,
   annualGrowthRows,
   annualLevelRows,
+  annualMethodSpan,
   annualSortValue,
   backtestHorizons,
   backtestModels,
@@ -43,14 +43,15 @@ import {
   bandTarget,
   bandUndercovers,
   bestModel,
-  breaksFor,
   coverageSentence,
+  dollarCloseAge,
   esfandTicks,
   dollarRows,
   findSeries,
   formatMoney,
   formatMoneyNumber,
   hasMoneyData,
+  historyMoneyRunStart,
   indexBasePeriod,
   indexExtremes,
   indexRows,
@@ -58,12 +59,14 @@ import {
   jalaliDatePeriod,
   lineKeys,
   longHorizonNote,
+  methodChanges,
   modelLabel,
   moneyIsStale,
   moneyRows,
   moneySortValue,
   moneyTableRows,
   moneyUnit,
+  monthlyRunStart,
   multiplierRows,
   newestOrdinal,
   ordinalPeriod,
@@ -79,6 +82,7 @@ import {
   toDisplayMoney,
   windowStart,
   MONEY_STALE_AFTER_DAYS,
+  type AnnualField,
   type AnnualMeasure,
   type AnnualSortKey,
   type MoneySortKey,
@@ -113,12 +117,16 @@ import type {
  *  3. TWO METHODS FOR ONE SERIES. CBI redefined base money from 1399-12. A
  *     figure on the old method and one on the revised method are different
  *     quantities, so no line joins them, the change is marked on every chart,
- *     and no growth is drawn across it — the API leaves it null and says why.
+ *     and no growth is drawn across it — the API leaves it null and says why,
+ *     and a yearly mean or growth over months on two methods is refused here
+ *     even if one arrives. Every switch is read from the stored months' own
+ *     methods, not from how the API happens to list its breaks.
  *  4. AN OLD MONTH FOR TODAY'S. CBI publishes months late and in batches; the
  *     newest month, its workbook's date and its age are the first line, and a
  *     notice says so when it is older than CBI has ever taken.
  *  5. RIAL FOR TOMAN. CBI's unit is هزار میلیارد ریال; the page shows همت with
- *     the app on toman and the published unit on rial, and prints which.
+ *     the app on toman and the published unit on rial, and prints which. A
+ *     response in any other unit is refused, not divided by a guess.
  *
  * Nothing here is measured in the browser: every level, growth, path,
  * quantile, error and p-value arrives from the API. The page divides by ten
@@ -155,11 +163,22 @@ function Fa({ children }: { children: string }) {
   )
 }
 
-/** A growth rate as a plain figure: money growth is not good or bad news, so it wears no colour. */
-function Growth({ value, reason }: { value: number | null | undefined; reason?: string }) {
+/**
+ * A growth rate as a plain figure: money growth is not good or bad news, so
+ * it wears no colour. A missing one is a dash whose reason is its tooltip and
+ * is read out to a screen reader — a hover alone reaches neither a keyboard
+ * nor a phone's reader.
+ */
+function Growth({ value, reason }: { value: number | null | undefined; reason?: string | null }) {
+  if (value == null) return <Missing reason={reason} />
+  return <span className="mono">{formatPct(value, { digits: 1 })}</span>
+}
+
+function Missing({ reason }: { reason?: string | null }) {
   return (
-    <span className="mono" title={value == null ? reason : undefined}>
-      {formatPct(value, { digits: 1 })}
+    <span className="mono" title={reason ?? undefined}>
+      <span aria-hidden="true">—</span>
+      <span className="sr-only">{reason ? `not measured: ${reason}` : 'not stored'}</span>
     </span>
   )
 }
@@ -263,16 +282,20 @@ function isoDot(rows: SeriesRow[], key: string, color: string) {
   }
 }
 
-/** Base money's method changes, dashed, on a month chart. */
+/**
+ * Base money's method changes, dashed, on a month chart: each listed break
+ * and each switch the stored methods show, so every change is marked however
+ * the API lists them.
+ */
 function breakLines(resp: LiquidityAggregatesResponse, rows: SeriesRow[]) {
   if (rows.length === 0) return null
   const min = rows[0].x
   const max = rows[rows.length - 1].x
-  return breaksFor(resp.breaks, CODE_BASE)
+  return methodChanges(resp)
     .filter((b) => b.x >= min && b.x <= max)
     .map((b) => (
       <ReferenceLine
-        key={`${b.code}-${b.from}`}
+        key={`${CODE_BASE}-${b.from}`}
         x={b.x}
         stroke="var(--muted)"
         strokeDasharray="2 3"
@@ -448,9 +471,18 @@ function LevelsCard({
     [resp, freq, fromX, unit]
   )
   const mu = moneyUnit(unit)
-  const quarterly = freq === 'monthly' && (findSeries(resp, CODE_M2)?.points ?? []).some(
-    (p) => p.frequency === 'Q' && (fromX === undefined || (periodOrdinal(p.period) ?? 0) >= fromX)
-  )
+  const m2Points = findSeries(resp, CODE_M2)?.points ?? []
+  const runStart = monthlyRunStart(m2Points)
+  const runX = runStart ? periodOrdinal(runStart) : null
+  // Months before the unbroken monthly run, inside the window: quarter-ends
+  // and the odd month a workbook reaches back to.
+  const sparse =
+    freq === 'monthly' &&
+    runX !== null &&
+    m2Points.some((p) => {
+      const x = periodOrdinal(p.period)
+      return x !== null && x < runX && (fromX === undefined || x >= fromX)
+    })
   return (
     <div className="card" data-testid="lq-levels">
       <div className="row space-between wrap bx-card-head">
@@ -469,9 +501,11 @@ function LevelsCard({
       <p className="muted small bx-unit" data-testid="lq-levels-unit">
         In {mu.long}. Both are stocks in the same unit, so they share one axis
         {log ? '; on a log scale equal heights are equal percentage growth' : ''}.
-        {quarterly ? ' Before Tir 1397 CBI’s history is quarter-ends, joined quarter to quarter.' : ''}
+        {sparse
+          ? ` Before ${periodLabel(runStart!)} only some months are stored — CBI’s quarter-ends — and the line joins them point to point.`
+          : ''}
       </p>
-      <MoneyLegend hasBreak={breaksFor(resp.breaks, CODE_BASE).length > 0} />
+      <MoneyLegend hasBreak={methodChanges(resp).length > 0} />
       <figure className="lq-figure" aria-label={`Liquidity and base money levels in ${mu.label}`}>
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={rows} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
@@ -521,13 +555,13 @@ function GrowthCard({
   const [measure, setMeasure] = useState<AnnualMeasure>('end')
   const monthly = useMemo(() => moneyRows(resp, (p) => p.yoy_pct, { fromX }), [resp, fromX])
   const fromYear = fromX === undefined ? undefined : Math.floor(fromX / 12)
-  const annualRows = useMemo(
-    () => annualGrowthRows(resp.annual ?? [], measure, fromYear),
-    [resp.annual, measure, fromYear]
-  )
-  const missingBase = (resp.annual ?? []).filter(
-    (a) => (fromYear === undefined || a.year >= fromYear) && annualGrowthCrossesBreak(resp, a, CODE_BASE, measure)
-  )
+  const field: AnnualField = measure === 'end' ? 'end_growth_pct' : 'avg_growth_pct'
+  const annualRows = useMemo(() => annualGrowthRows(resp, measure, fromYear), [resp, measure, fromYear])
+  const spans = (resp.annual ?? [])
+    .filter((a) => fromYear === undefined || a.year >= fromYear)
+    .map((a) => ({ year: a.year, span: annualMethodSpan(resp, a, CODE_BASE, field) }))
+    .filter((m) => m.span !== null)
+  const allChanged = spans.every((m) => m.span === 'mixed')
   return (
     <div className="card" data-testid="lq-growth">
       <div className="row space-between wrap bx-card-head">
@@ -554,7 +588,7 @@ function GrowthCard({
             where CBI changed its method: a growth across the change compares two different definitions, so none is
             drawn.
           </p>
-          <MoneyLegend hasBreak={breaksFor(resp.breaks, CODE_BASE).length > 0} />
+          <MoneyLegend hasBreak={methodChanges(resp).length > 0} />
           <figure className="lq-figure" aria-label="Year-on-year growth of liquidity and base money">
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={monthly} margin={{ top: 8, right: 16, bottom: 0, left: 8 }}>
@@ -607,10 +641,12 @@ function GrowthCard({
               </BarChart>
             </ResponsiveContainer>
           </figure>
-          {missingBase.length > 0 ? (
+          {spans.length > 0 ? (
             <p className="muted small" data-testid="lq-growth-missing">
-              No base-money bar for {missingBase.map((m) => m.year).join(', ')}: CBI changed its base-money method inside
-              the months that growth compares, and it is not measured across the change.
+              No base-money bar for {spans.map((m) => m.year).join(', ')}:{' '}
+              {allChanged
+                ? 'CBI changed its base-money method inside the months that growth compares, and it is not measured across the change.'
+                : 'the months that growth compares are not all on one recorded base-money method, and it is not measured across methods.'}
             </p>
           ) : null}
         </>
@@ -772,7 +808,7 @@ function MonthlyTable({
   const all = useMemo(() => moneyTableRows(resp, fromX), [resp, fromX])
   const sorted = useMemo(() => sortNullsLast(all, (r) => moneySortValue(r, sort.key), sort.desc), [all, sort])
   const rows = expanded ? sorted : sorted.slice(0, TABLE_ROWS)
-  const breakAt = useMemo(() => new Set(breaksFor(resp.breaks, CODE_BASE).map((b) => b.from)), [resp.breaks])
+  const breakAt = useMemo(() => new Set(methodChanges(resp).map((b) => b.from)), [resp])
   const mu = moneyUnit(unit)
   const level = (p: LiquidityPoint | null) => (p ? formatMoneyNumber(toDisplayMoney(p.value, unit)) : '—')
   const h = (k: MoneySortKey, label: string, title?: string) => (
@@ -869,25 +905,29 @@ function AnnualTable({
     [resp.annual, fromYear]
   )
   const [expanded, setExpanded] = useState(false)
-  const sorted = useMemo(() => sortNullsLast(all, (r) => annualSortValue(r, sort.key), sort.desc), [all, sort])
+  const sorted = useMemo(
+    () => sortNullsLast(all, (r) => annualSortValue(resp, r, sort.key), sort.desc),
+    [resp, all, sort]
+  )
   const rows = expanded ? sorted : sorted.slice(0, TABLE_ROWS)
   const mu = moneyUnit(unit)
-  const level = (v: number | null | undefined) => (v == null ? '—' : formatMoneyNumber(toDisplayMoney(v, unit)))
+  const level = (a: LiquidityAnnualRow, code: string, field: AnnualField) => {
+    const f = annualFigure(resp, a, code, field)
+    return f.value == null ? <Missing reason={f.reason} /> : formatMoneyNumber(toDisplayMoney(f.value, unit))
+  }
+  const growth = (a: LiquidityAnnualRow, code: string, field: AnnualField) => {
+    const f = annualFigure(resp, a, code, field)
+    return <Growth value={f.value} reason={f.reason} />
+  }
   const h = (k: AnnualSortKey, label: string, title?: string) => (
     <SortHeader<AnnualSortKey> k={k} label={label} sort={sort} setSort={setSort} title={title} />
   )
   const cells = (a: LiquidityAnnualRow, code: string) => (
     <>
-      <td className="num mono">{level(a.end_value[code])}</td>
-      <td className="num">
-        <Growth value={a.end_growth_pct[code]} reason={annualGrowthReason(resp, a, code, 'end') ?? undefined} />
-      </td>
-      <td className="num mono" title={annualAverageReason(resp, a, code) ?? undefined}>
-        {level(a.avg_value?.[code])}
-      </td>
-      <td className="num">
-        <Growth value={a.avg_growth_pct?.[code]} reason={annualGrowthReason(resp, a, code, 'avg') ?? undefined} />
-      </td>
+      <td className="num mono">{level(a, code, 'end_value')}</td>
+      <td className="num">{growth(a, code, 'end_growth_pct')}</td>
+      <td className="num mono">{level(a, code, 'avg_value')}</td>
+      <td className="num">{growth(a, code, 'avg_growth_pct')}</td>
     </>
   )
   return (
@@ -971,7 +1011,10 @@ function DollarCard({
   const anchorX = anchorPeriod ? periodOrdinal(anchorPeriod) : null
   const moneyX = d.money_as_of ? periodOrdinal(d.money_as_of.period) : null
   const years = DOLLAR_WINDOWS.find((w) => w.key === histWindow)?.years ?? null
-  const lastHistX = d.history.length ? periodOrdinal(d.history[d.history.length - 1].period) : null
+  const lastHistX = d.history.reduce<number | null>((m, h) => {
+    const x = periodOrdinal(h.period)
+    return x !== null && (m === null || x > m) ? x : m
+  }, null)
   const fromX = windowStart(lastHistX, years)
   const rows = useMemo(() => dollarRows(d, { fromX, bandKey }), [d, fromX, bandKey])
   const band = d.band
@@ -979,6 +1022,9 @@ function DollarCard({
   const longNote = longHorizonNote(band)
   const fmt = (v: number) => formatToman(v, unit)
   const missing = d.scenarios.filter((s) => s.path.length === 0 || s.annual_growth_pct === null)
+  // The history's newest month is the one still running when it holds the
+  // anchor: its point is the latest close, not a month-end one.
+  const running = anchorPeriod !== null && lastHistX !== null && ordinalPeriod(lastHistX) === anchorPeriod
 
   return (
     <div className={`card ${loading ? 'bx-refetch' : ''}`} data-testid="lq-dollar">
@@ -1035,6 +1081,7 @@ function DollarCard({
       <div className="bx-legend" data-testid="lq-dollar-legend">
         <span className="bx-legend-item">
           <Key color="var(--text)" /> Dollar, month-end close
+          {running ? ` (${periodLabel(anchorPeriod!)}, still running: its latest close)` : ''}
         </span>
         {d.scenarios.map((s, i) =>
           s.path.length > 0 ? (
@@ -1163,7 +1210,9 @@ function DollarCard({
         </p>
       ) : drawn.length > 0 ? (
         <p className="muted small" data-testid="lq-no-band">
-          The API returned no band for these paths, so none is drawn.
+          {band
+            ? 'The API’s band surrounds a path that is not drawn here, so none is shown.'
+            : 'The API returned no band for these paths, so none is drawn.'}
         </p>
       ) : null}
 
@@ -1182,8 +1231,13 @@ function DollarCard({
 
       {drawn.length === 0 ? (
         <div className="callout callout-warn" data-testid="lq-no-scenarios" role="status">
-          No scenario path is drawn: each is paced by a liquidity growth rate, and{' '}
-          {d.money_as_of ? 'the API returned none.' : 'no CBI liquidity figure is stored.'}
+          No scenario path is drawn:{' '}
+          {!d.anchor
+            ? 'every path starts from the last dollar close, and no dollar close is stored.'
+            : !d.money_as_of
+              ? 'each is paced by a liquidity growth rate, and no CBI liquidity figure is stored.'
+              : 'each is paced by a liquidity growth rate, and the API returned none.'}
+          {(d.unavailable ?? []).length > 0 ? ` ${(d.unavailable ?? []).join(' ')}` : ''}
         </div>
       ) : d.scenarios.length < 3 || missing.length > 0 ? (
         <div className="callout callout-warn" data-testid="lq-scenario-missing" role="status">
@@ -1229,8 +1283,12 @@ function ScenarioTable({
           <thead>
             <tr>
               <th scope="col">Path</th>
-              <th scope="col" className="num">
-                A year
+              <th
+                scope="col"
+                className="num"
+                title="A path: the liquidity growth it is paced by. The trend: the dollar’s own past growth."
+              >
+                Growth a year
               </th>
               {hs.map((h) => (
                 <th key={h} scope="col" className="num">
@@ -1307,6 +1365,8 @@ function IndexCard({ d, calendar }: { d: LiquidityDollarResponse; calendar: Cale
   const base = indexBasePeriod(d.history)
   const ext = indexExtremes(rows)
   const newest = rows[rows.length - 1]
+  const runStart = historyMoneyRunStart(d.history)
+  const sparse = runStart !== null && rows.length > 0 && rows[0].x < (periodOrdinal(runStart) ?? -Infinity)
   return (
     <div className="card" data-testid="lq-index">
       <div className="card-title">Dollar per unit of liquidity</div>
@@ -1327,7 +1387,8 @@ function IndexCard({ d, calendar }: { d: LiquidityDollarResponse; calendar: Cale
                 )}).`
               : ''}{' '}
             It has drifted for years instead of holding one level, so no level of it is
-            treated as normal here. Before Tir 1397 liquidity is quarter-ends, and so is the index.
+            treated as normal here.
+            {sparse ? ` Before ${periodLabel(runStart!)} liquidity is stored only at some months — CBI’s quarter-ends — and so is the index.` : ''}
           </p>
           <figure className="lq-figure" aria-label="Dollar per unit of liquidity, index">
             <ResponsiveContainer width="100%" height={240}>
@@ -1394,7 +1455,13 @@ function LiquidityDollarCard({ d, unit }: { d: LiquidityDollarResponse; unit: Di
                 ).map(([label, v]) => (
                   <tr key={label}>
                     <td>{label}</td>
-                    <td>{v.base ? periodLabel(v.base) : '—'}</td>
+                    <td>
+                      {v.base
+                        ? periodLabel(v.base)
+                        : v.bases && v.bases.length === 2
+                          ? `${periodLabel(v.bases[0])} and ${periodLabel(v.bases[1])} (the mean of the two middle values)`
+                          : '—'}
+                    </td>
                     <td className="num mono">{formatToman(v.value, unit)}</td>
                   </tr>
                 ))}
@@ -1427,7 +1494,10 @@ function BacktestCard({ d }: { d: LiquidityDollarResponse }) {
   }
   const hs = backtestHorizons(bt)
   const models = backtestModels(bt)
-  const statements = backtestStatements(bt)
+  const alpha = typeof bt.significance === 'number' ? bt.significance : 0.05
+  const statements = backtestStatements(bt, alpha)
+  const from = bt.from ?? d.band?.origins_from ?? null
+  const lag = bt.lag_months ?? d.band?.lag_months ?? null
   return (
     <div className="card" data-testid="lq-backtest">
       <div className="card-title">How liquidity-paced paths did in a backtest</div>
@@ -1472,9 +1542,9 @@ function BacktestCard({ d }: { d: LiquidityDollarResponse }) {
       </div>
       <p className="muted small">
         Target: the {bt.target}. Root mean square of log errors — 0.10 is roughly a 10% miss — lower is better; the
-        smallest at each horizon is in bold. “Measurably” means a one-sided Diebold–Mariano test below p = 0.05.
-        {d.band
-          ? ` Forecasts were made from ${periodLabel(d.band.origins_from)} on, each using liquidity only ${d.band.lag_months} months after its month ended, as it would have been known.`
+        smallest at each horizon is in bold. “Measurably” means a one-sided Diebold–Mariano test below p = {alpha}.
+        {from !== null && lag !== null
+          ? ` Forecasts were made from ${periodLabel(from)} on, each using liquidity only ${lag} months after its month ended, as it would have been known.`
           : ''}{' '}
         The windows overlap, so the long horizons rest on few independent outcomes.
       </p>
@@ -1494,14 +1564,16 @@ function NotesCard({
   unit: DisplayUnit
 }) {
   const apiNotes = [...(agg?.notes ?? []), ...(dollar?.notes ?? [])]
+  const monthlyFrom = agg ? monthlyRunStart(findSeries(agg, CODE_M2)?.points ?? []) : null
   return (
     <div className="card" data-testid="lq-notes">
       <div className="card-title">Sources, units and limits</div>
       <ul className="lq-notes">
         <li>
           <strong>Sources.</strong> Liquidity (<Fa>نقدینگی</Fa>) and base money (<Fa>پایه پولی</Fa>): the Central Bank
-          of Iran’s monthly Selected Economic Indicators (<Fa>گزیده آمارهای اقتصادی</Fa>) from Tir 1397, and the
-          quarter-ends of CBI’s time-series database before that. The dollar:{' '}
+          of Iran’s monthly Selected Economic Indicators (<Fa>گزیده آمارهای اقتصادی</Fa>)
+          {monthlyFrom ? `, month by month from ${periodLabel(monthlyFrom)}` : ''}, and the quarter-ends of CBI’s
+          time-series database before that. The dollar:{' '}
           {dollar?.anchor ? `${dollar.anchor.source} — ${dollar.anchor.note}` : 'the stored free-market USD_IRT daily close'}.
         </li>
         <li>
@@ -1512,7 +1584,8 @@ function NotesCard({
         </li>
         {(agg?.breaks ?? []).length > 0 ? (
           <li>
-            <strong>Breaks.</strong> {agg!.breaks.map((b) => `${periodLabel(b.from)}: ${b.note}.`).join(' ')}
+            <strong>Breaks.</strong>{' '}
+            {agg!.breaks.map((b) => `${periodLabel(b.from)}: ${b.note.replace(/[.\s]+$/, '')}.`).join(' ')}
           </li>
         ) : null}
         <li>
@@ -1579,6 +1652,7 @@ export default function Liquidity() {
   const lastDollar = useRef<LiquidityDollarResponse | null>(null)
   if (dollar.data) lastDollar.current = dollar.data
   const d = dollar.data ?? (dollar.loading ? lastDollar.current : null)
+  const usdAge = dollarCloseAge(d?.data_age)
 
   const newest = a ? newestOrdinal(a) : null
   const years = MONEY_WINDOWS.find((w) => w.key === moneyWindow)?.years ?? null
@@ -1592,6 +1666,9 @@ export default function Liquidity() {
     return p ? p.period.slice(0, 4) : null
   }, [a])
   const ready = a !== null && hasMoneyData(a)
+  // A stock in a unit this page does not convert from is refused, not
+  // divided by a factor guessed for it.
+  const unitKnown = a !== null && a.unit === KNOWN_MONEY_UNIT
   const annualReady = freq === 'monthly' || (a?.annual !== undefined && !agg.loading)
   // An annual response without its annual block is a server fault: said, not spun on.
   const annualMissing = freq === 'annual' && !agg.loading && a !== null && a.annual === undefined
@@ -1626,7 +1703,17 @@ export default function Liquidity() {
 
       {a && !ready ? <NotIngested /> : null}
 
-      {a && ready ? (
+      {a && ready && !unitKnown ? (
+        <div className="card callout callout-warn" data-testid="lq-unit-refused" role="status">
+          <div className="card-title">The money figures are in a unit this page does not read</div>
+          <p className="bx-verdict">
+            The API reports these stocks in “{a.unit}”. This page converts only from CBI’s own unit, thousand billion
+            rial (<Fa>هزار میلیارد ریال</Fa>), so it shows no level rather than one in a guessed unit.
+          </p>
+        </div>
+      ) : null}
+
+      {a && ready && unitKnown ? (
         <Section title="Base money and liquidity" testId="lq-money">
           <Headline resp={a} unit={unit} />
           <div className="row wrap bx-filter">
@@ -1695,12 +1782,11 @@ export default function Liquidity() {
         ) : null}
         {d ? (
           <>
-            {d.data_age?.stale === true ? (
+            {usdAge.stale === true && d.anchor ? (
               <div className="callout callout-warn" data-testid="lq-dollar-stale" role="status">
-                The newest dollar close stored is{' '}
-                {d.anchor ? (calendar === 'jalali' ? d.anchor.jalali : d.anchor.date) : 'old'}
-                {typeof d.data_age.age_days === 'number' ? `, ${formatGrouped(d.data_age.age_days)} days ago` : ''}: every
-                path starts from it.{d.data_age.warning ? ` ${d.data_age.warning}` : ''}
+                The newest dollar close stored is {calendar === 'jalali' ? d.anchor.jalali : d.anchor.date}
+                {typeof usdAge.age_days === 'number' ? `, ${formatGrouped(usdAge.age_days)} days ago` : ''}: every path
+                starts from it.{usdAge.warning ? ` ${usdAge.warning}` : ''}
               </div>
             ) : null}
             <DollarCard

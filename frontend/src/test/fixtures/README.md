@@ -650,18 +650,25 @@ visible:
   one method); one `breaks` entry per switch of the stored method (1399-12,
   1400-01, 1400-12 — CBI's monthly figures for 1400 are on the old method);
   the dollar's own trend path at 0.0278 a month. If Track M's build differs,
-  the capture wins.
+  the capture wins. It does in three places the page already reads: one
+  `breaks` entry at 1399-12 with the 1400 old-method prints in
+  `old_method_after` (the page reads every switch from the points' own
+  methods, and `Liquidity.test.tsx` runs both shapes); a per-input dollar
+  `data_age` (`usd`, `money`); and a yearly `avg_value` for base money even
+  over months on both methods, which the page refuses.
 * **The prose is the generator's own**: `notes`, `null_reason` sentences, the
   scenario labels and `basis` strings, the band `note`, the backtest
   `verdict`, the liquidity-dollar `note`, and the scenario keys `avg_3y` and
   `slowest_3y` (design §3 fixes only `last_12m`).
 * **Where design §3 leaves a block open** (`"{...}"`), the files carry the
   shape the page reads, and `api/types.ts` says so beside each: `data_age`
-  (`stale`, `age_days`; the page falls back to the newest month's own age),
-  the `by_base` entries (`base`, `value` — the median is the lower middle of
-  118 base months, a real month, 104,019 toman, where the research's median
-  of the two middle values is 104,421), and the Diebold–Mariano maps (model →
-  horizon → p; the page also reads a flat horizon → p map).
+  (`stale`, `age_days`, flat; the page also reads the dollar's age from a
+  `usd` block, and falls back to the newest month's own age), the `by_base`
+  entries (`base`, `value`; the median of 118 base months is the mean of the
+  two middle ones, 104,421 toman as the research has it, so its `base` is
+  null and `bases` names the two — Azar 1400 and Azar 1402), and the
+  Diebold–Mariano maps (model → horizon → p; the page also reads a flat
+  horizon → p map).
 * **Left out on purpose**: the API also lists `CBI_MONEY_M1` and
   `CBI_QUASI_MONEY`. The page reads neither, and with them each aggregates file
   is twice the size.
@@ -893,7 +900,12 @@ dm_trend = {r["h"]: float(r["DM_sq_p_model_better"]) for r in rows(os.path.join(
             if r["variant"] == "L3_close" and r["window"] == "full" and r["model"] == "M2G"}
 sens = sorted(rows(os.path.join(EV, "liquidity_dollar_base_sensitivity.csv")),
               key=lambda r: float(r["liquidity_dollar_at_1404_12"]))
-lo_mid = sens[(len(sens) - 1) // 2]
+# The median of an even number of bases is the mean of the two middle ones,
+# as the research reports it (104,421); no single base month gives it.
+mid = sens[len(sens) // 2 - 1: len(sens) // 2 + 1] if len(sens) % 2 == 0 else sens[len(sens) // 2: len(sens) // 2 + 1]
+median = ({"base": None, "bases": [r["base"] for r in mid],
+           "value": round(sum(float(r["liquidity_dollar_at_1404_12"]) for r in mid) / 2, 2)} if len(mid) == 2
+          else {"base": mid[0]["base"], "value": float(mid[0]["liquidity_dollar_at_1404_12"])})
 
 
 def dollar(horizon):
@@ -933,7 +945,7 @@ def dollar(horizon):
         "liquidity_dollar": {
             "period": "1404-12", "actual_avg": 162494.79,
             "by_base": {"min": {"base": sens[0]["base"], "value": float(sens[0]["liquidity_dollar_at_1404_12"])},
-                        "median": {"base": lo_mid["base"], "value": float(lo_mid["liquidity_dollar_at_1404_12"])},
+                        "median": median,
                         "max": {"base": sens[-1]["base"], "value": float(sens[-1]["liquidity_dollar_at_1404_12"])}},
             "bases_considered": len(sens),
             "note": "Not a fair value: the base month chosen decides it.",

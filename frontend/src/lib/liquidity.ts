@@ -8,6 +8,7 @@ import type {
   LiquidityBreak,
   LiquidityDataAge,
   LiquidityDmPValues,
+  LiquidityDollarDataAge,
   LiquidityDollarHistoryPoint,
   LiquidityDollarResponse,
   LiquidityLatest,
@@ -166,6 +167,13 @@ export function moneyUnit(unit: DisplayUnit): MoneyUnit {
     : { divisor: 10, label: 'همت', long: 'همت — trillion toman (CBI’s thousand billion rial ÷ 10)' }
 }
 
+/**
+ * The one unit this page knows how to show: CBI's own. A response in any
+ * other unit is refused rather than divided by a factor guessed for it — a
+ * rial/toman slip is a factor of ten, invisible on a chart.
+ */
+export const KNOWN_MONEY_UNIT = 'thousand_billion_rial'
+
 export function toDisplayMoney(valueThousandBillionRial: number, unit: DisplayUnit): number {
   return valueThousandBillionRial / moneyUnit(unit).divisor
 }
@@ -202,6 +210,16 @@ export function hasMoneyData(resp: LiquidityAggregatesResponse): boolean {
  * record — either CBI has published nothing newer or it has not been read.
  */
 export const MONEY_STALE_AFTER_DAYS = 137
+
+/**
+ * How old the dollar close every path starts from is, from either shape of
+ * the dollar response's `data_age`: one block per input (`usd`), or flat.
+ */
+export function dollarCloseAge(age: LiquidityDollarDataAge | null | undefined): LiquidityDataAge {
+  if (!age) return {}
+  if (age.usd && typeof age.usd === 'object') return age.usd
+  return age
+}
 
 /** The server's verdict when it gives one; otherwise the bound above. */
 export function moneyIsStale(latest: LiquidityLatest | null, age: LiquidityDataAge | undefined): boolean {
@@ -330,6 +348,97 @@ export function newestOrdinal(resp: LiquidityAggregatesResponse): number | null 
   return best
 }
 
+/**
+ * Every period where a series' stored method differs from the stored month
+ * before it — read from the points, so each switch is found whether the API
+ * lists one break or one per switch (CBI's base money: revised at 1399-12,
+ * old again for the 1400 prints, revised from 1400-12). A month with no
+ * recorded method is not counted as a switch either way: an unknown is not a
+ * change.
+ */
+export function methodSwitches(resp: LiquidityAggregatesResponse, code = CODE_BASE): Array<{ from: string; x: number }> {
+  const out: Array<{ from: string; x: number }> = []
+  let prev: LiquidityPoint['method'] = null
+  for (const p of sortedPoints(findSeries(resp, code)?.points ?? [])) {
+    const x = periodOrdinal(p.period)
+    if (x === null) continue
+    if (p.method && prev && p.method !== prev) out.push({ from: p.period, x })
+    if (p.method) prev = p.method
+  }
+  return out
+}
+
+/**
+ * The method changes to mark for a series: each listed break and each switch
+ * the points show, once per period, oldest first.
+ */
+export function methodChanges(resp: LiquidityAggregatesResponse, code = CODE_BASE): Array<{ from: string; x: number }> {
+  const byX = new Map<number, { from: string; x: number }>()
+  for (const b of breaksFor(resp.breaks, code)) byX.set(b.x, { from: b.from, x: b.x })
+  for (const s of methodSwitches(resp, code)) byX.set(s.x, s)
+  return [...byX.values()].sort((a, b) => a.x - b.x)
+}
+
+/** The methods a series' stored months from `from` to `to` (inclusive) are on; null for a month with none recorded. */
+export function methodsBetween(
+  resp: LiquidityAggregatesResponse,
+  code: string,
+  from: string,
+  to: string
+): { methods: Set<LiquidityPoint['method']>; months: number } {
+  const a = periodOrdinal(from)
+  const b = periodOrdinal(to)
+  const methods = new Set<LiquidityPoint['method']>()
+  let months = 0
+  if (a === null || b === null) return { methods, months }
+  for (const p of findSeries(resp, code)?.points ?? []) {
+    const x = periodOrdinal(p.period)
+    if (x === null || x < a || x > b) continue
+    methods.add(p.method ?? null)
+    months++
+  }
+  return { methods, months }
+}
+
+function sortedPoints(points: LiquidityPoint[]): LiquidityPoint[] {
+  return [...points].sort((p, q) => (periodOrdinal(p.period) ?? 0) - (periodOrdinal(q.period) ?? 0))
+}
+
+/**
+ * Where the unbroken run of monthly figures that ends at the newest month
+ * begins. Before it a series holds only some months — CBI's quarter-ends,
+ * and whichever single month a workbook happens to reach back to — so the
+ * page names this month from the data instead of assuming one: which month
+ * the monthly workbooks start at is the ingest's business, not the page's.
+ */
+export function monthlyRunStart(points: LiquidityPoint[]): string | null {
+  const ps = sortedPoints(points)
+  let start: LiquidityPoint | null = null
+  for (let i = ps.length - 1; i >= 0; i--) {
+    const p = ps[i]
+    if (p.frequency !== 'M') break
+    if (start && periodOrdinal(start.period) !== (periodOrdinal(p.period) ?? NaN) + 1) break
+    start = p
+  }
+  return start ? start.period : null
+}
+
+/** The same for the dollar history: the first month of the unbroken run of months with a liquidity figure. */
+export function historyMoneyRunStart(history: LiquidityDollarHistoryPoint[]): string | null {
+  const hs = [...history]
+    .filter((h) => periodOrdinal(h.period) !== null)
+    .sort((a, b) => periodOrdinal(a.period)! - periodOrdinal(b.period)!)
+  let i = hs.length - 1
+  while (i >= 0 && hs[i].m2 === null) i--
+  if (i < 0) return null
+  let start = hs[i]
+  for (i -= 1; i >= 0; i--) {
+    if (hs[i].m2 === null || periodOrdinal(hs[i].period)! + 1 !== periodOrdinal(start.period)) break
+    start = hs[i]
+  }
+  return start.period
+}
+
 /** The breaks of one series, each with its x. */
 export function breaksFor(breaks: LiquidityBreak[], code: string): Array<LiquidityBreak & { x: number }> {
   return breaks
@@ -350,18 +459,137 @@ export function breakBetween(breaks: LiquidityBreak[], code: string, from: strin
 
 export type AnnualMeasure = 'end' | 'avg'
 
+/**
+ * The stored months an annual figure reads: Esfand over Esfand reads two
+ * months; a yearly average reads every month of its year, and its growth
+ * every month of two years.
+ */
+function annualSpan(year: number, field: AnnualField): [string, string] {
+  switch (field) {
+    case 'end_growth_pct':
+      return [`${year - 1}-12`, `${year}-12`]
+    case 'avg_value':
+      return [`${year}-01`, `${year}-12`]
+    case 'avg_growth_pct':
+      return [`${year - 1}-01`, `${year}-12`]
+    default:
+      return [`${year}-12`, `${year}-12`]
+  }
+}
+
+export type AnnualField = 'end_value' | 'end_growth_pct' | 'avg_value' | 'avg_growth_pct'
+
+/**
+ * Whether the months an annual figure reads are on more than one method —
+ * read from the stored points' own methods, so it holds however the API
+ * lists its breaks. 'mixed' is two recorded methods; 'unrecorded' a recorded
+ * method beside a month with none; null one method throughout (or none at
+ * all, as for liquidity). Esfand over Esfand compares only its two Esfands:
+ * two revised Esfands with old-method prints between them are one definition.
+ */
+export function annualMethodSpan(
+  resp: LiquidityAggregatesResponse,
+  row: LiquidityAnnualRow,
+  code: string,
+  field: AnnualField
+): 'mixed' | 'unrecorded' | null {
+  if (field === 'end_value') return null
+  const [from, to] = annualSpan(row.year, field)
+  const points = findSeries(resp, code)?.points ?? []
+  if (points.length === 0) {
+    // Nothing stored to read the methods from: only the API's breaks can say.
+    const before = `${row.year - (field === 'avg_growth_pct' ? 2 : 1)}-12`
+    return breakBetween(resp.breaks, code, before, to) ? 'mixed' : null
+  }
+  let methods: Set<LiquidityPoint['method']>
+  if (field === 'end_growth_pct') {
+    const a = points.find((p) => p.period === from)
+    const b = points.find((p) => p.period === to)
+    // A missing Esfand is a missing figure, not a method change.
+    if (!a || !b) return null
+    methods = new Set([a.method ?? null, b.method ?? null])
+  } else {
+    methods = methodsBetween(resp, code, from, to).methods
+  }
+  if (methods.size <= 1) return null
+  return methods.has(null) ? 'unrecorded' : 'mixed'
+}
+
+function annualMap(row: LiquidityAnnualRow, field: AnnualField): Record<string, number | null> | null {
+  switch (field) {
+    case 'end_value':
+      return row.end_value
+    case 'end_growth_pct':
+      return row.end_growth_pct
+    case 'avg_value':
+      return row.avg_value
+    default:
+      return row.avg_growth_pct
+  }
+}
+
+/**
+ * One figure of the annual block as the page shows it: the API's value, or
+ * null with the reason. A yearly average or growth whose months are on two
+ * base-money methods is refused here even when a response carries one — a
+ * mean or a growth across the change mixes two definitions. The reason is
+ * the API's own when it sends one, else the page's reading of the points.
+ */
+export function annualFigure(
+  resp: LiquidityAggregatesResponse,
+  row: LiquidityAnnualRow,
+  code: string,
+  field: AnnualField
+): { value: number | null; reason: string | null } {
+  const y = row.year
+  const fromApi = row.null_reason?.[code]?.[field] ?? null
+  const span = annualMethodSpan(resp, row, code, field)
+  if (span !== null) {
+    const what = field === 'avg_value' ? `the months of ${y} are` : 'the months this growth compares are'
+    const page =
+      span === 'mixed'
+        ? field === 'avg_value'
+          ? `CBI changed its base-money method during ${y}: a mean across the change would mix two definitions`
+          : 'CBI changed its base-money method inside the months this growth compares; it is not measured across the change'
+        : `${what} not all on one recorded base-money method, so ${field === 'avg_value' ? 'no mean' : 'no growth'} is taken across them`
+    return { value: null, reason: fromApi ?? page }
+  }
+  const served = annualMap(row, field)?.[code] ?? null
+  if (served !== null) return { value: served, reason: null }
+  if (fromApi) return { value: null, reason: fromApi }
+  const runStart = monthlyRunStart(findSeries(resp, code)?.points ?? [])
+  const runX = runStart ? periodOrdinal(runStart) : null
+  const sparse = (year: number) =>
+    runX !== null && year * 12 < runX ? `; before ${periodLabel(runStart!)} only some months are stored (CBI’s quarter-ends)` : ''
+  switch (field) {
+    case 'avg_value':
+      return { value: null, reason: `a yearly average needs all twelve monthly stocks of ${y}${sparse(y)}` }
+    case 'avg_growth_pct':
+      return {
+        value: null,
+        reason: `a yearly average needs all twelve monthly stocks of ${y} and of ${y - 1}${sparse(y - 1)}`
+      }
+    case 'end_growth_pct':
+      return { value: null, reason: `no Esfand ${y - 1} figure is stored` }
+    default:
+      return { value: null, reason: `no Esfand ${y} figure is stored` }
+  }
+}
+
 /** One bar group per Jalali year: Esfand over Esfand, or yearly average over yearly average. */
 export function annualGrowthRows(
-  annual: LiquidityAnnualRow[],
+  resp: LiquidityAggregatesResponse,
   measure: AnnualMeasure,
   fromYear?: number
 ): Array<{ year: number; m2: number | null; base: number | null }> {
-  return annual
+  const field: AnnualField = measure === 'end' ? 'end_growth_pct' : 'avg_growth_pct'
+  return (resp.annual ?? [])
     .filter((a) => fromYear === undefined || a.year >= fromYear)
-    .map((a) => {
-      const g = measure === 'end' ? a.end_growth_pct : a.avg_growth_pct
-      return { year: a.year, m2: g?.[CODE_M2] ?? null, base: g?.[CODE_BASE] ?? null }
-    })
+    .map((a) => ({
+      year: a.year,
+      m2: annualFigure(resp, a, CODE_M2, field).value,
+      base: annualFigure(resp, a, CODE_BASE, field).value
+    }))
 }
 
 /**
@@ -385,54 +613,6 @@ export function annualLevelRows(resp: LiquidityAggregatesResponse, unit: Display
     })
   }
   return fillNulls(rows)
-}
-
-/** True when an annual growth is missing because the months it compares straddle a method change. */
-export function annualGrowthCrossesBreak(
-  resp: LiquidityAggregatesResponse,
-  row: LiquidityAnnualRow,
-  code: string,
-  measure: AnnualMeasure
-): boolean {
-  const g = measure === 'end' ? row.end_growth_pct : row.avg_growth_pct
-  if (g && g[code] != null) return false
-  const y = row.year
-  // The yearly average reads every month of both years; Esfand reads two months.
-  const from = measure === 'end' ? `${y - 1}-12` : `${y - 2}-12`
-  return breakBetween(resp.breaks, code, from, `${y}-12`)
-}
-
-/** Why an annual growth is missing, in words — or null when it is not. */
-export function annualGrowthReason(
-  resp: LiquidityAggregatesResponse,
-  row: LiquidityAnnualRow,
-  code: string,
-  measure: AnnualMeasure
-): string | null {
-  const g = measure === 'end' ? row.end_growth_pct : row.avg_growth_pct
-  if (g && g[code] != null) return null
-  const y = row.year
-  if (annualGrowthCrossesBreak(resp, row, code, measure)) {
-    return `CBI changed its base-money method inside the months this growth compares; it is not measured across the change`
-  }
-  if (measure === 'avg') {
-    return `a yearly average needs all twelve monthly stocks of ${y} and of ${y - 1}; before Tir 1397 CBI's history is quarter-ends`
-  }
-  return `no Esfand ${y - 1} figure is stored`
-}
-
-/** Why a yearly average is missing, in words — or null when it is not. */
-export function annualAverageReason(
-  resp: LiquidityAggregatesResponse,
-  row: LiquidityAnnualRow,
-  code: string
-): string | null {
-  if (row.avg_value && row.avg_value[code] != null) return null
-  const y = row.year
-  if (breakBetween(resp.breaks, code, `${y - 1}-12`, `${y}-12`)) {
-    return `CBI changed its base-money method during ${y}: a mean across the change would mix two definitions`
-  }
-  return `a yearly average needs all twelve monthly stocks of ${y}; before Tir 1397 CBI's history is quarter-ends`
 }
 
 // --- the data table --------------------------------------------------------------------------
@@ -511,19 +691,18 @@ export type AnnualSortKey =
   | 'base_avg'
   | 'base_avg_growth'
 
-export function annualSortValue(r: LiquidityAnnualRow, key: AnnualSortKey): number | null {
+export function annualSortValue(
+  resp: LiquidityAggregatesResponse,
+  r: LiquidityAnnualRow,
+  key: AnnualSortKey
+): number | null {
   if (key === 'year') return r.year
   const code = key.startsWith('m2') ? CODE_M2 : CODE_BASE
   const field = key.replace(/^(m2|base)_/, '')
-  const map =
-    field === 'end'
-      ? r.end_value
-      : field === 'end_growth'
-        ? r.end_growth_pct
-        : field === 'avg'
-          ? r.avg_value
-          : r.avg_growth_pct
-  return map?.[code] ?? null
+  const f: AnnualField =
+    field === 'end' ? 'end_value' : field === 'end_growth' ? 'end_growth_pct' : field === 'avg' ? 'avg_value' : 'avg_growth_pct'
+  // Sorted by what the table shows, so a refused figure sorts with the missing.
+  return annualFigure(resp, r, code, f).value
 }
 
 /** Sort without letting a missing figure pose as the smallest or the largest. */
@@ -639,7 +818,7 @@ function rangeText(r: { from: number; to: number }): string {
 }
 
 /** The measured coverage clauses, shortest horizons first: 'about 84% of the time at 1–12 months'. */
-export function coverageClauses(coverage: Record<string, number>): string[] {
+export function coverageClauses(coverage: Record<string, number | null>): string[] {
   return Object.entries(coverage)
     .map(([k, v]) => ({ r: parseCoverageKey(k), v }))
     .filter((e): e is { r: { from: number; to: number }; v: number } => e.r !== null && Number.isFinite(e.v))
@@ -669,7 +848,7 @@ export function coverageSentence(band: LiquidityBand): string {
  */
 export function bandUndercovers(band: LiquidityBand): boolean {
   const nominal = band.upper_q - band.lower_q
-  const measured = Object.values(band.coverage).filter((v) => Number.isFinite(v))
+  const measured = Object.values(band.coverage).filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
   return measured.length > 0 && measured.every((v) => v < nominal)
 }
 
@@ -706,7 +885,7 @@ export function indexRows(history: LiquidityDollarHistoryPoint[], fromX?: number
     if (x === null || h.usd_per_m2_index === null || (fromX !== undefined && x < fromX)) continue
     rows.push({ x, period: h.period, index: h.usd_per_m2_index })
   }
-  return rows
+  return rows.sort((a, b) => a.x - b.x)
 }
 
 /** The month the index equals 100 at, when one does — its base. */

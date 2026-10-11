@@ -84,11 +84,32 @@ function showAllRows() {
   expect(more).toHaveAttribute('aria-expanded', 'true')
 }
 
+/** What a sighted reader sees in an element: its text without the screen-reader-only parts. */
+function visible(el: Element): string {
+  const copy = el.cloneNode(true) as Element
+  copy.querySelectorAll('.sr-only').forEach((n) => n.remove())
+  return copy.textContent ?? ''
+}
+
 function cellsOf(testId: string): string[] {
   return within(screen.getByTestId(testId))
     .getAllByRole('cell')
-    .map((c) => c.textContent ?? '')
+    .map(visible)
 }
+
+/**
+ * The base-money change listed as ONE break at 1399-12, as Track M's API
+ * lists it, instead of one entry per switch as the fixtures do. What the page
+ * says about the change must not depend on which.
+ */
+const ONE_BREAK = [
+  {
+    code: 'CBI_BASE_MONEY',
+    from: '1399-12',
+    note: 'CBI redefined base money from Esfand 1399.',
+    old_method_after: Array.from({ length: 11 }, (_, i) => `1400-${String(i + 1).padStart(2, '0')}`)
+  }
+]
 
 beforeEach(() => {
   apiMock.mockReset()
@@ -192,7 +213,25 @@ describe('monthly and annual', () => {
     showAllRows()
     const months = tableMonths()
     expect(months[months.length - 1]).toBe('1352-03')
-    expect(screen.getByTestId('lq-levels-unit').textContent).toContain('Before Tir 1397 CBI’s history is quarter-ends')
+    expect(screen.getByTestId('lq-levels-unit').textContent).toContain(
+      'Before Tir 1397 only some months are stored — CBI’s quarter-ends — and the line joins them point to point.'
+    )
+  })
+
+  it('names the month the monthly figures start from the data, not from a fixed date', async () => {
+    // As the CBI ingest stores it: the monthly workbooks from Tir 1398, Esfand
+    // 1397 alone among quarter-ends before it.
+    const keep = (p: { period: string }) =>
+      p.period >= '1398-04' || ['1397-06', '1397-09', '1397-12', '1398-03'].includes(p.period) || p.period < '1397-04'
+    const asQ = <T extends { period: string }>(p: T): T =>
+      p.period < '1398-04' && p.period !== '1397-12' ? { ...p, frequency: 'Q' } : p
+    const ingest = { ...MONTHLY, series: MONTHLY.series.map((s) => ({ ...s, points: s.points.filter(keep).map(asQ) })) }
+    await renderPage({ monthly: ingest })
+    fireEvent.click(within(screen.getByTestId('lq-window')).getByRole('button', { name: 'All (from 1352)' }))
+    const caption = screen.getByTestId('lq-levels-unit').textContent ?? ''
+    expect(caption).toContain('Before Tir 1398 only some months are stored')
+    expect(caption).not.toContain('1397')
+    expect(screen.getByTestId('lq-notes').textContent).toContain('month by month from Tir 1398')
   })
 
   it('switches to Jalali years with Esfand-over-Esfand growth', async () => {
@@ -316,6 +355,9 @@ describe('the base-money method change', () => {
     const reason = MONTHLY.series[1].points.find((p) => p.period === '1399-12')!.null_reason!.yoy_pct
     const yoy = within(row).getAllByRole('cell')[7]
     expect(within(yoy).getByTitle(reason)).toHaveTextContent('—')
+    // The reason is read out too: a hover reaches neither a keyboard nor a phone.
+    expect(yoy.querySelector('.sr-only')!.textContent).toBe(`not measured: ${reason}`)
+    expect(yoy.querySelector('[aria-hidden="true"]')!.textContent).toBe('—')
     expect(cells[9]).toContain('revised')
     expect(screen.getByTestId('lq-levels').textContent).toContain('base-money method change — the line breaks there')
     expect(screen.getByTestId('lq-notes').textContent).toContain("Esfand 1399: CBI's base money is on its revised method")
@@ -337,11 +379,47 @@ describe('the base-money method change', () => {
       'No base-money bar for 1399: CBI changed its base-money method inside the months that growth compares, and it is not measured across the change.'
     )
     const cells = within(screen.getByTestId('lq-year-1399')).getAllByRole('cell')
-    expect(cells[6].textContent).toBe('—')
+    expect(visible(cells[6])).toBe('—')
     expect(within(cells[6]).getByTitle(/changed its base-money method/)).toBeInTheDocument()
     // Nor a yearly average over months on two methods.
-    expect(cells[7].textContent).toBe('—')
-    expect(cells[7]).toHaveAttribute('title', 'CBI changed its base-money method during 1399: a mean across the change would mix two definitions')
+    expect(visible(cells[7])).toBe('—')
+    expect(
+      within(cells[7]).getByTitle('CBI changed its base-money method during 1399: a mean across the change would mix two definitions')
+    ).toBeInTheDocument()
+  })
+
+  it('marks every switch and explains every gap when the API lists the change as one break', async () => {
+    await renderPage({ monthly: { ...MONTHLY, breaks: ONE_BREAK }, annual: { ...ANNUAL, breaks: ONE_BREAK } })
+    showAllRows()
+    // The switches the stored methods show, not only the listed break.
+    for (const p of ['1399-12', '1400-01', '1400-12']) {
+      expect(screen.getByTestId(`lq-break-${p}`).textContent).toBe('method change')
+    }
+    fireEvent.click(within(screen.getByTestId('lq-freq')).getByRole('button', { name: 'Annual' }))
+    await screen.findByTestId('lq-year-1401')
+    fireEvent.click(within(screen.getByTestId('lq-measure')).getByRole('button', { name: 'Yearly average' }))
+    // 1400 and 1401 each have twelve months; what stops the 1401 growth is 1400's two methods.
+    expect(screen.getByTestId('lq-growth-missing').textContent).toContain('No base-money bar for 1399, 1400, 1401:')
+    const y1401 = within(screen.getByTestId('lq-year-1401')).getAllByRole('cell')
+    expect(visible(y1401[8])).toBe('—')
+    expect(within(y1401[8]).getByTitle(/changed its base-money method/)).toBeInTheDocument()
+  })
+
+  it('shows no base-money yearly average over two methods, even when the API sends one', async () => {
+    // As Track M's annual block does: the mean of all twelve months whatever their method.
+    const annual = ANNUAL.annual!.map((a) =>
+      a.year === 1399 || a.year === 1400 ? { ...a, avg_value: { ...a.avg_value!, CBI_BASE_MONEY: 5000 } } : a
+    )
+    await renderPage({ annual: { ...ANNUAL, breaks: ONE_BREAK, annual } })
+    fireEvent.click(within(screen.getByTestId('lq-freq')).getByRole('button', { name: 'Annual' }))
+    await screen.findByTestId('lq-year-1400')
+    for (const y of [1399, 1400]) {
+      const cells = within(screen.getByTestId(`lq-year-${y}`)).getAllByRole('cell')
+      expect(visible(cells[7])).toBe('—')
+      expect(within(cells[7]).getByTitle(`CBI changed its base-money method during ${y}: a mean across the change would mix two definitions`)).toBeInTheDocument()
+      // Liquidity's average is one definition: shown.
+      expect(visible(cells[3])).not.toBe('—')
+    }
   })
 })
 
@@ -434,7 +512,8 @@ describe('the dollar chart', () => {
     )
     expect(screen.getByTestId('lq-dollar').textContent).toContain('مسیر هم‌پای رشد نقدینگی — سناریو، نه پیش‌بینی')
     const legend = screen.getByTestId('lq-dollar-legend').textContent ?? ''
-    expect(legend).toContain('Dollar, month-end close')
+    // Its newest point is the running month's latest close, and says so.
+    expect(legend).toContain('Dollar, month-end close (Mehr 1405, still running: its latest close)')
     expect(legend).toContain('Path 3: Slowest 3-year liquidity growth since 1390 (22.8% a year)')
     expect(legend).toContain('The dollar’s own trend since 1390-10 (39.6% a year)')
     expect(legend).toContain('Band around path 1')
@@ -456,9 +535,10 @@ describe('the dollar per unit of liquidity and the liquidity dollar', () => {
       'at Esfand 1404, across 118 base months, it runs from 43,573 تومان to 166,208 تومان. It is arithmetic about the month you pick — not a fair value, and not a forecast.'
     )
     const rows = within(screen.getByTestId('lq-ld-table')).getAllByRole('row').slice(1)
+    // The research's median of 118 bases: the mean of the two middle ones.
     expect(rows.map((r) => r.textContent)).toEqual([
       'LowestShahrivar 139643,573 تومان',
-      'MedianAzar 1400104,019 تومان',
+      'MedianAzar 1400 and Azar 1402 (the mean of the two middle values)104,421 تومان',
       'HighestBahman 1404166,208 تومان'
     ])
     expect(screen.getByTestId('lq-ld-caveat').textContent).toBe(
@@ -600,6 +680,54 @@ describe('failures and old prices', () => {
     expect(screen.getByTestId('lq-dollar-stale').textContent).toBe(
       'The newest dollar close stored is 1405/07/18, 9 days ago: every path starts from it.'
     )
+  })
+
+  it('reads the dollar close’s age from the API’s per-input block too', async () => {
+    const data_age = {
+      money: { stale: true, age_days: 205 },
+      usd: { newest_day: '2026-10-01', age_days: 9, stale: true, warning: 'The scenarios start from a stale price.' }
+    }
+    await renderPage({ d12: { ...D12, data_age } })
+    expect(screen.getByTestId('lq-dollar-stale').textContent).toBe(
+      'The newest dollar close stored is 1405/07/18, 9 days ago: every path starts from it. The scenarios start from a stale price.'
+    )
+  })
+
+  it('stays quiet when only the money block is old', async () => {
+    const data_age = { money: { stale: true, age_days: 205 }, usd: { age_days: 1, stale: false } }
+    await renderPage({ d12: { ...D12, data_age } })
+    expect(screen.queryByTestId('lq-dollar-stale')).toBeNull()
+  })
+
+  it('blames the missing dollar, not liquidity, when no close is stored', async () => {
+    const noDollar: LiquidityDollarResponse = {
+      ...D12,
+      available: false,
+      unavailable: ['USD_IRT has no stored daily close on this deployment, so there is no dollar to draw or model.'],
+      anchor: null,
+      history: [],
+      scenarios: [],
+      trend: null,
+      band: null,
+      backtest: null,
+      liquidity_dollar: null
+    }
+    await renderPage({ d12: noDollar })
+    expect(screen.getByTestId('lq-no-scenarios').textContent).toBe(
+      'No scenario path is drawn: every path starts from the last dollar close, and no dollar close is stored. ' +
+        'USD_IRT has no stored daily close on this deployment, so there is no dollar to draw or model.'
+    )
+    expect(screen.getByTestId('lq-no-history')).toBeInTheDocument()
+    expect(screen.queryByTestId('lq-dollar-stale')).toBeNull()
+  })
+
+  it('refuses money figures in a unit it does not convert from', async () => {
+    await renderPage({ monthly: { ...MONTHLY, unit: 'trillion_toman' } }, 'lq-unit-refused')
+    expect(screen.getByTestId('lq-unit-refused').textContent).toContain('The API reports these stocks in “trillion_toman”')
+    expect(screen.queryByTestId('lq-money')).toBeNull()
+    expect(screen.queryByTestId('lq-table')).toBeNull()
+    // The dollar section is in toman whatever the money unit: still there.
+    expect(screen.getByTestId('lq-dollar')).toBeInTheDocument()
   })
 
   it('says so when an annual answer comes without its years', async () => {

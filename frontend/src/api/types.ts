@@ -2688,6 +2688,12 @@ export interface LiquidityAnnualRow {
   avg_growth_pct: Record<string, number | null> | null
   months_present: number
   partial: boolean
+  /**
+   * Why a figure is null, by series code and then field name ('end_growth_pct',
+   * 'avg_value', …). Not in design §3; the page prefers it to its own reading
+   * when the API sends it.
+   */
+  null_reason?: Record<string, Record<string, string>>
 }
 
 export interface LiquidityBreak {
@@ -2695,6 +2701,12 @@ export interface LiquidityBreak {
   /** The first period on the new method. */
   from: string
   note: string
+  /**
+   * Stored months from `from` on that are still on the old method (CBI's
+   * 1400 prints), when the API lists them. The page reads every method
+   * switch from the points themselves either way.
+   */
+  old_method_after?: string[]
 }
 
 /**
@@ -2707,6 +2719,16 @@ export interface LiquidityDataAge {
   age_days?: number | null
   warning?: string | null
   [field: string]: unknown
+}
+
+/**
+ * The dollar response's `data_age`: either the flat block above, or one
+ * block per input — `usd` for the dollar close every path starts from,
+ * `money` for the liquidity month the rates are read from.
+ */
+export interface LiquidityDollarDataAge extends LiquidityDataAge {
+  usd?: LiquidityDataAge
+  money?: LiquidityDataAge
 }
 
 export interface LiquidityAggregatesResponse {
@@ -2784,9 +2806,9 @@ export interface LiquidityBand {
   /**
    * MEASURED backtest coverage by horizon range — '1-12', '24' — the share of
    * past outcomes a band built this way actually held. The only figure the
-   * band is ever labelled with.
+   * band is ever labelled with. Null where there was nothing to measure.
    */
-  coverage: Record<string, number>
+  coverage: Record<string, number | null>
   origins_from: string
   lag_months: number
   n_by_h: Record<string, number>
@@ -2803,6 +2825,13 @@ export type LiquidityDmPValues = Record<string, Record<string, number | null> | 
 export interface LiquidityBacktest {
   /** 'month-end close' | 'monthly average' */
   target: string
+  /** The first and last forecast origin scored, when the API names them. */
+  from?: string
+  to?: string
+  /** Months after a month's end its liquidity figure was first used. */
+  lag_months?: number
+  /** The one-sided p-value below which a difference counts as measured. */
+  significance?: number
   /** Model → horizon in months → root mean square log error. */
   rmse: Record<string, Record<string, number | null>>
   dm_vs_random_walk_p: LiquidityDmPValues
@@ -2815,6 +2844,11 @@ export interface LiquidityBacktest {
 export interface LiquidityDollarAtBase {
   /** The base month whose dollar is scaled by liquidity growth since then. */
   base: string | null
+  /**
+   * The two middle base months when the median is the mean of two (an even
+   * number of bases); `base` is then null.
+   */
+  bases?: string[]
   /** Toman per dollar. */
   value: number
 }
@@ -2829,6 +2863,9 @@ export interface LiquidityDollarRange {
 
 export interface LiquidityDollarResponse {
   as_of: string
+  /** False when there is nothing to model; `unavailable` then says what is missing. */
+  available?: boolean
+  unavailable?: string[]
   anchor: LiquidityDollarAnchor | null
   /** The newest liquidity month the scenario rates are read from. */
   money_as_of: { period: string; published_at: string | null } | null
@@ -2840,5 +2877,5 @@ export interface LiquidityDollarResponse {
   backtest: LiquidityBacktest | null
   liquidity_dollar: LiquidityDollarRange | null
   notes: string[]
-  data_age: LiquidityDataAge
+  data_age: LiquidityDollarDataAge
 }
