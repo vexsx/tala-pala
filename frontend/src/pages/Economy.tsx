@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   CartesianGrid,
   ComposedChart,
@@ -42,6 +43,35 @@ import type {
  * a time, with its base printed beside it.
  */
 
+/**
+ * Providers whose series are charted on a page of their own and only pointed
+ * to here. CBI's money aggregates break this page's three assumptions at
+ * once: a quarter-end history before monthly figures (this page's evenly
+ * spaced category axis would draw a quarter as wide as a month), base money
+ * on two definitions (its single stroke would join them), and a unit CBI
+ * prints as thousand billion rial (shown raw here). The money & liquidity
+ * page spaces them by date, splits base money by method and states the unit,
+ * so listing them here as a pointer is the truthful way to include them.
+ */
+export const CHARTED_ELSEWHERE: Readonly<Record<string, { to: string; page: string; why: string }>> = {
+  cbi: {
+    to: '/liquidity',
+    page: 'Money & liquidity',
+    why:
+      'which spaces CBI’s quarter-ends and months by their real dates, never joins base money across CBI’s change of ' +
+      'definition, and shows the stocks in همت or as published'
+  }
+}
+
+/** The series the page opens on when it is stored. */
+export const DEFAULT_SERIES = 'SCI_CPI_URBAN'
+
+/** The series to open on: the default when stored, else the first chartable one, else none. */
+export function initialSeries(chartable: EconomicSeries[]): string | null {
+  if (chartable.some((s) => s.code === DEFAULT_SERIES)) return DEFAULT_SERIES
+  return chartable[0]?.code ?? null
+}
+
 /** Recharts needs one row per x value, with measured and projected separated. */
 export function toSeriesPoints(obs: EconomicObservation[]): Array<{
   period: string
@@ -75,16 +105,22 @@ function Field({ label, value }: { label: string; value: string }) {
 
 export default function Economy() {
   const { calendar } = useSettings()
-  const [code, setCode] = useState<string>('SCI_CPI_URBAN')
+  const [picked, setPicked] = useState<string | null>(null)
   const [withProjections, setWithProjections] = useState(false)
 
   const list = useApi<EconomicSeriesListResponse>('/series')
+  const series: EconomicSeries[] = useMemo(() => list.data?.items ?? [], [list.data])
+  const chartable = useMemo(() => series.filter((s) => !CHARTED_ELSEWHERE[s.provider_code]), [series])
+  // Nothing is requested until the list says what is stored: a default that
+  // this deployment does not hold would open the page on an error card.
+  const code = picked ?? (list.data ? initialSeries(chartable) : null)
   const obs = useApi<EconomicObservationsResponse>(
-    `/series/${encodeURIComponent(code)}/observations?limit=500&include_projections=${withProjections}`,
+    code === null
+      ? null
+      : `/series/${encodeURIComponent(code)}/observations?limit=500&include_projections=${withProjections}`,
     [code, withProjections]
   )
 
-  const series: EconomicSeries[] = useMemo(() => list.data?.items ?? [], [list.data])
   const selected = useMemo(() => series.find((s) => s.code === code), [series, code])
   const points = useMemo(
     () => (obs.data ? toSeriesPoints(obs.data.observations) : []),
@@ -118,30 +154,43 @@ export default function Economy() {
         <div className="card-title">Series</div>
         <div className="ec-picker">
           {grouped.map(([provider, items]) => (
-            <div key={provider} className="ec-group">
+            <div key={provider} className="ec-group" data-testid={`ec-group-${provider}`}>
               <div className="field-label">{provider}</div>
-              <div className="chip-row wrap">
-                {items.map((s) => (
-                  <button
-                    key={s.code}
-                    className={`chip ${code === s.code ? 'active' : ''}`}
-                    aria-pressed={code === s.code}
-                    onClick={() => setCode(s.code)}
-                    title={s.name_en}
-                  >
-                    {s.code}
-                    {s.coverage.projection_count > 0 ? (
-                      <span className="ec-proj-dot" title="This series carries projections">
-                        {' '}
-                        ◌
-                      </span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
+              {CHARTED_ELSEWHERE[provider] ? (
+                <p className="muted small ec-elsewhere" data-testid={`ec-elsewhere-${provider}`}>
+                  {items.map((s) => s.name_en || s.code).join(', ')} {items.length === 1 ? 'is' : 'are'} charted on{' '}
+                  <Link to={CHARTED_ELSEWHERE[provider].to}>{CHARTED_ELSEWHERE[provider].page}</Link>,{' '}
+                  {CHARTED_ELSEWHERE[provider].why}.
+                </p>
+              ) : (
+                <div className="chip-row wrap">
+                  {items.map((s) => (
+                    <button
+                      key={s.code}
+                      className={`chip ${code === s.code ? 'active' : ''}`}
+                      aria-pressed={code === s.code}
+                      onClick={() => setPicked(s.code)}
+                      title={s.name_en}
+                    >
+                      {s.code}
+                      {s.coverage.projection_count > 0 ? (
+                        <span className="ec-proj-dot" title="This series carries projections">
+                          {' '}
+                          ◌
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
+        {list.data && code === null ? (
+          <p className="muted small" data-testid="ec-nothing-to-chart">
+            No series this page charts is stored on this deployment yet.
+          </p>
+        ) : null}
       </div>
 
       {obs.loading ? <Loading /> : null}

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
-import Economy, { toSeriesPoints } from '../pages/Economy'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import Economy, { CHARTED_ELSEWHERE, initialSeries, toSeriesPoints } from '../pages/Economy'
 import { SettingsProvider } from '../lib/settings'
 import economySource from '../pages/Economy.tsx?raw'
 import type {
@@ -16,11 +17,19 @@ import seriesList from './fixtures/economy-series-list.json'
 import imfWithProjections from './fixtures/economy-imf-irn-with-projections.json'
 import imfMeasured from './fixtures/economy-imf-irn-measured.json'
 import sciUrban from './fixtures/economy-sci-urban-60.json'
+// Captured from the local rehearsal of real CBI data on 2026-10-11 (see the
+// fixtures README): the four CBI money series, the only ones stored there.
+import rehearsalList from './fixtures/economy-series-list-rehearsal.json'
 
 const LIST = seriesList as EconomicSeriesListResponse
 const IMF_PROJ = imfWithProjections as EconomicObservationsResponse
 const IMF_MEASURED = imfMeasured as EconomicObservationsResponse
 const SCI = sciUrban as EconomicObservationsResponse
+const CBI_ONLY = rehearsalList as EconomicSeriesListResponse
+const WITH_CBI: EconomicSeriesListResponse = {
+  items: [...LIST.items, ...CBI_ONLY.items],
+  count: LIST.count + CBI_ONLY.count
+}
 
 vi.mock('../api/client', async () => {
   const actual = await vi.importActual<typeof import('../api/client')>('../api/client')
@@ -28,24 +37,33 @@ vi.mock('../api/client', async () => {
 })
 const { api } = await import('../api/client')
 
-function mockApi(obs: EconomicObservationsResponse) {
+function mockApi(obs: EconomicObservationsResponse, list: EconomicSeriesListResponse = LIST) {
   ;(api as unknown as Mock).mockImplementation((path: string) => {
     if (path.startsWith('/series/')) return Promise.resolve(obs)
-    if (path === '/series') return Promise.resolve(LIST)
+    if (path === '/series') return Promise.resolve(list)
     return Promise.resolve({})
   })
 }
 
-async function renderPage(obs: EconomicObservationsResponse = SCI) {
-  mockApi(obs)
-  const result = render(
-    <SettingsProvider>
-      <Economy />
-    </SettingsProvider>
+function renderEconomy() {
+  return render(
+    <MemoryRouter>
+      <SettingsProvider>
+        <Economy />
+      </SettingsProvider>
+    </MemoryRouter>
   )
+}
+
+async function renderPage(obs: EconomicObservationsResponse = SCI, list: EconomicSeriesListResponse = LIST) {
+  mockApi(obs, list)
+  const result = renderEconomy()
   await screen.findByTestId('ec-pit')
   return result
 }
+
+const observationCalls = () =>
+  (api as unknown as Mock).mock.calls.map((c) => c[0] as string).filter((p) => p.startsWith('/series/'))
 
 beforeEach(() => {
   ;(api as unknown as Mock).mockReset()
@@ -156,11 +174,7 @@ describe('the reader is told what kind of number this is', () => {
     const revised: EconomicObservationsResponse = { ...SCI, vintages_used: [1, 2, 3] }
     ;(api as unknown as Mock).mockReset()
     mockApi(revised)
-    render(
-      <SettingsProvider>
-        <Economy />
-      </SettingsProvider>
-    )
+    renderEconomy()
     await waitFor(() =>
       expect(
         screen.getAllByTestId('ec-pit').some((n) => /partly revised/i.test(n.textContent ?? ''))
@@ -203,5 +217,54 @@ describe('the projections control says what it does', () => {
     // elements exist and say different kinds of thing.
     expect(screen.getByTestId('ec-projections-toggle').textContent).toMatch(/projections/i)
     expect(screen.getByTestId('ec-projection-state').textContent).toMatch(/Currently showing/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CBI's money series are charted on their own page, not here
+// ---------------------------------------------------------------------------
+
+describe('series charted on another page', () => {
+  it('lists CBI’s money series as a pointer to Money & liquidity, not as chips', async () => {
+    await renderPage(SCI, WITH_CBI)
+    const group = screen.getByTestId('ec-group-cbi')
+    // No chip: this page would space quarter-ends like months and join base
+    // money across CBI's change of definition.
+    expect(within(group).queryAllByRole('button')).toHaveLength(0)
+    for (const code of ['CBI_LIQUIDITY', 'CBI_BASE_MONEY']) expect(screen.queryByRole('button', { name: code })).toBeNull()
+    const pointer = screen.getByTestId('ec-elsewhere-cbi')
+    expect(pointer.textContent).toBe(
+      'Base money, Liquidity (M2), Money (M1), Quasi-money are charted on Money & liquidity, which spaces CBI’s ' +
+        'quarter-ends and months by their real dates, never joins base money across CBI’s change of definition, and ' +
+        'shows the stocks in همت or as published.'
+    )
+    expect(within(pointer).getByRole('link', { name: 'Money & liquidity' })).toHaveAttribute('href', '/liquidity')
+    // The other providers are untouched, and the page still opens on SCI's CPI.
+    expect(screen.getByRole('button', { name: 'SCI_CPI_URBAN' })).toHaveAttribute('aria-pressed', 'true')
+    expect(observationCalls().every((p) => !p.includes('CBI_'))).toBe(true)
+    expect(CHARTED_ELSEWHERE.cbi.to).toBe('/liquidity')
+  })
+
+  it('requests nothing and says so when only CBI’s series are stored', async () => {
+    mockApi(SCI, CBI_ONLY)
+    renderEconomy()
+    expect(await screen.findByTestId('ec-nothing-to-chart')).toHaveTextContent(
+      'No series this page charts is stored on this deployment yet.'
+    )
+    expect(screen.getByTestId('ec-elsewhere-cbi')).toBeInTheDocument()
+    // No request for a default this deployment does not hold: no error card.
+    expect(observationCalls()).toEqual([])
+    expect(screen.queryByText('This series could not be read')).toBeNull()
+  })
+
+  it('opens on the first stored series when the default is not stored', async () => {
+    const noSci = { items: LIST.items.filter((s) => s.code !== 'SCI_CPI_URBAN'), count: LIST.count - 1 }
+    const first = noSci.items.find((s) => s.provider_code !== 'cbi')!.code
+    expect(initialSeries(noSci.items)).toBe(first)
+    expect(initialSeries(LIST.items)).toBe('SCI_CPI_URBAN')
+    expect(initialSeries([])).toBeNull()
+    await renderPage(IMF_MEASURED, noSci)
+    expect(observationCalls()[0]).toContain(`/series/${encodeURIComponent(first)}/observations`)
+    expect(observationCalls().some((p) => p.includes('SCI_CPI_URBAN'))).toBe(false)
   })
 })
