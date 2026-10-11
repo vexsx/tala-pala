@@ -2013,6 +2013,30 @@ def test_a_failed_market_ingest_does_not_cost_the_shares_or_the_funds(fetch, wir
     assert _count(engine, prices, prices.c.symbol == "IR_SILVER_FUND_SILVER") == 158
 
 
+def test_a_failed_market_download_does_not_cost_the_shares_or_the_funds(fetch, wired, engine,
+                                                                        tmp_path, monkeypatch,
+                                                                        capsys):
+    """TSETMC answered GetMarketValueByFlow with 502 six times running on
+    2026-10-11, and the run ended before the money flow. Now the market
+    ingest is skipped and named; the universe, the flows, the day file and
+    the funds still land, and the exit is 1."""
+    served = _tsetmc(fetch)
+
+    def curl(url, timeout=120):
+        if url.endswith("/MarketData/GetMarketValueByFlow/1/9999"):
+            raise fetch.FetchError(f"fetch failed for {url}\ncurl exit 56: 502")
+        return served(url, timeout)
+
+    monkeypatch.setattr(fetch, "_curl", curl)
+    assert fetch.run(_args(tmp_path)) == 1
+    out = capsys.readouterr().out
+    assert "the market ingest is skipped" in out and "[market download]" in out
+    assert not any(url == "bourse/ingest" for url, _ in wired.posts)
+    assert _count(engine, market_shares) == 15
+    assert _count(engine, market_share_sessions) == 15
+    assert _count(engine, prices, prices.c.symbol == "IR_SILVER_FUND_SILVER") == 158
+
+
 def test_a_day_the_server_calls_incomplete_is_fetched_again(fetch, wired, engine, tmp_path,
                                                             monkeypatch):
     """Without the overlap re-fetch, a stored day is fetched again only when

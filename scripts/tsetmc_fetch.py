@@ -1340,45 +1340,57 @@ def run(args: argparse.Namespace) -> int:
     market_files: dict[str, Path] = {}
     index_files: list[Path] = []
     flow_files: list[Path] = []
+    market_ok = do_market
     if do_market:
-        started = time.monotonic()
-        for name, (url_path, key, min_bytes) in MARKET_PATHS.items():
-            market_files[name] = download_payload(url_path, out_dir / name, key, min_bytes)
-            print(f"downloaded : {name:<22} {market_files[name].stat().st_size:,} bytes")
-        # What TSETMC lists against what the registry carries, both ways. A new
-        # index is not ingested until it is INSERTed — the registry is data —
-        # but it is named here so nobody has to notice its absence first.
-        listed: set[str] = set()
-        for name in ("indexlive-1.json", "indexlive-2.json"):
-            rows = json.loads(market_files[name].read_text(encoding="utf-8"))["indexB1"]
-            listed |= {str(r.get("insCode", "")).strip() for r in rows}
-        unregistered = sorted(listed - set(index_codes))
-        unlisted = sorted(set(index_codes) - listed)
-        if unregistered:
-            print(f"NOTICE     : TSETMC lists {len(unregistered)} index(es) this registry "
-                  f"does not carry: {', '.join(unregistered)}. Add them to "
-                  "market_indices with an INSERT to ingest them.")
-        if unlisted:
-            print(f"NOTICE     : {len(unlisted)} registered index(es) are not in TSETMC's "
-                  f"live list today: {', '.join(unlisted)}.")
-        for ins_code in index_codes:
-            path = download_payload(
-                INDEX_HISTORY_PATH.format(ins_code=ins_code),
-                out_dir / f"index-{ins_code}.json", "indexB2", MIN_INDEX_BYTES,
-                ins_code=ins_code)
-            index_files.append(path)
-        print(f"downloaded : {len(index_files)} index histories, "
-              f"{sum(p.stat().st_size for p in index_files):,} bytes")
-        if roster_flows:
-            for ins_code in codes:
+        # One failed market download (TSETMC answered 502 to six tries for
+        # GetMarketValueByFlow on 2026-10-11) used to end the whole run here,
+        # before the whole market's money flow and the funds, which do not
+        # depend on it. The market ingest takes ONE body, so a failure skips
+        # that ingest and is reported; the rest of the run goes on.
+        try:
+            started = time.monotonic()
+            for name, (url_path, key, min_bytes) in MARKET_PATHS.items():
+                market_files[name] = download_payload(url_path, out_dir / name, key, min_bytes)
+                print(f"downloaded : {name:<22} {market_files[name].stat().st_size:,} bytes")
+            # What TSETMC lists against what the registry carries, both ways. A new
+            # index is not ingested until it is INSERTed — the registry is data —
+            # but it is named here so nobody has to notice its absence first.
+            listed: set[str] = set()
+            for name in ("indexlive-1.json", "indexlive-2.json"):
+                rows = json.loads(market_files[name].read_text(encoding="utf-8"))["indexB1"]
+                listed |= {str(r.get("insCode", "")).strip() for r in rows}
+            unregistered = sorted(listed - set(index_codes))
+            unlisted = sorted(set(index_codes) - listed)
+            if unregistered:
+                print(f"NOTICE     : TSETMC lists {len(unregistered)} index(es) this registry "
+                      f"does not carry: {', '.join(unregistered)}. Add them to "
+                      "market_indices with an INSERT to ingest them.")
+            if unlisted:
+                print(f"NOTICE     : {len(unlisted)} registered index(es) are not in TSETMC's "
+                      f"live list today: {', '.join(unlisted)}.")
+            for ins_code in index_codes:
                 path = download_payload(
-                    CLIENT_TYPE_PATH.format(ins_code=ins_code),
-                    out_dir / f"clienttype-{ins_code}.json", "clientType",
-                    MIN_CLIENT_TYPE_BYTES, ins_code=ins_code)
-                flow_files.append(path)
-            print(f"downloaded : {len(flow_files)} roster money-flow histories, "
-                  f"{sum(p.stat().st_size for p in flow_files):,} bytes")
-        timings["market"] = time.monotonic() - started
+                    INDEX_HISTORY_PATH.format(ins_code=ins_code),
+                    out_dir / f"index-{ins_code}.json", "indexB2", MIN_INDEX_BYTES,
+                    ins_code=ins_code)
+                index_files.append(path)
+            print(f"downloaded : {len(index_files)} index histories, "
+                  f"{sum(p.stat().st_size for p in index_files):,} bytes")
+            if roster_flows:
+                for ins_code in codes:
+                    path = download_payload(
+                        CLIENT_TYPE_PATH.format(ins_code=ins_code),
+                        out_dir / f"clienttype-{ins_code}.json", "clientType",
+                        MIN_CLIENT_TYPE_BYTES, ins_code=ins_code)
+                    flow_files.append(path)
+                print(f"downloaded : {len(flow_files)} roster money-flow histories, "
+                      f"{sum(p.stat().st_size for p in flow_files):,} bytes")
+            timings["market"] = time.monotonic() - started
+        except SystemExit as exc:
+            market_ok = False
+            failures.add("market download", "TSETMC", str(exc))
+            print(f"FAILED     : the market download stopped ({_brief(str(exc))}); "
+                  "the market ingest is skipped, the rest of the run goes on")
 
     # --- the whole market (0030) ---------------------------------------------
     manifest_ready = False
@@ -1597,7 +1609,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             _print_bars_report(report, failures, restated)
 
-    if do_market:
+    if market_ok:
         body = {
             "index_live": [inside(market_files["indexlive-1.json"]),
                            inside(market_files["indexlive-2.json"])],
